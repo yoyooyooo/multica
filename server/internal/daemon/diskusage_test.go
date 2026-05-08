@@ -147,6 +147,29 @@ func TestScanDiskUsage_AggregatesAndCategorizes(t *testing.T) {
 		t.Errorf("workspace B size = %d, want 2000", wsByID[wsB].SizeBytes)
 	}
 
+	// Workspace A's artifact ratio: 4000 reclaimable / a1+a2 size. Match
+	// within float tolerance so a small meta-file delta doesn't break it.
+	wantARatio := 4000.0 / float64(a1.SizeBytes+a2.SizeBytes)
+	if got := wsByID[wsA].ArtifactRatio; got < wantARatio-0.005 || got > wantARatio+0.005 {
+		t.Errorf("workspace A artifact_ratio = %f, want ~%f", got, wantARatio)
+	}
+	// Workspace B has no artifact subtree at all → ratio must be 0, not NaN.
+	if got := wsByID[wsB].ArtifactRatio; got != 0 {
+		t.Errorf("workspace B artifact_ratio = %f, want 0", got)
+	}
+
+	// Scan-wide counts must reflect the full scan, not the (un-truncated
+	// here) slice — they're the contract callers rely on once --top kicks in.
+	if report.TotalTaskCount != 3 {
+		t.Errorf("total_task_count = %d, want 3", report.TotalTaskCount)
+	}
+	if report.TotalWorkspaceCount != 2 {
+		t.Errorf("total_workspace_count = %d, want 2", report.TotalWorkspaceCount)
+	}
+	if report.TotalArtifactRatio <= 0 || report.TotalArtifactRatio > 1 {
+		t.Errorf("total_artifact_ratio = %f, want in (0, 1]", report.TotalArtifactRatio)
+	}
+
 	// Tasks must be sorted by size descending — the consumer treats this as
 	// a stable contract for `--top N` slicing.
 	for i := 1; i < len(report.Tasks); i++ {
@@ -169,10 +192,43 @@ func TestScanDiskUsage_AggregatesAndCategorizes(t *testing.T) {
 		`"artifact_size_bytes"`,
 		`"workspace_id"`,
 		`"task_short"`,
+		`"artifact_ratio"`,
+		`"total_task_count"`,
+		`"total_workspace_count"`,
+		`"total_artifact_ratio"`,
 	} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("JSON missing required field %s: %s", want, raw)
 		}
+	}
+}
+
+// TestScanDiskUsage_EmptyWorkspaceArtifactRatio guards the total=0 edge:
+// a workspace whose tasks have no measurable bytes (or no files at all) must
+// still report ArtifactRatio=0, never NaN. The CLI table renders this column,
+// and `NaN%` would surface in the user's terminal otherwise.
+func TestScanDiskUsage_EmptyWorkspaceArtifactRatio(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	wsID := "00000000-0000-0000-0000-000000000000"
+	taskDir := filepath.Join(root, wsID, "tttttttt")
+	if err := os.MkdirAll(filepath.Join(taskDir, "workdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ScanDiskUsage(root, []string{"node_modules"})
+	if err != nil {
+		t.Fatalf("ScanDiskUsage: %v", err)
+	}
+	if len(report.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace, got %d", len(report.Workspaces))
+	}
+	if got := report.Workspaces[0].ArtifactRatio; got != 0 {
+		t.Errorf("empty workspace artifact_ratio = %f, want 0 (no NaN)", got)
+	}
+	if got := report.TotalArtifactRatio; got != 0 {
+		t.Errorf("empty scan total_artifact_ratio = %f, want 0 (no NaN)", got)
 	}
 }
 

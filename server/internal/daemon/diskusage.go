@@ -25,24 +25,34 @@ type TaskDiskUsage struct {
 }
 
 // WorkspaceDiskUsage aggregates per-workspace footprint across all tasks.
+// ArtifactRatio is the fraction (0..1) of SizeBytes that the GC artifact
+// cleanup could reclaim — kept here so the JSON consumer doesn't have to
+// re-derive it (and so the table view can render the column without dividing
+// by zero on empty workspaces).
 type WorkspaceDiskUsage struct {
-	WorkspaceID       string `json:"workspace_id"`
-	WorkspaceShort    string `json:"workspace_short"`
-	TaskCount         int    `json:"task_count"`
-	SizeBytes         int64  `json:"size_bytes"`
-	ArtifactSizeBytes int64  `json:"artifact_size_bytes"`
-	OldestAgeSeconds  int64  `json:"oldest_age_seconds"`
+	WorkspaceID       string  `json:"workspace_id"`
+	WorkspaceShort    string  `json:"workspace_short"`
+	TaskCount         int     `json:"task_count"`
+	SizeBytes         int64   `json:"size_bytes"`
+	ArtifactSizeBytes int64   `json:"artifact_size_bytes"`
+	ArtifactRatio     float64 `json:"artifact_ratio"`
+	OldestAgeSeconds  int64   `json:"oldest_age_seconds"`
 }
 
-// DiskUsageReport is the full result of a single ScanDiskUsage call.
+// DiskUsageReport is the full result of a single ScanDiskUsage call. Total*
+// fields always reflect the entire scan, never the post-`--top` truncated
+// view — consumers that need the displayed subtotals can sum the slice.
 type DiskUsageReport struct {
 	WorkspacesRoot         string               `json:"workspaces_root"`
 	GeneratedAt            time.Time            `json:"generated_at"`
 	ArtifactPatterns       []string             `json:"artifact_patterns"`
 	Tasks                  []TaskDiskUsage      `json:"tasks"`
 	Workspaces             []WorkspaceDiskUsage `json:"workspaces"`
+	TotalTaskCount         int                  `json:"total_task_count"`
+	TotalWorkspaceCount    int                  `json:"total_workspace_count"`
 	TotalSizeBytes         int64                `json:"total_size_bytes"`
 	TotalArtifactSizeBytes int64                `json:"total_artifact_size_bytes"`
+	TotalArtifactRatio     float64              `json:"total_artifact_ratio"`
 }
 
 // DiskUsageKindUnknown is the kind reported for task directories whose
@@ -127,13 +137,28 @@ func ScanDiskUsage(workspacesRoot string, artifactPatterns []string) (DiskUsageR
 
 	report.Workspaces = make([]WorkspaceDiskUsage, 0, len(wsAgg))
 	for _, ws := range wsAgg {
+		ws.ArtifactRatio = ratio(ws.ArtifactSizeBytes, ws.SizeBytes)
 		report.Workspaces = append(report.Workspaces, *ws)
 	}
 	sort.Slice(report.Workspaces, func(i, j int) bool {
 		return report.Workspaces[i].SizeBytes > report.Workspaces[j].SizeBytes
 	})
 
+	report.TotalTaskCount = len(report.Tasks)
+	report.TotalWorkspaceCount = len(report.Workspaces)
+	report.TotalArtifactRatio = ratio(report.TotalArtifactSizeBytes, report.TotalSizeBytes)
+
 	return report, nil
+}
+
+// ratio returns numerator / denominator, mapping 0/0 (and any 0 denominator)
+// to 0 instead of NaN. Callers render the result as a percentage so a NaN
+// would surface as "NaN%" in the table — guard at the source.
+func ratio(numerator, denominator int64) float64 {
+	if denominator <= 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
 }
 
 func buildPatternSet(patterns []string) map[string]struct{} {

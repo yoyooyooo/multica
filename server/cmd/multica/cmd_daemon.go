@@ -659,12 +659,15 @@ func runDaemonDiskUsage(cmd *cobra.Command, _ []string) error {
 
 func printDiskUsageTaskTable(w io.Writer, report daemon.DiskUsageReport) {
 	fmt.Fprintf(w, "Workspaces root: %s\n", report.WorkspacesRoot)
-	if len(report.Tasks) == 0 {
+	if report.TotalTaskCount == 0 {
 		fmt.Fprintln(w, "(no task directories)")
 		return
 	}
 	rows := make([][]string, 0, len(report.Tasks))
+	var displayedSize, displayedArtifact int64
 	for _, task := range report.Tasks {
+		displayedSize += task.SizeBytes
+		displayedArtifact += task.ArtifactSizeBytes
 		rows = append(rows, []string{
 			task.WorkspaceShort + "/" + task.TaskShort,
 			task.Kind,
@@ -675,29 +678,66 @@ func printDiskUsageTaskTable(w io.Writer, report daemon.DiskUsageReport) {
 		})
 	}
 	cli.PrintTable(w, []string{"PATH", "KIND", "STATUS", "AGE", "SIZE", "ARTIFACTS"}, rows)
-	fmt.Fprintf(w, "\nTotal: %s across %d task(s); %s reclaimable as artifacts.\n",
-		formatBytes(report.TotalSizeBytes), len(report.Tasks), formatBytes(report.TotalArtifactSizeBytes))
+
+	if len(report.Tasks) < report.TotalTaskCount {
+		// Report-wide totals stay anchored to the full scan; the displayed
+		// row is what the user is currently looking at. Calling these out
+		// separately keeps `--top N` from misleading at-a-glance triage.
+		fmt.Fprintf(w, "\nShowing top %d of %d task(s). Displayed: %s (%s artifacts). Scan total: %s (%s artifacts, %.1f%% reclaimable).\n",
+			len(report.Tasks), report.TotalTaskCount,
+			formatBytes(displayedSize), formatBytes(displayedArtifact),
+			formatBytes(report.TotalSizeBytes), formatBytes(report.TotalArtifactSizeBytes),
+			report.TotalArtifactRatio*100)
+		return
+	}
+	fmt.Fprintf(w, "\nTotal: %s across %d task(s); %s reclaimable as artifacts (%.1f%%).\n",
+		formatBytes(report.TotalSizeBytes), report.TotalTaskCount,
+		formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
 }
 
 func printDiskUsageWorkspaceTable(w io.Writer, report daemon.DiskUsageReport) {
 	fmt.Fprintf(w, "Workspaces root: %s\n", report.WorkspacesRoot)
-	if len(report.Workspaces) == 0 {
+	if report.TotalWorkspaceCount == 0 {
 		fmt.Fprintln(w, "(no workspaces)")
 		return
 	}
 	rows := make([][]string, 0, len(report.Workspaces))
+	var displayedSize, displayedArtifact int64
 	for _, ws := range report.Workspaces {
+		displayedSize += ws.SizeBytes
+		displayedArtifact += ws.ArtifactSizeBytes
 		rows = append(rows, []string{
 			ws.WorkspaceShort,
 			strconv.Itoa(ws.TaskCount),
 			formatBytes(ws.SizeBytes),
 			formatBytes(ws.ArtifactSizeBytes),
+			formatRatio(ws.ArtifactRatio),
 			formatAge(ws.OldestAgeSeconds),
 		})
 	}
-	cli.PrintTable(w, []string{"WORKSPACE", "TASKS", "SIZE", "ARTIFACTS", "OLDEST"}, rows)
-	fmt.Fprintf(w, "\nTotal: %s across %d workspace(s); %s reclaimable as artifacts.\n",
-		formatBytes(report.TotalSizeBytes), len(report.Workspaces), formatBytes(report.TotalArtifactSizeBytes))
+	cli.PrintTable(w, []string{"WORKSPACE", "TASKS", "SIZE", "ARTIFACTS", "ARTIFACT %", "OLDEST"}, rows)
+
+	if len(report.Workspaces) < report.TotalWorkspaceCount {
+		fmt.Fprintf(w, "\nShowing top %d of %d workspace(s). Displayed: %s (%s artifacts). Scan total: %s (%s artifacts, %.1f%% reclaimable).\n",
+			len(report.Workspaces), report.TotalWorkspaceCount,
+			formatBytes(displayedSize), formatBytes(displayedArtifact),
+			formatBytes(report.TotalSizeBytes), formatBytes(report.TotalArtifactSizeBytes),
+			report.TotalArtifactRatio*100)
+		return
+	}
+	fmt.Fprintf(w, "\nTotal: %s across %d workspace(s); %s reclaimable as artifacts (%.1f%%).\n",
+		formatBytes(report.TotalSizeBytes), report.TotalWorkspaceCount,
+		formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
+}
+
+// formatRatio renders a 0..1 fraction as a percentage to one decimal. A
+// non-finite or negative input collapses to "0.0%" — total=0 workspaces
+// shouldn't surface "NaN%".
+func formatRatio(r float64) string {
+	if r != r || r < 0 { // NaN check via inequality
+		return "0.0%"
+	}
+	return fmt.Sprintf("%.1f%%", r*100)
 }
 
 func emptyDash(s string) string {
