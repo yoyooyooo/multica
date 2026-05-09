@@ -1625,12 +1625,14 @@ func (h *Handler) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bo
 	return h.isAgentAssigneeReady(ctx, issue)
 }
 
-// shouldEnqueueOnComment returns true if a member comment on this issue should
-// trigger the assigned agent. Fires for any status — comments are
+// shouldEnqueueOnComment returns true if a member comment on this issue
+// should trigger the assigned agent. Fires for any status — comments are
 // conversational and can happen at any stage, including after completion
-// (e.g. follow-up questions on a done issue). Each comment enqueues its own
-// task; per-(issue, agent) serial execution is enforced at claim time by
-// ClaimAgentTask so multiple queued rows drain one at a time.
+// (e.g. follow-up questions on a done issue). Each comment enqueues its
+// own task; ClaimAgentTask refuses to dispatch a queued row when another
+// row for the same (issue, agent) is already dispatched or running, so
+// under the current single-poller-per-runtime model multiple queued rows
+// drain one at a time.
 func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue) bool {
 	return h.isAgentAssigneeReady(ctx, issue)
 }

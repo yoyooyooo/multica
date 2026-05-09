@@ -42,13 +42,34 @@ two triggers are distinct intents — coalescing throws that signal away.
 ## Decision
 
 **Adopt option C: every @mention or assignee-comment trigger creates its
-own task.** No dedup at enqueue time.
+own task.** No `(issue, agent)` dedup at enqueue time.
 
-Per-(issue, agent) execution stays serial: `ClaimAgentTask`
-(`server/pkg/db/queries/agent.sql`) already refuses to dispatch a queued
-task when the same agent has another `dispatched` or `running` task on the
-same issue. Multiple queued rows pile up safely and drain in
-`(priority DESC, created_at ASC)` order, one at a time.
+Per-(issue, agent) execution stays serial because `ClaimAgentTask`
+(`server/pkg/db/queries/agent.sql`) refuses to dispatch a queued row when
+the same agent has another `dispatched` or `running` row on the same
+issue. Multiple queued rows pile up safely and drain in
+`(priority DESC, created_at ASC)` order. This is a coordination-side
+property — `FOR UPDATE SKIP LOCKED` locks the row being claimed, not the
+`(issue, agent)` key — and relies on the daemon today never invoking
+`ClaimAgentTask` concurrently for the same agent. Tightening that into a
+real DB-level guarantee (e.g. an advisory lock keyed on `(issue, agent)`)
+is out of scope for this RFC.
+
+### Mutual exclusion between on_comment and @mention paths
+
+Without `(issue, agent)` dedup at enqueue time, a single member comment
+that @mentions the assignee would otherwise enqueue twice with identical
+`trigger_comment_id`: once via the on_comment path
+(`shouldEnqueueOnComment` → `EnqueueTaskForIssue`) and once via the
+@mention path (`enqueueMentionedAgentTasks` → `EnqueueTaskForMention`).
+Same trick applies to a plain reply that inherits the assignee mention
+from the thread root.
+
+The on_comment gate gains a `commentMentionsAssignee` clause that uses the
+same effective-mention computation as the @mention path
+(`shouldInheritParentMentions` for inheritance). When the @mention path
+will enqueue for the assignee, on_comment skips. The two paths become
+mutually exclusive on a `(comment, assignee)` pair.
 
 ### Considered alternatives
 
@@ -79,16 +100,21 @@ same issue. Multiple queued rows pile up safely and drain in
    `enqueueMentionedAgentTasks`.
 2. Remove the `HasPendingTaskForIssueAndAgent` short-circuit in
    `shouldEnqueueOnComment`. The function reduces to the
-   assignee-readiness check (`isAgentAssigneeReady` + non-backlog status)
-   and could be inlined or renamed; left for the implementing PR to
-   decide.
-3. Drop `HasPendingTaskForIssueAndAgent` and the unused
+   assignee-readiness check (`isAgentAssigneeReady` + non-backlog status).
+3. Add the `commentMentionsAssignee` clause to the on_comment gate so
+   the on_comment and @mention paths are mutually exclusive on a
+   `(comment, assignee)` pair (see "Mutual exclusion" above).
+4. Drop `HasPendingTaskForIssueAndAgent` and the unused
    `HasPendingTaskForIssue` from `server/pkg/db/queries/agent.sql`. Re-run
    `make sqlc`.
-4. Add a Go integration test that posts two @mention comments back-to-
-   back and asserts two `queued` rows for that (issue, agent) — currently
-   the second is silently dropped.
-5. No migration needed. No frontend changes needed: the queued banner
+5. Tests:
+   - `TestRepeatedMentionsEnqueueSeparateTasks` — two @mentions on an
+     unassigned issue produce two `queued` rows with distinct
+     `trigger_comment_id` values.
+   - `TestAssigneeMentionDoesNotDoubleEnqueue` — a member comment that
+     @mentions the assignee on an assigned issue produces exactly one
+     `queued` row (the mention path), not two.
+6. No migration needed. No frontend changes needed: the queued banner
    already aggregates over `ListActiveTasksByIssue`, so multiple queued
    rows render correctly.
 
