@@ -47,10 +47,8 @@ export function LandingHeader({
           <Link
             href="/changelog"
             className={cn(
-              "hidden text-[13px] font-medium transition-colors sm:inline-flex",
-              variant === "dark"
-                ? "text-white/72 hover:text-white"
-                : "text-[#0a0d12]/64 hover:text-[#0a0d12]",
+              headerButtonClassName("ghost", variant),
+              "hidden sm:inline-flex",
             )}
           >
             {t.header.changelog}
