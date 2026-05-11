@@ -9,6 +9,6 @@ import { api } from "@/data/api";
 export const inboxListOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: ["inbox", wsId] as const,
-    queryFn: () => api.listInbox(),
+    queryFn: ({ signal }) => api.listInbox({ signal }),
     enabled: !!wsId,
   });

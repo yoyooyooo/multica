@@ -17,8 +17,8 @@ export const projectKeys = {
 export const projectListOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: projectKeys.all(wsId),
-    queryFn: async () => {
-      const res = await api.listProjects();
+    queryFn: async ({ signal }) => {
+      const res = await api.listProjects({ signal });
       return res.projects;
     },
     enabled: !!wsId,

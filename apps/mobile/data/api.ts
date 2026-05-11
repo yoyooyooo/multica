@@ -78,6 +78,15 @@ export interface FileAsset {
  *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
+/** Hard ceiling for every HTTP request. Mobile-specific because iOS may
+ *  suspend a backgrounded network task without ever resolving/rejecting
+ *  the JS-side fetch promise (facebook/react-native#35384). Without this
+ *  timeout, a refetch fired after returning to foreground can leave the
+ *  query stuck in `isRefetching` state forever (visible as the
+ *  pull-to-refresh spinner never going away). 30s is generous for any
+ *  reasonable Multica payload size on cellular. */
+const FETCH_TIMEOUT_MS = 30_000;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body?: unknown;
@@ -108,7 +117,10 @@ class ApiClient {
     this.options = { ...this.options, ...options };
   }
 
-  private async fetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async fetch<T>(
+    path: string,
+    init: RequestInit & { signal?: AbortSignal } = {},
+  ): Promise<T> {
     const rid = createRequestId();
     const start = Date.now();
     const method = init.method ?? "GET";
@@ -131,9 +143,61 @@ class ApiClient {
       headers["X-Workspace-Slug"] = slug;
     }
 
+    // Timeout + caller-signal forwarding.
+    //
+    // Hermes does NOT support AbortSignal.timeout() or AbortSignal.any() —
+    // see facebook/react-native#42042 and livekit#4014. So we manually
+    // compose a single controller that aborts on:
+    //   (a) caller-side signal (TQ cancelling a stale/inactive query, etc),
+    //   (b) 30s timeout (defends against iOS suspending the network task
+    //       silently during background — fetch() then never resolves;
+    //       facebook/react-native#35384). Without this, a refetch
+    //       triggered by WS reconnect can leave the FlatList pull-to-refresh
+    //       spinner stuck on the screen indefinitely.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms`));
+    }, FETCH_TIMEOUT_MS);
+    const callerSignal = init.signal;
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      else callerSignal.addEventListener("abort", onCallerAbort);
+    }
+
     console.log(`[api] → ${method} ${path}`, { rid });
 
-    const res = await fetch(`${API_URL}${path}`, { ...init, headers });
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+      // Re-throw with a clearer message if this was our own timeout abort.
+      if (
+        err instanceof Error &&
+        err.name === "AbortError" &&
+        !callerSignal?.aborted
+      ) {
+        const duration = Date.now() - start;
+        console.warn(`[api] ← TIMEOUT ${path}`, {
+          rid,
+          duration: `${duration}ms`,
+        });
+        throw new ApiError(
+          `Request timed out after ${FETCH_TIMEOUT_MS}ms`,
+          0,
+          undefined,
+        );
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
     if (!res.ok) {
@@ -189,18 +253,22 @@ class ApiClient {
     });
   }
 
-  async getMe(): Promise<User> {
-    return this.fetch<User>("/api/me");
+  async getMe(opts?: { signal?: AbortSignal }): Promise<User> {
+    return this.fetch<User>("/api/me", { signal: opts?.signal });
   }
 
   // --- Workspaces ---
-  async listWorkspaces(): Promise<Workspace[]> {
-    return this.fetch<Workspace[]>("/api/workspaces");
+  async listWorkspaces(opts?: {
+    signal?: AbortSignal;
+  }): Promise<Workspace[]> {
+    return this.fetch<Workspace[]>("/api/workspaces", {
+      signal: opts?.signal,
+    });
   }
 
   // --- Inbox ---
-  async listInbox(): Promise<InboxItem[]> {
-    return this.fetch<InboxItem[]>("/api/inbox");
+  async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
+    return this.fetch<InboxItem[]>("/api/inbox", { signal: opts?.signal });
   }
 
   async markInboxRead(id: string): Promise<InboxItem> {
@@ -208,18 +276,25 @@ class ApiClient {
   }
 
   // --- Members & Agents (for actor name/avatar lookup) ---
-  async listMembers(workspaceId: string): Promise<MemberWithUser[]> {
+  async listMembers(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<MemberWithUser[]> {
     return this.fetch<MemberWithUser[]>(
       `/api/workspaces/${workspaceId}/members`,
+      { signal: opts?.signal },
     );
   }
 
-  async listAgents(): Promise<Agent[]> {
-    return this.fetch<Agent[]>("/api/agents");
+  async listAgents(opts?: { signal?: AbortSignal }): Promise<Agent[]> {
+    return this.fetch<Agent[]>("/api/agents", { signal: opts?.signal });
   }
 
   // --- Issues ---
-  async listIssues(params: ListIssuesParams = {}): Promise<ListIssuesResponse> {
+  async listIssues(
+    params: ListIssuesParams = {},
+    opts?: { signal?: AbortSignal },
+  ): Promise<ListIssuesResponse> {
     const search = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v == null) continue;
@@ -236,14 +311,18 @@ class ApiClient {
     const qs = search.toString();
     const raw = await this.fetch<unknown>(
       `/api/issues${qs ? `?${qs}` : ""}`,
+      { signal: opts?.signal },
     );
     return parseWithFallback(raw, ListIssuesResponseSchema, EMPTY_LIST_ISSUES_RESPONSE, {
       endpoint: "GET /api/issues",
     });
   }
 
-  async getIssue(id: string): Promise<Issue> {
-    return this.fetch<Issue>(`/api/issues/${id}`);
+  async getIssue(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Issue> {
+    return this.fetch<Issue>(`/api/issues/${id}`, { signal: opts?.signal });
   }
 
   // Write endpoint — mirrors POST /api/issues
@@ -265,12 +344,14 @@ class ApiClient {
     issueId: string,
     cursor?: { mode: "before"; cursor: string } | null,
     limit = 50,
+    opts?: { signal?: AbortSignal },
   ): Promise<TimelinePage> {
     const p = new URLSearchParams();
     p.set("limit", String(limit));
     if (cursor?.mode === "before") p.set("before", cursor.cursor);
     const raw = await this.fetch<unknown>(
       `/api/issues/${issueId}/timeline?${p.toString()}`,
+      { signal: opts?.signal },
     );
     return parseWithFallback(raw, TimelinePageSchema, EMPTY_TIMELINE_PAGE, {
       endpoint: "GET /api/issues/:id/timeline",
@@ -342,8 +423,12 @@ class ApiClient {
   }
 
   // --- Labels ---
-  async listLabels(): Promise<ListLabelsResponse> {
-    const raw = await this.fetch<unknown>("/api/labels");
+  async listLabels(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ListLabelsResponse> {
+    const raw = await this.fetch<unknown>("/api/labels", {
+      signal: opts?.signal,
+    });
     return parseWithFallback(
       raw,
       ListLabelsResponseSchema,
@@ -376,8 +461,12 @@ class ApiClient {
   }
 
   // --- Projects ---
-  async listProjects(): Promise<ListProjectsResponse> {
-    const raw = await this.fetch<unknown>("/api/projects");
+  async listProjects(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ListProjectsResponse> {
+    const raw = await this.fetch<unknown>("/api/projects", {
+      signal: opts?.signal,
+    });
     return parseWithFallback(
       raw,
       ListProjectsResponseSchema,

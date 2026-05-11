@@ -14,8 +14,8 @@ export const labelKeys = {
 export const labelListOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: labelKeys.all(wsId),
-    queryFn: async () => {
-      const res = await api.listLabels();
+    queryFn: async ({ signal }) => {
+      const res = await api.listLabels({ signal });
       return res.labels;
     },
     enabled: !!wsId,

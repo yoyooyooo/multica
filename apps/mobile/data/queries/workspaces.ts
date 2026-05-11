@@ -4,5 +4,5 @@ import { api } from "@/data/api";
 export const workspaceListOptions = () =>
   queryOptions({
     queryKey: ["workspaces"] as const,
-    queryFn: () => api.listWorkspaces(),
+    queryFn: ({ signal }) => api.listWorkspaces({ signal }),
   });

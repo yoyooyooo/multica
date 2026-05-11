@@ -213,3 +213,34 @@ When implementing a mobile screen / row / list:
    - **Secondary lines must use a type-aware label component** (mirror, e.g., `InboxDetailLabel`'s type switch). Rendering raw `item.body` directly leaks server-side markdown markers (`##`, `*`) and stale debug strings into the UI.
 
 Skipping any of these in a "first cut" turns the v1 into something that prompts a "you didn't care about interaction at all" review — every time. Easier to do them up-front (15 min total) than to retrofit.
+
+### 5. Every read query must pass `signal` to fetch; api.ts always has a hard timeout
+
+**Symptom that triggered the rule (2026-05-11)**: Inbox screen sometimes returned to the foreground showing the FlatList pull-to-refresh spinner stuck indefinitely. List items were rendered underneath, but `isRefetching` never flipped back to `false`. Pull-to-refresh, navigating away, and re-opening the tab did not clear it.
+
+**Root cause**: `apps/mobile/data/api.ts`'s `fetch()` had no timeout, no `AbortController`, and no caller-`signal` plumbing. iOS suspends backgrounded apps within ~30 seconds and can silently kill in-flight network tasks (facebook/react-native#35384 — "iOS fetch() POST fails if called too soon, with app running in background"; facebook/react-native#38711 — "JS Timers don't fire when app is launched in background"). When the app foregrounded, the suspended fetch's Promise neither resolved nor rejected. TanStack Query saw an existing query still in `fetching` state and did NOT start a new fetch on invalidate — it just waited on the dead Promise forever. `isRefetching` stayed `true`, the FlatList spinner stayed spinning.
+
+**Rule, three parts (every one is required — partial fixes leave a footgun)**:
+
+**1. `api.ts` `fetch()` MUST have a hard timeout** (currently 30s; the `FETCH_TIMEOUT_MS` constant). Without this, a single suspended request can wedge a query indefinitely. Use a manual `AbortController` + `setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)` — **DO NOT** use `AbortSignal.timeout()`: Hermes throws `TypeError: AbortSignal.timeout is not a function` (facebook/react-native#42042). Same for `AbortSignal.any()` — Hermes does not implement it (livekit/livekit#4014). To combine the timeout signal with a caller-supplied signal, attach an `"abort"` event listener manually and forward to the inner controller.
+
+**2. Every read-side `api.ts` method MUST accept `opts?: { signal?: AbortSignal }` and pass it to `fetch()`**. Mutations don't need this (TanStack Query doesn't pass a signal to `mutationFn`). The pattern:
+```ts
+async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
+  return this.fetch<InboxItem[]>("/api/inbox", { signal: opts?.signal });
+}
+```
+Adding a new query-bound method without `opts` is a bug — the next person who writes a `queryFn` will silently drop the signal.
+
+**3. Every `queryFn` MUST forward the signal it receives from TanStack Query**. The official TanStack guide (tanstack.com/query/v5/docs/framework/react/guides/query-cancellation) states: "When a query becomes out-of-date or inactive, this `signal` will become aborted." The pattern:
+```ts
+queryOptions({
+  queryKey: [...],
+  queryFn: ({ signal }) => api.listInbox({ signal }),
+});
+```
+Forgetting the destructure (writing `() => api.listInbox()`) defeats every benefit of (1) and (2): TQ can't cancel hung requests when the user navigates away, and on workspace switch every stale request lives until its 30s timeout.
+
+**Verification**: After any change to `api.ts` or a new query addition, `grep -n "queryFn: () =>" apps/mobile/data/queries/` should return zero matches. Every `queryFn` should destructure `{ signal }`.
+
+**Why the wiring already in `data/query-client.ts` (focusManager + AppState, onlineManager + NetInfo) is not enough on its own**: focusManager triggers a *refetch attempt* when the app comes back to the foreground, but if the prior fetch promise is hanging, TQ won't start a new request — it'll keep waiting on the dead one. Only timeout + signal cancellation actually unwedges the query. The three pieces work together: signal lets TQ proactively cancel on staleness, timeout is the safety net when nothing else fires, focusManager is the "user came back, let's recheck" trigger.

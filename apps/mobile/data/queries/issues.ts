@@ -24,7 +24,7 @@ export { issueKeys } from "./issue-keys";
 export const issueDetailOptions = (wsId: string | null, id: string) =>
   queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
+    queryFn: ({ signal }) => api.getIssue(id, { signal }),
     enabled: !!wsId && !!id,
   });
 
@@ -40,7 +40,8 @@ export const issueTimelineInfiniteOptions = (
     TimelineCursor
   >({
     queryKey: issueKeys.timeline(wsId, id),
-    queryFn: ({ pageParam }) => api.listTimeline(id, pageParam),
+    queryFn: ({ pageParam, signal }) =>
+      api.listTimeline(id, pageParam, undefined, { signal }),
     initialPageParam: null,
     getNextPageParam: (lastPage) =>
       lastPage.has_more_before && lastPage.next_cursor
