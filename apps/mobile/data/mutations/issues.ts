@@ -17,6 +17,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
+  CreateIssueRequest,
   Issue,
   IssueReaction,
   Label,
@@ -389,6 +390,29 @@ export function useDetachLabel(issueId: string) {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+    },
+  });
+}
+
+/**
+ * Issue creation mutation. No optimistic insert — the my-issues list is
+ * status-bucketed + scope-filtered (assigned/created/agents), so optimism
+ * needs to decide which bucket + scope the row lands in, with rollback.
+ * Invalidation is simpler and the hosted server returns in <300ms.
+ *
+ * Invalidates:
+ *  - issueKeys.myAll(wsId)        my-issues list (all three scopes)
+ *  - ["inbox", wsId]              inbox (assignment notification if any)
+ */
+export function useCreateIssue() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (body: CreateIssueRequest) => api.createIssue(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
+      qc.invalidateQueries({ queryKey: ["inbox", wsId] });
     },
   });
 }

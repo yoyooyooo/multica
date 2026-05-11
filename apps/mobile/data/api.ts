@@ -16,6 +16,7 @@
 import type {
   Agent,
   Comment,
+  CreateIssueRequest,
   InboxItem,
   Issue,
   IssueLabelsResponse,
@@ -227,6 +228,17 @@ class ApiClient {
 
   async getIssue(id: string): Promise<Issue> {
     return this.fetch<Issue>(`/api/issues/${id}`);
+  }
+
+  // Write endpoint — mirrors POST /api/issues
+  // (server/cmd/server/router.go:320, server/internal/handler/issue.go
+  // CreateIssue). Mobile sends only the fields the form fills in; backend
+  // applies its own defaults for anything omitted.
+  async createIssue(body: CreateIssueRequest): Promise<Issue> {
+    return this.fetch<Issue>("/api/issues", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   // V1 only walks "latest → before" (oldest direction). `after` / `around`
