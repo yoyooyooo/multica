@@ -29,7 +29,8 @@
     "toast_sent": "Thanks for the feedback!",
     "toast_failed": "Failed to send feedback",
     "send": "Send feedback",
-    "sending": "Sending…"
+    "sending": "Sending…",
+    "github_hint": "Want to discuss or get faster traction? Open an issue on GitHub →"
   },
   "issue_picker": {
     "search_placeholder": "Search issues...",

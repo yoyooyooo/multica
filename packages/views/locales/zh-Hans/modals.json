@@ -29,7 +29,8 @@
     "toast_sent": "感谢反馈！",
     "toast_failed": "发送反馈失败",
     "send": "发送反馈",
-    "sending": "发送中..."
+    "sending": "发送中...",
+    "github_hint": "想要讨论或更快的处理？来 GitHub 提 issue →"
   },
   "issue_picker": {
     "search_placeholder": "搜索 issue...",
