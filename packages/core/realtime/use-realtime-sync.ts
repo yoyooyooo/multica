@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { WSClient } from "../api/ws-client";
 import type { StoreApi, UseBoundStore } from "zustand";
 import type { AuthState } from "../auth/store";
@@ -70,6 +70,42 @@ import type {
 const chatWsLogger = createLogger("chat.ws");
 
 const logger = createLogger("realtime-sync");
+
+export function applyChatDoneToCache(
+  qc: QueryClient,
+  payload: ChatDonePayload,
+) {
+  const sessionId = payload.chat_session_id;
+  const taskId = payload.task_id;
+  const messageId = payload.message_id;
+  const content = payload.content;
+  if (messageId && content !== undefined) {
+    qc.setQueryData<ChatMessage[] | undefined>(
+      chatKeys.messages(sessionId),
+      (old) => {
+        if (!old) return old; // first fetch will pick it up
+        // Idempotent against reconnect replay.
+        if (old.some((m) => m.id === messageId)) return old;
+        const assistant: ChatMessage = {
+          id: messageId,
+          chat_session_id: sessionId,
+          role: "assistant",
+          content,
+          task_id: taskId,
+          created_at: payload.created_at ?? new Date().toISOString(),
+          elapsed_ms: payload.elapsed_ms ?? null,
+        };
+        return [...old, assistant];
+      },
+    );
+  }
+  // Replacement is in the messages list now; safe to drop pending.
+  qc.setQueryData(chatKeys.pendingTask(sessionId), {});
+  // Authoritative refetch reconciles redaction / migrations / clients
+  // that took the fallback branch above.
+  qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+  qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+}
 
 export interface RealtimeSyncStores {
   authStore: UseBoundStore<StoreApi<AuthState>>;
@@ -583,34 +619,7 @@ export function useRealtimeSync(
       // payload (older builds). Older clients hitting a newer server also
       // work: they ignore the extra fields and rely on the invalidate
       // below, which keeps the old behavior alive.
-      const sessionId = payload.chat_session_id;
-      const taskId = payload.task_id;
-      if (payload.message_id && payload.content !== undefined) {
-        qc.setQueryData<ChatMessage[] | undefined>(
-          chatKeys.messages(sessionId),
-          (old) => {
-            if (!old) return old; // first fetch will pick it up
-            // Idempotent against reconnect replay.
-            if (old.some((m) => m.id === payload.message_id)) return old;
-            const assistant: ChatMessage = {
-              id: payload.message_id!,
-              chat_session_id: sessionId,
-              role: "assistant",
-              content: payload.content ?? "",
-              task_id: taskId,
-              created_at: payload.created_at ?? new Date().toISOString(),
-              elapsed_ms: payload.elapsed_ms ?? null,
-            };
-            return [...old, assistant];
-          },
-        );
-      }
-      // Replacement is in the messages list now; safe to drop pending.
-      qc.setQueryData(chatKeys.pendingTask(sessionId), {});
-      // Authoritative refetch reconciles redaction / migrations / clients
-      // that took the fallback branch above.
-      qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-      qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+      applyChatDoneToCache(qc, payload);
       invalidatePendingAggregate();
       // Assistant message just landed → has_unread may have flipped to true.
       invalidateSessionLists();
