@@ -1,8 +1,11 @@
 /**
- * Header utility buttons shared across all primary tabs (Inbox / My Issues /
- * Chat / More). Provides the two global actions on the right: search and
- * create-issue. The workspace switcher does NOT live in the header — it
- * lives in the More tab. Header stays single-row: title left, actions right.
+ * Header utility buttons shared across primary tabs (Inbox / My Issues).
+ * Provides two global actions on the right: search and create-issue.
+ *
+ * The global nav menu is NOT triggered from here — it's the "More" tab in
+ * the bottom bar (see (tabs)/_layout.tsx). Keeping the trigger on the
+ * tab bar means it's always reachable in one thumb tap, regardless of
+ * which screen the user is on.
  *
  * Tab-specific actions (e.g. My Issues filter) MUST NOT live here — they
  * mix scope levels with global actions and would clutter the strip.

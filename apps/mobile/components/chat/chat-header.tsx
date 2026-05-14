@@ -7,6 +7,8 @@
  *   - Right-side actions: ⋯ (current-session menu, only when there IS an
  *     active session — Delete in v1), + (new chat).
  *
+ * Global nav lives in the bottom-bar "More" tab, not here.
+ *
  * Differs from ScreenHeader (`@/components/ui/screen-header`): the latter
  * is left-aligned and doesn't have a press handler on the title. Chat
  * needs a centred / tappable title-as-affordance, so this is its own
