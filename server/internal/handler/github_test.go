@@ -682,23 +682,27 @@ func TestDerivePRMergeableState(t *testing.T) {
 		baseRefChanged bool
 		wantValid      bool
 		wantStr        string
+		wantClear      bool
 	}{
-		{"opened_blanks", "opened", "clean", false, false, ""},
-		{"synchronize_blanks", "synchronize", "clean", false, false, ""},
-		{"reopened_blanks", "reopened", "dirty", false, false, ""},
-		{"edited_base_changed_blanks", "edited", "clean", true, false, ""},
-		{"edited_title_only_keeps_value", "edited", "clean", false, true, "clean"},
-		{"labeled_keeps_value", "labeled", "clean", false, true, "clean"},
-		{"labeled_empty_payload_stays_null", "labeled", "", false, false, ""},
+		{"opened_clears", "opened", "clean", false, false, "", true},
+		{"synchronize_clears", "synchronize", "clean", false, false, "", true},
+		{"reopened_clears", "reopened", "dirty", false, false, "", true},
+		{"edited_base_changed_clears", "edited", "clean", true, false, "", true},
+		{"edited_title_only_keeps_value", "edited", "clean", false, true, "clean", false},
+		{"labeled_keeps_value", "labeled", "clean", false, true, "clean", false},
+		{"labeled_empty_payload_preserves", "labeled", "", false, false, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := derivePRMergeableState(tc.action, tc.payload, tc.baseRefChanged)
+			got, clear := derivePRMergeableState(tc.action, tc.payload, tc.baseRefChanged)
 			if got.Valid != tc.wantValid {
 				t.Errorf("Valid=%v want %v", got.Valid, tc.wantValid)
 			}
 			if got.String != tc.wantStr {
 				t.Errorf("String=%q want %q", got.String, tc.wantStr)
+			}
+			if clear != tc.wantClear {
+				t.Errorf("clear=%v want %v", clear, tc.wantClear)
 			}
 		})
 	}
@@ -993,5 +997,44 @@ func TestWebhook_PullRequest_SynchronizeClearsMergeable(t *testing.T) {
 	}
 	if rows[0].HeadSha != "head2" {
 		t.Errorf("expected head_sha updated to head2, got %q", rows[0].HeadSha)
+	}
+}
+
+// TestWebhook_PullRequest_MetadataPreservesMergeable verifies that a
+// metadata-only event (labeled/assigned/edited-without-base-swap) whose
+// payload omits mergeable_state does NOT clobber an existing clean/dirty
+// verdict. GitHub re-computes mergeability lazily and metadata events ship
+// with the field empty even when the previous verdict is still accurate;
+// silently overwriting it with NULL would drop a real signal.
+func TestWebhook_PullRequest_MetadataPreservesMergeable(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "ci-mergeable-preserve-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	// Open, then set a known verdict via a labeled event carrying clean.
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-e", 55, "opened", "headA", "")
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-e", 55, "labeled", "headA", "clean")
+
+	rows, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue: %v", err)
+	}
+	if !rows[0].MergeableState.Valid || rows[0].MergeableState.String != "clean" {
+		t.Fatalf("setup: expected mergeable_state=clean, got %+v", rows[0].MergeableState)
+	}
+
+	// A second labeled event arrives with mergeable_state empty (typical for
+	// metadata events). The existing clean must survive.
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-e", 55, "labeled", "headA", "")
+
+	rows, err = testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue: %v", err)
+	}
+	if !rows[0].MergeableState.Valid || rows[0].MergeableState.String != "clean" {
+		t.Errorf("expected mergeable_state preserved as clean after metadata event, got %+v", rows[0].MergeableState)
 	}
 }

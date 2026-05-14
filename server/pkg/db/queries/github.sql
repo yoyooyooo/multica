@@ -42,6 +42,15 @@ RETURNING id, workspace_id;
 -- =====================
 
 -- name: UpsertGitHubPullRequest :one
+-- mergeable_state has three-state semantics on UPDATE:
+--   1. clear_mergeable_state=true → write NULL (state-changing actions like
+--      opened/synchronize/reopened/edited(base) invalidate the prior verdict).
+--   2. clear_mergeable_state=false, mergeable_state non-null → write the value.
+--   3. clear_mergeable_state=false, mergeable_state null → preserve existing
+--      column. Metadata events (labeled/assigned/etc.) ship payloads without
+--      mergeability, and silently clobbering a known clean/dirty would lose
+--      information that GitHub only re-computes lazily.
+-- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
@@ -65,7 +74,11 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     closed_at = EXCLUDED.closed_at,
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
-    mergeable_state = EXCLUDED.mergeable_state,
+    mergeable_state = CASE
+        WHEN COALESCE(sqlc.narg('clear_mergeable_state')::boolean, FALSE) THEN NULL
+        WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
+        ELSE github_pull_request.mergeable_state
+    END,
     updated_at = now()
 RETURNING *;
 
@@ -73,24 +86,28 @@ RETURNING *;
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
--- name: GetGitHubPullRequestByRepoNumber :one
--- Looks up a PR row across all workspaces by (owner, repo, number). Used by
--- the check_suite webhook which doesn't carry a workspace id.
-SELECT * FROM github_pull_request
-WHERE repo_owner = $1 AND repo_name = $2 AND pr_number = $3;
-
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the aggregated check-suite counts for
--- the PR's CURRENT head SHA. Per-app latest suite is selected first so a
--- single app firing multiple suites on the same head doesn't get counted
--- N times. Late-arriving suites for an OLD head are stored but excluded by
--- the head_sha filter, so they can't override the new head's pending view.
-WITH per_app_latest AS (
+-- the PR's CURRENT head SHA. The `issue_prs` CTE narrows to this issue's PR
+-- ids first so the per-app aggregation only touches suite rows for those
+-- PRs — without that scoping the planner has to scan/aggregate every PR's
+-- suites in the workspace before joining on issue. Per-app latest suite is
+-- selected so a single app firing multiple suites on the same head doesn't
+-- get counted N times. Late-arriving suites for an OLD head are stored but
+-- excluded by the head_sha filter, so they can't override the new head's
+-- pending view.
+WITH issue_prs AS (
+    SELECT pr.id, pr.head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = sqlc.arg('issue_id')
+),
+per_app_latest AS (
     SELECT DISTINCT ON (cs.pr_id, cs.app_id)
         cs.pr_id, cs.app_id, cs.conclusion, cs.status
     FROM github_pull_request_check_suite cs
-    JOIN github_pull_request pr ON pr.id = cs.pr_id
-    WHERE cs.head_sha = pr.head_sha AND pr.head_sha <> ''
+    JOIN issue_prs ip ON ip.id = cs.pr_id
+    WHERE cs.head_sha = ip.head_sha AND ip.head_sha <> ''
     ORDER BY cs.pr_id, cs.app_id, cs.updated_at DESC
 ),
 checks AS (
@@ -121,7 +138,7 @@ SELECT
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 LEFT JOIN checks c ON c.pr_id = pr.id
-WHERE ipr.issue_id = $1
+WHERE ipr.issue_id = sqlc.arg('issue_id')
 ORDER BY pr.pr_created_at DESC;
 
 -- name: ListIssueIDsForPullRequest :many

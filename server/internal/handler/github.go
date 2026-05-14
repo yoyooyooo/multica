@@ -595,25 +595,26 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	}
 
 	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
-	mergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
+	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
 	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
-		WorkspaceID:     inst.WorkspaceID,
-		InstallationID:  inst.InstallationID,
-		RepoOwner:       p.Repository.Owner.Login,
-		RepoName:        p.Repository.Name,
-		PrNumber:        p.PullRequest.Number,
-		Title:           p.PullRequest.Title,
-		State:           state,
-		HtmlUrl:         p.PullRequest.HTMLURL,
-		Branch:          ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
-		AuthorLogin:     ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
-		AuthorAvatarUrl: ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
-		MergedAt:        parseGHTime(p.PullRequest.MergedAt),
-		ClosedAt:        parseGHTime(p.PullRequest.ClosedAt),
-		PrCreatedAt:     parseGHTimeRequired(p.PullRequest.CreatedAt),
-		PrUpdatedAt:     parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha:         p.PullRequest.Head.SHA,
-		MergeableState:  mergeable,
+		WorkspaceID:           inst.WorkspaceID,
+		InstallationID:        inst.InstallationID,
+		RepoOwner:             p.Repository.Owner.Login,
+		RepoName:              p.Repository.Name,
+		PrNumber:              p.PullRequest.Number,
+		Title:                 p.PullRequest.Title,
+		State:                 state,
+		HtmlUrl:               p.PullRequest.HTMLURL,
+		Branch:                ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
+		AuthorLogin:           ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
+		AuthorAvatarUrl:       ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
+		MergedAt:              parseGHTime(p.PullRequest.MergedAt),
+		ClosedAt:              parseGHTime(p.PullRequest.ClosedAt),
+		PrCreatedAt:           parseGHTimeRequired(p.PullRequest.CreatedAt),
+		PrUpdatedAt:           parseGHTimeRequired(p.PullRequest.UpdatedAt),
+		HeadSha:               p.PullRequest.Head.SHA,
+		MergeableState:        mergeable,
+		ClearMergeableState:   pgtype.Bool{Bool: clearMergeable, Valid: true},
 	})
 	if err != nil {
 		slog.Warn("github: upsert pr failed", "err", err)
@@ -749,10 +750,18 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 	affectedWorkspaces := map[string]struct{}{}
 	affectedIssues := map[string]struct{}{}
 	for _, prRef := range p.CheckSuite.PullRequests {
-		pr, err := h.Queries.GetGitHubPullRequestByRepoNumber(ctx, db.GetGitHubPullRequestByRepoNumberParams{
-			RepoOwner: p.Repository.Owner.Login,
-			RepoName:  p.Repository.Name,
-			PrNumber:  prRef.Number,
+		// Scope the lookup to the installation's workspace. The
+		// (workspace_id, repo_owner, repo_name, pr_number) tuple is the
+		// real uniqueness key: if the same repo lived under a different
+		// workspace historically, a bare (owner, repo, number) lookup
+		// could return either row arbitrarily and land this suite on
+		// the wrong PR (or skip the right one because the installation
+		// ids no longer match).
+		pr, err := h.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+			WorkspaceID: inst.WorkspaceID,
+			RepoOwner:   p.Repository.Owner.Login,
+			RepoName:    p.Repository.Name,
+			PrNumber:    prRef.Number,
 		})
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
@@ -763,12 +772,6 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 				"pr", prRef.Number,
 				"suite_id", p.CheckSuite.ID,
 			)
-			continue
-		}
-		// Belt-and-braces: only record suites whose installation matches
-		// the PR's workspace, so a misrouted webhook can't land foreign
-		// CI rows on someone else's PR row.
-		if pr.InstallationID != inst.InstallationID {
 			continue
 		}
 		if err := h.Queries.UpsertPullRequestCheckSuite(ctx, db.UpsertPullRequestCheckSuiteParams{
@@ -807,24 +810,33 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 	}
 }
 
-// derivePRMergeableState decides what value to persist for the PR row's
-// mergeable_state column on a `pull_request` webhook. State-changing actions
-// (`opened`, `synchronize`, `reopened`, and a base-branch swap) must blank
-// the value because GitHub re-computes mergeability asynchronously: the
-// payload may still carry the previous head's clean/dirty answer, and
-// trusting it would surface a stale verdict against the new head. For every
-// other action we accept whatever GitHub sends (empty included).
-func derivePRMergeableState(action, payload string, baseRefChanged bool) pgtype.Text {
+// derivePRMergeableState resolves the upsert behaviour for the PR row's
+// mergeable_state column on a `pull_request` webhook. It returns three
+// states encoded as (value, clear):
+//
+//   - clear=true → force the column to NULL. State-changing actions (`opened`,
+//     `synchronize`, `reopened`, or a base-branch swap) must blank the value
+//     because GitHub re-computes mergeability asynchronously; the payload may
+//     still carry the previous head's clean/dirty answer, and trusting it
+//     would surface a stale verdict against the new head.
+//   - clear=false, value valid → write the value. The event carried a
+//     concrete verdict we should persist.
+//   - clear=false, value invalid → preserve the existing column. Metadata
+//     events (labeled/assigned/edited-without-base-swap) ship pull_request
+//     payloads with mergeable_state empty even when the previous verdict is
+//     still accurate, and silently overwriting clean/dirty with NULL would
+//     drop information GitHub only refreshes lazily.
+func derivePRMergeableState(action, payload string, baseRefChanged bool) (pgtype.Text, bool) {
 	if action == "opened" || action == "synchronize" || action == "reopened" {
-		return pgtype.Text{}
+		return pgtype.Text{}, true
 	}
 	if action == "edited" && baseRefChanged {
-		return pgtype.Text{}
+		return pgtype.Text{}, true
 	}
 	if payload == "" {
-		return pgtype.Text{}
+		return pgtype.Text{}, false
 	}
-	return pgtype.Text{String: payload, Valid: true}
+	return pgtype.Text{String: payload, Valid: true}, false
 }
 
 // ghPRChanges captures the only field of `pull_request.edited`'s `changes`
