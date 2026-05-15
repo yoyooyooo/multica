@@ -9,13 +9,14 @@
  * a new project create it on web.
  */
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Modal, Pressable, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Modal, Pressable, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import type { Project } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ProjectIcon } from "@/components/ui/project-icon";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
+import { TextField } from "@/components/ui/text-field";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
@@ -57,12 +58,10 @@ export function ProjectPickerSheet({ visible, value, onChange, onClose }: Props)
           <Pressable onPress={() => {}} className="w-full max-w-sm">
             <View className="bg-popover rounded-2xl overflow-hidden">
               <View className="px-3 pt-3 pb-2 border-b border-border">
-                <TextInput
+                <TextField
                   value={query}
                   onChangeText={setQuery}
                   placeholder="Search projects"
-                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                  className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   autoCapitalize="none"
                   autoCorrect={false}
                 />

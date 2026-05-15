@@ -8,12 +8,12 @@
  * this to `useUpdateIssue.mutate({ assignee_type, assignee_id })`.
  */
 import { useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, TextInput, View } from "react-native";
+import { FlatList, Modal, Pressable, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
-import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
+import { TextField } from "@/components/ui/text-field";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -96,12 +96,10 @@ export function AssigneePickerSheet({
           <Pressable onPress={() => {}} className="w-full max-w-sm">
             <View className="bg-popover rounded-2xl overflow-hidden">
               <View className="px-3 pt-3 pb-2 border-b border-border">
-                <TextInput
+                <TextField
                   value={query}
                   onChangeText={setQuery}
                   placeholder="Search people"
-                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                  className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   autoCapitalize="none"
                   autoCorrect={false}
                 />

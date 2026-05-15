@@ -19,12 +19,12 @@
  * app/(app)/[workspace]/(tabs)/chat.tsx) — this component just lays out
  * the card and trusts the parent.
  */
-import { Pressable, TextInput, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { useEffect, useState } from "react";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
+import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { cn } from "@/lib/utils";
@@ -125,7 +125,7 @@ export function ChatComposer({
         )}
         style={{ borderCurve: "continuous" }}
       >
-        <TextInput
+        <AutosizeTextArea
           value={mention.text}
           onChangeText={(next) => {
             mention.handlers.onChangeText(next);
@@ -136,9 +136,7 @@ export function ChatComposer({
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           placeholder={placeholder}
-          placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-          multiline
-          className="px-4 pt-3 pb-1 text-base text-foreground max-h-32 min-h-10"
+          className="px-4 pt-3 pb-1"
           editable={!disabled}
         />
         <View className="flex-row items-center px-2 pb-2 pt-1">

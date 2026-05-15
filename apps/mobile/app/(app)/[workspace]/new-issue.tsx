@@ -29,6 +29,7 @@ import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-sheet";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
+import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
   MIN_BODY_INPUT_HEIGHT_PX,
   MOBILE_PLACEHOLDER_COLOR,
@@ -170,7 +171,7 @@ function DescriptionField({
           : "border-transparent bg-secondary/40",
       )}
     >
-      <TextInput
+      <AutosizeTextArea
         value={description.text}
         onChangeText={description.handlers.onChangeText}
         selection={description.selection}
@@ -178,11 +179,8 @@ function DescriptionField({
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         placeholder="Description… (type @ to mention)"
-        placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-        className="text-base text-foreground py-2"
-        style={{ minHeight: MIN_BODY_INPUT_HEIGHT_PX }}
-        multiline
-        textAlignVertical="top"
+        className="py-2"
+        minHeight={MIN_BODY_INPUT_HEIGHT_PX}
         editable={!disabled}
       />
     </View>

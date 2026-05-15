@@ -1,25 +1,9 @@
-import * as React from "react";
-import { TextInput, type TextInputProps } from "react-native";
-import { cn } from "@/lib/utils";
-import { MOBILE_PLACEHOLDER_COLOR } from "./input-tokens";
-
-type Props = TextInputProps & { className?: string };
-
-const Input = React.forwardRef<TextInput, Props>(
-  ({ className, ...props }, ref) => {
-    return (
-      <TextInput
-        ref={ref}
-        className={cn(
-          "h-12 rounded-md border border-border bg-background px-4 text-base text-foreground",
-          className,
-        )}
-        placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-        {...props}
-      />
-    );
-  },
-);
-Input.displayName = "Input";
-
-export { Input };
+/**
+ * Backwards-compatibility shim. The original `<Input>` had 0 imports in
+ * `apps/mobile/`; it now re-exports `<TextField />` so any future code
+ * that tries `import { Input } from "@/components/ui/input"` still
+ * resolves to a sane primitive. New code should import `<TextField>` or
+ * `<AutosizeTextArea>` directly.
+ */
+export { TextField as Input } from "./text-field";
+export type { TextFieldProps as InputProps } from "./text-field";

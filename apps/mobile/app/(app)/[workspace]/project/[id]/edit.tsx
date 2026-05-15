@@ -19,6 +19,7 @@ import {
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
+import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
   MIN_BODY_INPUT_HEIGHT_PX,
   MOBILE_PLACEHOLDER_COLOR,
@@ -165,15 +166,12 @@ export default function EditProject() {
               </Field>
 
               <Field label="Description">
-                <TextInput
+                <AutosizeTextArea
                   value={description}
                   onChangeText={setDescription}
                   placeholder="What is this project about?"
-                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                  className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
-                  style={{ minHeight: MIN_BODY_INPUT_HEIGHT_PX }}
-                  multiline
-                  textAlignVertical="top"
+                  className="bg-secondary/50 rounded-md px-3 py-2"
+                  minHeight={MIN_BODY_INPUT_HEIGHT_PX}
                 />
               </Field>
             </>

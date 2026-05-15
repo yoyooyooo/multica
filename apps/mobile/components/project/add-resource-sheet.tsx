@@ -12,11 +12,11 @@
  * naturally; no need for KeyboardAvoidingView at the modal scope.
  */
 import { useState } from "react";
-import { Modal, Pressable, TextInput, View } from "react-native";
+import { Modal, Pressable, View } from "react-native";
 import type { CreateProjectResourceRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
+import { TextField } from "@/components/ui/text-field";
 
 interface Props {
   visible: boolean;
@@ -80,12 +80,10 @@ export function AddResourceSheet({
                 <Text className="text-xs text-muted-foreground">
                   Repository URL
                 </Text>
-                <TextInput
+                <TextField
                   value={url}
                   onChangeText={setUrl}
                   placeholder="https://github.com/owner/repo"
-                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                  className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   autoCapitalize="none"
                   autoCorrect={false}
                   keyboardType="url"
@@ -96,12 +94,10 @@ export function AddResourceSheet({
                 <Text className="text-xs text-muted-foreground">
                   Label (optional)
                 </Text>
-                <TextInput
+                <TextField
                   value={label}
                   onChangeText={setLabel}
                   placeholder="e.g. Backend"
-                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                  className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                 />
               </View>
               <View className="flex-row justify-end gap-2 pt-1">
