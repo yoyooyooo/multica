@@ -49,6 +49,11 @@ func init() {
 
 	// Runtime commands
 	daemonCmd.GroupID = groupRuntime
+	computerCmd.GroupID = groupRuntime
+	// `computer` is the canonical surface; `runtime` is kept as a hidden
+	// long-lived alias so older daemons / scripts that still exec
+	// `multica runtime …` keep working (RFC v6.1 §A4 / appendix B).
+	runtimeCmd.Hidden = true
 	runtimeCmd.GroupID = groupRuntime
 
 	// Additional commands
@@ -70,6 +75,7 @@ func init() {
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(squadCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(computerCmd)
 	rootCmd.AddCommand(runtimeCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(loginCmd)
