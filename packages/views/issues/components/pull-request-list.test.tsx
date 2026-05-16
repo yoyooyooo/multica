@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type {
-  GitHubPullRequest,
-  GitHubPullRequestChecksConclusion,
-} from "@multica/core/types";
+import type { GitHubPullRequest } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
@@ -48,6 +45,12 @@ function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
     pr_updated_at: "2026-01-01T00:00:00Z",
     mergeable_state: null,
     checks_conclusion: null,
+    checks_passed: 0,
+    checks_failed: 0,
+    checks_pending: 0,
+    additions: 0,
+    deletions: 0,
+    changed_files: 0,
     ...overrides,
   };
 }
@@ -63,60 +66,120 @@ function renderList() {
   );
 }
 
-async function waitForBadges() {
-  // The list is rendered as soon as the (mocked) query resolves.
+async function waitForRender() {
   return screen.findAllByRole("link");
 }
 
-describe("PullRequestList badges", () => {
-  it.each([
-    ["passed", /Checks passed/i],
-    ["failed", /Checks failed/i],
-    ["pending", /Checks pending/i],
-  ] as Array<[GitHubPullRequestChecksConclusion, RegExp]>)(
-    "renders %s checks badge",
-    async (conclusion, label) => {
-      mockPRs = [makePR({ checks_conclusion: conclusion })];
-      renderList();
-      await waitForBadges();
-      expect(screen.getByText(label)).toBeInTheDocument();
-    },
-  );
+describe("PullRequestList card layout", () => {
+  it("renders the card with All-checks-passed status when only passed counts are non-zero", async () => {
+    mockPRs = [makePR({ checks_passed: 3 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("All checks passed")).toBeInTheDocument();
+  });
 
-  it("renders dirty conflicts badge for mergeable_state=dirty", async () => {
+  it("renders Some-checks-failed when any failed count is non-zero", async () => {
+    mockPRs = [makePR({ checks_failed: 1, checks_passed: 5 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("Some checks failed")).toBeInTheDocument();
+  });
+
+  it("renders pending status when only pending suites remain", async () => {
+    mockPRs = [makePR({ checks_pending: 2, checks_passed: 1 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("Some checks haven't completed yet")).toBeInTheDocument();
+  });
+
+  it("renders conflicts status when mergeable_state=dirty", async () => {
     mockPRs = [makePR({ mergeable_state: "dirty" })];
     renderList();
-    await waitForBadges();
-    expect(screen.getByText(/Conflicts/i)).toBeInTheDocument();
+    await waitForRender();
+    expect(screen.getByText("Has merge conflicts")).toBeInTheDocument();
   });
 
-  it("renders clean conflicts badge for mergeable_state=clean", async () => {
+  it("renders Ready-to-merge when mergeable=clean and no suites observed", async () => {
     mockPRs = [makePR({ mergeable_state: "clean" })];
     renderList();
-    await waitForBadges();
-    expect(screen.getByText(/No conflicts/i)).toBeInTheDocument();
+    await waitForRender();
+    expect(screen.getByText("Ready to merge")).toBeInTheDocument();
   });
 
-  it("hides conflicts badge for opaque mergeable_state values", async () => {
-    mockPRs = [makePR({ mergeable_state: "blocked" })];
+  it("renders Merged status for merged PRs, suppressing conflict/check text", async () => {
+    mockPRs = [
+      makePR({
+        state: "merged",
+        mergeable_state: "dirty",
+        checks_failed: 5,
+      }),
+    ];
     renderList();
-    await waitForBadges();
-    expect(screen.queryByText(/Conflicts|No conflicts/i)).not.toBeInTheDocument();
+    await waitForRender();
+    expect(screen.getByText("Merged")).toBeInTheDocument();
+    expect(screen.queryByText("Has merge conflicts")).not.toBeInTheDocument();
+    expect(screen.queryByText("Some checks failed")).not.toBeInTheDocument();
   });
 
-  it("hides status row for terminal PR states", async () => {
-    mockPRs = [makePR({ state: "merged", checks_conclusion: "passed", mergeable_state: "clean" })];
+  it("renders Closed-without-merging status for closed PRs", async () => {
+    mockPRs = [makePR({ state: "closed", checks_failed: 1 })];
     renderList();
-    await waitForBadges();
-    expect(screen.queryByText(/Checks passed/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/No conflicts/i)).not.toBeInTheDocument();
+    await waitForRender();
+    expect(screen.getByText("Closed without merging")).toBeInTheDocument();
   });
 
-  it("hides everything when both fields are null (legacy backend)", async () => {
+  it("hides stats row when all stats are 0 (legacy backend)", async () => {
     mockPRs = [makePR()];
     renderList();
-    await waitForBadges();
-    expect(screen.queryByText(/Checks/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Conflicts|No conflicts/i)).not.toBeInTheDocument();
+    await waitForRender();
+    expect(screen.queryByText(/files?$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^\+0/)).not.toBeInTheDocument();
+  });
+
+  it("shows stats row with additions / deletions / file count when present", async () => {
+    mockPRs = [makePR({ additions: 437, deletions: 6, changed_files: 6 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("+437")).toBeInTheDocument();
+    expect(screen.getByText("−6")).toBeInTheDocument();
+    expect(screen.getByText("6 files")).toBeInTheDocument();
+  });
+
+  it("uses singular file copy when changed_files=1", async () => {
+    mockPRs = [makePR({ additions: 1, changed_files: 1 })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("1 file")).toBeInTheDocument();
+  });
+
+  it("collapses extra PRs past the card limit behind Show more toggle", async () => {
+    mockPRs = [
+      makePR({ id: "a", number: 1, title: "PR-A" }),
+      makePR({ id: "b", number: 2, title: "PR-B" }),
+      makePR({ id: "c", number: 3, title: "PR-C" }),
+      makePR({ id: "d", number: 4, title: "PR-D" }),
+      makePR({ id: "e", number: 5, title: "PR-E" }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("PR-A")).toBeInTheDocument();
+    expect(screen.getByText("PR-B")).toBeInTheDocument();
+    expect(screen.getByText("PR-C")).toBeInTheDocument();
+    expect(screen.queryByText("PR-D")).not.toBeInTheDocument();
+    expect(screen.queryByText("PR-E")).not.toBeInTheDocument();
+    expect(screen.getByText("Show 2 more")).toBeInTheDocument();
+  });
+
+  it("renders all four PRs as cards when count == threshold", async () => {
+    mockPRs = [
+      makePR({ id: "a", number: 1, title: "PR-A" }),
+      makePR({ id: "b", number: 2, title: "PR-B" }),
+      makePR({ id: "c", number: 3, title: "PR-C" }),
+      makePR({ id: "d", number: 4, title: "PR-D" }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("PR-D")).toBeInTheDocument();
+    expect(screen.queryByText(/Show.*more/)).not.toBeInTheDocument();
   });
 });

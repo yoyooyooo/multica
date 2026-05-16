@@ -55,12 +55,14 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state
+    head_sha, mergeable_state,
+    additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
-    $11, sqlc.narg('mergeable_state')
+    $11, sqlc.narg('mergeable_state'),
+    $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -79,6 +81,9 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
+    additions     = EXCLUDED.additions,
+    deletions     = EXCLUDED.deletions,
+    changed_files = EXCLUDED.changed_files,
     updated_at = now()
 RETURNING *;
 
@@ -130,6 +135,7 @@ SELECT
     pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
+    pr.additions, pr.deletions, pr.changed_files,
     pr.created_at, pr.updated_at,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,

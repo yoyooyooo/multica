@@ -62,6 +62,19 @@ type GitHubPullRequestResponse struct {
 	// suites for the PR's current head SHA. One of "passed", "failed",
 	// "pending", or nil when no completed suite has been observed.
 	ChecksConclusion *string `json:"checks_conclusion"`
+	// Per-suite counts that drive the card's segmented progress bar.
+	// Always present on list rows; bare upsert broadcasts default to 0
+	// and the frontend hides the bar when total == 0.
+	ChecksPassed  int64 `json:"checks_passed"`
+	ChecksFailed  int64 `json:"checks_failed"`
+	ChecksPending int64 `json:"checks_pending"`
+	// Diff stats (lines added/removed and file count) sourced from the
+	// `pull_request` webhook payload. Legacy rows that pre-date this
+	// field default to 0; the frontend treats total == 0 as "unknown"
+	// and hides the stats row.
+	Additions    int32 `json:"additions"`
+	Deletions    int32 `json:"deletions"`
+	ChangedFiles int32 `json:"changed_files"`
 }
 
 type GitHubConnectResponse struct {
@@ -101,8 +114,11 @@ func githubPullRequestToResponse(p db.GithubPullRequest) GitHubPullRequestRespon
 		MergeableState:  textToPtr(p.MergeableState),
 		// A bare PR row has no aggregated check counts — webhook
 		// broadcasts of a single PR fall through here and the frontend
-		// can fall back on whatever was last in the list query.
+		// re-queries the list for fresh counts.
 		ChecksConclusion: nil,
+		Additions:        p.Additions,
+		Deletions:        p.Deletions,
+		ChangedFiles:     p.ChangedFiles,
 	}
 }
 
@@ -125,6 +141,12 @@ func issuePullRequestRowToResponse(p db.ListPullRequestsByIssueRow) GitHubPullRe
 		PRUpdatedAt:      timestampToString(p.PrUpdatedAt),
 		MergeableState:   textToPtr(p.MergeableState),
 		ChecksConclusion: aggregateChecksConclusion(p.ChecksFailed, p.ChecksPassed, p.ChecksPending, p.ChecksTotal),
+		ChecksPassed:     p.ChecksPassed,
+		ChecksFailed:     p.ChecksFailed,
+		ChecksPending:    p.ChecksPending,
+		Additions:        p.Additions,
+		Deletions:        p.Deletions,
+		ChangedFiles:     p.ChangedFiles,
 	}
 }
 
@@ -554,6 +576,9 @@ type ghPullRequestPayload struct {
 		CreatedAt      string `json:"created_at"`
 		UpdatedAt      string `json:"updated_at"`
 		MergeableState string `json:"mergeable_state"`
+		Additions      int32  `json:"additions"`
+		Deletions      int32  `json:"deletions"`
+		ChangedFiles   int32  `json:"changed_files"`
 		Head           struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
@@ -615,6 +640,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 		HeadSha:               p.PullRequest.Head.SHA,
 		MergeableState:        mergeable,
 		ClearMergeableState:   pgtype.Bool{Bool: clearMergeable, Valid: true},
+		Additions:             p.PullRequest.Additions,
+		Deletions:             p.PullRequest.Deletions,
+		ChangedFiles:          p.PullRequest.ChangedFiles,
 	})
 	if err != nil {
 		slog.Warn("github: upsert pr failed", "err", err)

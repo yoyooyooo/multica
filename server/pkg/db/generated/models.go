@@ -274,6 +274,9 @@ type GithubPullRequest struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	HeadSha         string             `json:"head_sha"`
 	MergeableState  pgtype.Text        `json:"mergeable_state"`
+	Additions       int32              `json:"additions"`
+	Deletions       int32              `json:"deletions"`
+	ChangedFiles    int32              `json:"changed_files"`
 }
 
 type GithubPullRequestCheckSuite struct {

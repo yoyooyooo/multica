@@ -136,7 +136,7 @@ func (q *Queries) GetGitHubInstallationByInstallationID(ctx context.Context, ins
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -176,6 +176,9 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.UpdatedAt,
 		&i.HeadSha,
 		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
 	)
 	return i, err
 }
@@ -343,6 +346,7 @@ SELECT
     pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
+    pr.additions, pr.deletions, pr.changed_files,
     pr.created_at, pr.updated_at,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
@@ -374,6 +378,9 @@ type ListPullRequestsByIssueRow struct {
 	PrUpdatedAt     pgtype.Timestamptz `json:"pr_updated_at"`
 	HeadSha         string             `json:"head_sha"`
 	MergeableState  pgtype.Text        `json:"mergeable_state"`
+	Additions       int32              `json:"additions"`
+	Deletions       int32              `json:"deletions"`
+	ChangedFiles    int32              `json:"changed_files"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	ChecksTotal     int64              `json:"checks_total"`
@@ -419,6 +426,9 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.PrUpdatedAt,
 			&i.HeadSha,
 			&i.MergeableState,
+			&i.Additions,
+			&i.Deletions,
+			&i.ChangedFiles,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ChecksTotal,
@@ -457,12 +467,14 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state
+    head_sha, mergeable_state,
+    additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $12, $13, $14,
-    $15, $16, $9, $10,
-    $11, $17
+    $6, $7, $8, $15, $16, $17,
+    $18, $19, $9, $10,
+    $11, $20,
+    $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -477,12 +489,15 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($18::boolean, FALSE) THEN NULL
+        WHEN COALESCE($21::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
+    additions     = EXCLUDED.additions,
+    deletions     = EXCLUDED.deletions,
+    changed_files = EXCLUDED.changed_files,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -497,6 +512,9 @@ type UpsertGitHubPullRequestParams struct {
 	PrCreatedAt         pgtype.Timestamptz `json:"pr_created_at"`
 	PrUpdatedAt         pgtype.Timestamptz `json:"pr_updated_at"`
 	HeadSha             string             `json:"head_sha"`
+	Additions           int32              `json:"additions"`
+	Deletions           int32              `json:"deletions"`
+	ChangedFiles        int32              `json:"changed_files"`
 	Branch              pgtype.Text        `json:"branch"`
 	AuthorLogin         pgtype.Text        `json:"author_login"`
 	AuthorAvatarUrl     pgtype.Text        `json:"author_avatar_url"`
@@ -532,6 +550,9 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.PrCreatedAt,
 		arg.PrUpdatedAt,
 		arg.HeadSha,
+		arg.Additions,
+		arg.Deletions,
+		arg.ChangedFiles,
 		arg.Branch,
 		arg.AuthorLogin,
 		arg.AuthorAvatarUrl,
@@ -562,6 +583,9 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.UpdatedAt,
 		&i.HeadSha,
 		&i.MergeableState,
+		&i.Additions,
+		&i.Deletions,
+		&i.ChangedFiles,
 	)
 	return i, err
 }

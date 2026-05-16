@@ -41,6 +41,16 @@ export interface GitHubPullRequest {
   mergeable_state?: GitHubMergeableState | null;
   /** Optional; older backends omit this field. */
   checks_conclusion?: GitHubPullRequestChecksConclusion | null;
+  /** Per-suite counts that feed the segmented progress bar. Older backends
+   * omit these; treat absence as 0 (the card renders only when sum > 0). */
+  checks_passed?: number;
+  checks_failed?: number;
+  checks_pending?: number;
+  /** Diff stats from GitHub's `pull_request` payload. Older backends omit
+   * these fields; we treat 0/0/0 as "unknown" and hide the stats row. */
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
 }
 
 export interface ListGitHubInstallationsResponse {
