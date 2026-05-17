@@ -830,10 +830,14 @@ func discoverOpenclawAgents(ctx context.Context, executablePath string) ([]Model
 }
 
 // openclawAgentEntry is the shape parseOpenclawAgentsJSON expects
-// from `openclaw agents list --json`. Both `name` and `id` are
-// accepted as the identifier (different openclaw versions ship
-// different field names); `model` is optional and only used to
-// enrich the dropdown label.
+// from `openclaw agents list --json`. `id` is the routing key
+// passed to `openclaw agent --agent <id>`; `name` is the human
+// display label set via `openclaw agents set-identity --name` and
+// is only used to enrich the dropdown label. The two are not
+// interchangeable — see openclawEntriesToModels for the mapping.
+// Older openclaw versions may emit only `name`; in that case we
+// fall back to using it as the id for backward compatibility.
+// `model` is optional and only used to enrich the dropdown label.
 type openclawAgentEntry struct {
 	Name  string `json:"name"`
 	ID    string `json:"id"`
