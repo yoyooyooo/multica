@@ -37,7 +37,7 @@ const (
 	// 2026-05-18, MUL-2334). When that happens the model waits forever for
 	// the missing output; this watchdog ends the turn so the next run can
 	// recover instead of burning the overall semantic inactivity budget.
-	defaultCodexExecStuckTimeout = 2 * time.Minute
+	defaultCodexExecStuckTimeout = 3 * time.Minute
 
 	// codexExecStuckCheckInterval is how often the lifecycle loop polls for
 	// stuck exec calls. Kept short so the watchdog fires close to the
