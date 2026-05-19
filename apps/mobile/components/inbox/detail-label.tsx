@@ -50,6 +50,7 @@ const TYPE_LABEL: Record<InboxItemType, string> = {
   assignee_changed: "Reassigned",
   status_changed: "Status changed",
   priority_changed: "Priority changed",
+  start_date_changed: "Start date changed",
   due_date_changed: "Due date changed",
   new_comment: "New comment",
   mentioned: "Mentioned",

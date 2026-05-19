@@ -91,7 +91,10 @@ function LeadIcon({
   if (entry.action === "priority_changed" && details.to) {
     return <PriorityIcon priority={details.to as IssuePriority} size={14} />;
   }
-  if (entry.action === "due_date_changed") {
+  if (
+    entry.action === "due_date_changed" ||
+    entry.action === "start_date_changed"
+  ) {
     return <CalendarGlyph size={14} stroke={mutedFg} />;
   }
   return (
