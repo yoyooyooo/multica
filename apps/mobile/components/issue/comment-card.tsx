@@ -67,7 +67,16 @@ export function CommentCard({
   return (
     <View className="px-4">
       <View className="rounded-2xl">
-        <View className="bg-secondary rounded-2xl px-4 py-3 gap-3">
+        {/* Bubble uses `surface-1` (L 98%) — extremely subtle elevation
+         *  above the page, visible mostly through the rounded edge rather
+         *  than the fill (iOS settings cell feel; see Refactoring UI #4
+         *  "cards subtle from page"). Internal markdown elements (table
+         *  headers / code blocks via markdown-style.ts) use `surface-2`
+         *  (L 90%), 8% darker than the bubble — well over the 5%
+         *  perceptibility threshold so the inner box is clearly framed.
+         *  Border (L 84%) adds 6% on top for the outline. See global.css
+         *  for the full 5-tier elevation scale. */}
+        <View className="bg-surface-1 rounded-2xl px-4 py-3 gap-3">
           <CommentBody entry={entry} issueId={issueId} onReplyTo={onReplyTo} />
           {replies.map((reply) => (
             <View key={reply.id} className="border-t border-border/60 pt-3">

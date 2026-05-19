@@ -60,6 +60,13 @@ module.exports = {
         info: "hsl(var(--info))",
         priority: "hsl(var(--priority))",
         "code-surface": "hsl(var(--code-surface))",
+        // Surface elevation scale — 5-tier ladder above page bg, sandwiching
+        // shadcn's secondary/muted/accent slot. surface-1 sits subtly above
+        // page (L 98%, comment bubble use case); surface-2 sits clearly
+        // above page (L 90%, nested-inside-surface-1 use case like a code
+        // block inside a comment). See global.css for the full scale.
+        "surface-1": "hsl(var(--surface-1))",
+        "surface-2": "hsl(var(--surface-2))",
       },
       borderRadius: {
         lg: "var(--radius)",

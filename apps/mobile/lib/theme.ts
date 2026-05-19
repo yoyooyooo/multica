@@ -29,8 +29,8 @@ export const THEME = {
     accentForeground: "hsl(0 0% 9%)",
     destructive: "hsl(0 84.2% 60.2%)",
     destructiveForeground: "hsl(0 0% 98%)",
-    border: "hsl(0 0% 89.8%)",
-    input: "hsl(0 0% 89.8%)",
+    border: "hsl(0 0% 84%)",
+    input: "hsl(0 0% 84%)",
     ring: "hsl(0 0% 63%)",
     radius: "0.625rem",
     chart1: "hsl(12 76% 61%)",
@@ -47,6 +47,9 @@ export const THEME = {
     info: "hsl(217 91% 60%)",
     priority: "hsl(25 95% 53%)",
     codeSurface: "hsl(240 4% 92%)",
+    // Surface elevation tiers — see global.css for the full scale.
+    surface1: "hsl(0 0% 98%)",
+    surface2: "hsl(0 0% 90%)",
   },
   dark: {
     background: "hsl(0 0% 3.9%)",
@@ -65,8 +68,8 @@ export const THEME = {
     accentForeground: "hsl(0 0% 98%)",
     destructive: "hsl(0 70.9% 59.4%)",
     destructiveForeground: "hsl(0 0% 98%)",
-    border: "hsl(0 0% 14.9%)",
-    input: "hsl(0 0% 14.9%)",
+    border: "hsl(0 0% 25%)",
+    input: "hsl(0 0% 25%)",
     ring: "hsl(300 0% 45%)",
     radius: "0.625rem",
     chart1: "hsl(220 70% 50%)",
@@ -85,6 +88,9 @@ export const THEME = {
     // code-surface is the ONE exception that needs a real dark value —
     // see global.css for rationale. Keep this in sync with .dark:root.
     codeSurface: "hsl(240 4% 18%)",
+    // Dark elevation tiers — lightness INCREASES with elevation. See global.css.
+    surface1: "hsl(0 0% 8%)",
+    surface2: "hsl(0 0% 19%)",
   },
 };
 
