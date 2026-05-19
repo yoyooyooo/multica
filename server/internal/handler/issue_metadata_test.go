@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -73,12 +74,17 @@ func TestIssueMetadataSetGetDelete(t *testing.T) {
 	req = newRequest("GET", "/api/issues/"+issueID+"/metadata", nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.ListIssueMetadata(w, req)
-	json.NewDecoder(w.Body).Decode(&resp)
-	if _, present := resp.Metadata["pipeline_status"]; present {
-		t.Errorf("after delete, pipeline_status should be gone; got %+v", resp.Metadata)
+	// Decode into a fresh struct — json.Decode into a non-nil map merges,
+	// it does not replace, so reusing `resp` would keep deleted keys around.
+	var afterDelete struct {
+		Metadata map[string]any `json:"metadata"`
 	}
-	if _, present := resp.Metadata["attempts"]; !present {
-		t.Errorf("delete removed unrelated key; got %+v", resp.Metadata)
+	json.NewDecoder(w.Body).Decode(&afterDelete)
+	if _, present := afterDelete.Metadata["pipeline_status"]; present {
+		t.Errorf("after delete, pipeline_status should be gone; got %+v", afterDelete.Metadata)
+	}
+	if _, present := afterDelete.Metadata["attempts"]; !present {
+		t.Errorf("delete removed unrelated key; got %+v", afterDelete.Metadata)
 	}
 }
 
@@ -102,7 +108,10 @@ func TestIssueMetadataValidation(t *testing.T) {
 	for _, c := range bad {
 		t.Run(c.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/"+c.key, json.RawMessage(c.rawBody))
+			// chi pulls the key from URL params (injected via withURLParams);
+			// the raw URL needs to be a valid request line, so PathEscape any
+			// chars (spaces, etc.) that would otherwise break httptest.NewRequest.
+			req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/"+url.PathEscape(c.key), json.RawMessage(c.rawBody))
 			req = withURLParams(req, "id", issueID, "key", c.key)
 			testHandler.SetIssueMetadataKey(w, req)
 			if w.Code != http.StatusBadRequest {

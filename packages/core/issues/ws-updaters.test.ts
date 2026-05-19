@@ -10,6 +10,7 @@ import {
   onIssueCreated,
   onIssueDeleted,
   onIssueLabelsChanged,
+  onIssueMetadataChanged,
   onIssueUpdated,
 } from "./ws-updaters";
 import { issueKeys } from "./queries";
@@ -175,6 +176,43 @@ describe("onIssueLabelsChanged", () => {
     expect(gantt?.find((i) => i.id === OTHER_ISSUE_ID)?.labels).toEqual([
       labelA,
     ]);
+  });
+});
+
+describe("onIssueMetadataChanged", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient();
+  });
+
+  it("replaces metadata in both detail and list caches (no merge)", () => {
+    qc.setQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID), {
+      ...baseIssue,
+      metadata: { attempts: 1, stale: "yes" },
+    });
+    qc.setQueryData<ListIssuesCache>(issueKeys.list(WS_ID), {
+      byStatus: {
+        todo: {
+          issues: [{ ...baseIssue, metadata: { attempts: 1 } }],
+          total: 1,
+        },
+      },
+    });
+
+    onIssueMetadataChanged(qc, WS_ID, ISSUE_ID, { attempts: 2 });
+
+    const detail = qc.getQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID));
+    expect(detail?.metadata).toEqual({ attempts: 2 });
+    const list = qc.getQueryData<ListIssuesCache>(issueKeys.list(WS_ID));
+    expect(list?.byStatus.todo?.issues[0]?.metadata).toEqual({ attempts: 2 });
+  });
+
+  it("leaves untouched caches as undefined (no spurious writes)", () => {
+    onIssueMetadataChanged(qc, WS_ID, ISSUE_ID, { foo: "bar" });
+
+    expect(qc.getQueryData(issueKeys.detail(WS_ID, ISSUE_ID))).toBeUndefined();
+    expect(qc.getQueryData(issueKeys.list(WS_ID))).toBeUndefined();
   });
 });
 
