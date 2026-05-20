@@ -49,7 +49,7 @@ export function LabelPickerBody({ attached, onAttach, onDetach }: Props) {
       <View className="px-4 pt-3 pb-2">
         <Text className="text-lg font-semibold text-foreground">Labels</Text>
       </View>
-      <View className="px-3 pb-2 border-b border-border">
+      <View className="px-4 pb-2 border-b border-border">
         <TextField
           value={query}
           onChangeText={setQuery}
