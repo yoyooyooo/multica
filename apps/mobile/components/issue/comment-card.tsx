@@ -15,7 +15,7 @@
  * each comment body via ReactionBar (existing behavior, only visible when
  * a reaction exists).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { Pressable, View } from "react-native";
 import { router } from "expo-router";
 import Animated, {
@@ -38,7 +38,6 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { ReactionBar } from "./reaction-bar";
-import { EmojiPickerSheet } from "./emoji-picker-sheet";
 
 interface Props {
   entry: TimelineEntry;
@@ -167,7 +166,6 @@ function CommentBody({
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const toggle = useToggleCommentReaction(issueId);
-  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   // Same query as IssueDescription — TanStack dedupes so this fires once
   // per issue regardless of how many comments need to resolve attachments.
   const { data: attachments } = useQuery(
@@ -261,14 +259,6 @@ function CommentBody({
           onToggle={onToggleReaction}
         />
       </View>
-      <EmojiPickerSheet
-        visible={emojiPickerOpen}
-        onClose={() => setEmojiPickerOpen(false)}
-        onSelect={(emoji) => {
-          setEmojiPickerOpen(false);
-          onToggleReaction(emoji);
-        }}
-      />
     </Pressable>
   );
 }

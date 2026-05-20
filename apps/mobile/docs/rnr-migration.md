@@ -128,11 +128,14 @@ This tier is where the biggest payoff lives (Lesson 6 in CLAUDE.md catalogues th
 | `components/chat/agent-picker-sheet.tsx` | Likely B.2 (`Select`) — re-inspect |
 | `components/project/add-resource-sheet.tsx` | TBD — depends on whether it's single-select or a mini form |
 
-**B.4 — RNR doesn't ship, needs discussion before any code**
+**B.4 — RNR doesn't ship**
 
-| Current sheet | Why it's blocked |
-|---|---|
-| `components/issue/emoji-picker-sheet.tsx` | RNR has no emoji picker. Options: third-party lib, or invoke iOS emoji keyboard via text input. Defer the decision to when Phase 3 touches this file. |
+Empty. The only entry — `components/issue/emoji-picker-sheet.tsx` — was
+resolved by adopting `rn-emoji-keyboard` and migrating the comment
+reaction flow to a formSheet route at
+`app/(app)/[workspace]/issue/[id]/comment/[commentId]/emoji-picker.tsx`.
+Mobile now ships the full emoji set behind the "More reactions" overflow
+in the per-comment actions sheet, matching web parity.
 
 **Rules**:
 - Do not bulk-replace `sheet-shell.tsx`. It is imported by 18 files; an atomic swap = 18 simultaneous breakages. Per CLAUDE.md Lesson 6: one PR per sheet, one verification per PR. Sequencing tracked in `~/.claude/plans/mobile-sheet-rollout.md`.

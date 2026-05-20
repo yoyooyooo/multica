@@ -42,7 +42,7 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { QUICK_EMOJIS } from "@/components/issue/emoji-picker-sheet";
+import { QUICK_EMOJIS } from "@/lib/quick-emojis";
 
 // Quick row shows the first 5 emojis + the overflow icon.
 const QUICK_ROW_SIZE = 5;
@@ -264,7 +264,7 @@ export default function CommentActionsRoute() {
           </Card>
         </View>
 
-        {/* Quick emoji row */}
+        {/* Quick emoji row + overflow → full emoji picker formSheet route */}
         <View className="flex-row items-center px-4 py-3 gap-2">
           {quickEmojis.map((emoji) => (
             <Pressable
@@ -276,11 +276,21 @@ export default function CommentActionsRoute() {
               <Text className="text-2xl">{emoji}</Text>
             </Pressable>
           ))}
-          {/* "⋯" handoff to the full emoji picker is dropped in the route
-              migration — the full picker is a separate sheet that hasn't
-              moved to formSheet yet. Mobile users can long-press → react
-              with any of the 5 quick emojis; broader emoji selection
-              follows in a separate PR if needed. */}
+          <Pressable
+            onPress={wrap(() => {
+              if (!wsSlug) return;
+              router.push({
+                pathname:
+                  "/[workspace]/issue/[id]/comment/[commentId]/emoji-picker",
+                params: { workspace: wsSlug, id, commentId: entry.id },
+              });
+            })}
+            hitSlop={4}
+            accessibilityLabel="More reactions"
+            className="size-11 rounded-full bg-card border border-border items-center justify-center active:opacity-70"
+          >
+            <Ionicons name="add-outline" size={22} color={fg} />
+          </Pressable>
         </View>
 
         {/* G1 — per-comment ops */}
