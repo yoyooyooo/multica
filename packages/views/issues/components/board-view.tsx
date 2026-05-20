@@ -18,6 +18,7 @@ import type { QueryKey } from "@tanstack/react-query";
 import { arrayMove } from "@dnd-kit/sortable";
 import { Eye, MoreHorizontal } from "lucide-react";
 import type { Issue, IssueAssigneeGroup, IssueAssigneeType, IssueStatus, UpdateIssueRequest } from "@multica/core/types";
+import type { AgentTask } from "@multica/core/types/agent";
 import { Button } from "@multica/ui/components/ui/button";
 import { useLoadMoreByAssigneeGroup, useLoadMoreByStatus } from "@multica/core/issues/mutations";
 import type { AssigneeGroupedIssuesFilter, MyIssuesFilter } from "@multica/core/issues/queries";
@@ -210,6 +211,7 @@ function getMoveUpdates(
 }
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
+const EMPTY_ACTIVE_TASKS_MAP = new Map<string, AgentTask[]>();
 
 export function BoardView({
   issues,
@@ -220,6 +222,7 @@ export function BoardView({
   hiddenStatuses,
   onMoveIssue,
   childProgressMap = EMPTY_PROGRESS_MAP,
+  activeTasksMap = EMPTY_ACTIVE_TASKS_MAP,
   myIssuesScope,
   myIssuesFilter,
   projectId,
@@ -232,6 +235,8 @@ export function BoardView({
   hiddenStatuses: IssueStatus[];
   onMoveIssue: (issueId: string, updates: BoardMoveUpdates) => void;
   childProgressMap?: Map<string, ChildProgress>;
+  /** Active agent tasks indexed by issue id; drives the "agent working" badge. */
+  activeTasksMap?: Map<string, AgentTask[]>;
   /** When set, per-status load-more targets the scoped cache instead of the workspace one. */
   myIssuesScope?: string;
   myIssuesFilter?: MyIssuesFilter;
@@ -481,6 +486,7 @@ export function BoardView({
                 issueIds={columns[group.id] ?? []}
                 issueMap={issueMapRef.current}
                 childProgressMap={childProgressMap}
+                activeTasksMap={activeTasksMap}
                 myIssuesOpts={myIssuesOpts}
                 projectId={projectId}
               />
@@ -492,6 +498,7 @@ export function BoardView({
                   issueIds={columns[group.id] ?? []}
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
+                  activeTasksMap={activeTasksMap}
                   queryKey={assigneeGroupQueryKey}
                   filter={assigneeGroupFilter}
                   projectId={projectId}
@@ -503,6 +510,7 @@ export function BoardView({
                   issueIds={columns[group.id] ?? []}
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
+                  activeTasksMap={activeTasksMap}
                   projectId={projectId}
                   totalCount={group.totalCount}
                 />
@@ -522,7 +530,11 @@ export function BoardView({
       <DragOverlay dropAnimation={null}>
         {activeIssue ? (
           <div className="w-[280px] rotate-2 scale-105 cursor-grabbing opacity-90 shadow-lg shadow-black/10">
-            <BoardCardContent issue={activeIssue} childProgress={childProgressMap.get(activeIssue.id)} />
+            <BoardCardContent
+              issue={activeIssue}
+              childProgress={childProgressMap.get(activeIssue.id)}
+              activeTasks={activeTasksMap.get(activeIssue.id)}
+            />
           </div>
         ) : null}
       </DragOverlay>
@@ -535,6 +547,7 @@ function PaginatedAssigneeBoardColumn({
   issueIds,
   issueMap,
   childProgressMap,
+  activeTasksMap,
   queryKey,
   filter,
   projectId,
@@ -543,6 +556,7 @@ function PaginatedAssigneeBoardColumn({
   issueIds: string[];
   issueMap: Map<string, Issue>;
   childProgressMap?: Map<string, ChildProgress>;
+  activeTasksMap?: Map<string, AgentTask[]>;
   queryKey: QueryKey;
   filter: AssigneeGroupedIssuesFilter;
   projectId?: string;
@@ -562,6 +576,7 @@ function PaginatedAssigneeBoardColumn({
       issueIds={issueIds}
       issueMap={issueMap}
       childProgressMap={childProgressMap}
+      activeTasksMap={activeTasksMap}
       totalCount={total}
       projectId={projectId}
       footer={
@@ -578,6 +593,7 @@ function PaginatedBoardColumn({
   issueIds,
   issueMap,
   childProgressMap,
+  activeTasksMap,
   myIssuesOpts,
   projectId,
 }: {
@@ -585,6 +601,7 @@ function PaginatedBoardColumn({
   issueIds: string[];
   issueMap: Map<string, Issue>;
   childProgressMap?: Map<string, ChildProgress>;
+  activeTasksMap?: Map<string, AgentTask[]>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   projectId?: string;
 }) {
@@ -598,6 +615,7 @@ function PaginatedBoardColumn({
       issueIds={issueIds}
       issueMap={issueMap}
       childProgressMap={childProgressMap}
+      activeTasksMap={activeTasksMap}
       totalCount={total}
       projectId={projectId}
       footer={

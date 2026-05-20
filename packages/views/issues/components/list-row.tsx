@@ -4,7 +4,9 @@ import { memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppLink } from "../../navigation";
 import type { Issue } from "@multica/core/types";
+import type { AgentTask } from "@multica/core/types/agent";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { WorkingBadge } from "./working-badge";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -31,9 +33,11 @@ function formatDate(date: string): string {
 export const ListRow = memo(function ListRow({
   issue,
   childProgress,
+  activeTasks,
 }: {
   issue: Issue;
   childProgress?: ChildProgress;
+  activeTasks?: AgentTask[];
 }) {
   const selected = useIssueSelectionStore((s) => s.selectedIds.has(issue.id));
   const toggle = useIssueSelectionStore((s) => s.toggle);
@@ -102,6 +106,11 @@ export const ListRow = memo(function ListRow({
                     +{labels.length - 3}
                   </span>
                 )}
+              </span>
+            )}
+            {activeTasks && activeTasks.length > 0 && (
+              <span className="ml-1.5 shrink-0">
+                <WorkingBadge tasks={activeTasks} />
               </span>
             )}
           </span>

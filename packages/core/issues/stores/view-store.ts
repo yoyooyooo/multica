@@ -67,6 +67,7 @@ export interface IssueViewState {
   projectFilters: string[];
   includeNoProject: boolean;
   labelFilters: string[];
+  workingOnly: boolean;
   sortBy: SortField;
   sortDirection: SortDirection;
   cardProperties: CardProperties;
@@ -87,6 +88,7 @@ export interface IssueViewState {
   toggleLabelFilter: (labelId: string) => void;
   hideStatus: (status: IssueStatus) => void;
   showStatus: (status: IssueStatus) => void;
+  toggleWorkingOnly: () => void;
   clearFilters: () => void;
   setSortBy: (field: SortField) => void;
   setSortDirection: (dir: SortDirection) => void;
@@ -105,6 +107,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   projectFilters: [],
   includeNoProject: false,
   labelFilters: [],
+  workingOnly: false,
   sortBy: "position",
   sortDirection: "asc",
   cardProperties: {
@@ -196,6 +199,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       if (state.statusFilters.includes(status)) return state;
       return { statusFilters: [...state.statusFilters, status] };
     }),
+  toggleWorkingOnly: () =>
+    set((state) => ({ workingOnly: !state.workingOnly })),
   clearFilters: () =>
     set({
       statusFilters: [],
@@ -206,6 +211,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       projectFilters: [],
       includeNoProject: false,
       labelFilters: [],
+      workingOnly: false,
     }),
   setSortBy: (field) => set({ sortBy: field }),
   setSortDirection: (dir) => set({ sortDirection: dir }),
@@ -238,6 +244,7 @@ export const viewStorePersistOptions = (name: string) => ({
     projectFilters: state.projectFilters,
     includeNoProject: state.includeNoProject,
     labelFilters: state.labelFilters,
+    workingOnly: state.workingOnly,
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     cardProperties: state.cardProperties,
