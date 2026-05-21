@@ -1,13 +1,10 @@
 /**
  * Issue detail screen.
  *
- * Read-mostly + bottom "Comment" button. Tapping the button (or "Reply"
- * on a long-pressed comment) opens the new-comment modal at
- * issue/[id]/new-comment — full-screen composer with MentionSuggestionBar
- * and toolbar. The inline always-on composer was retired because it
- * competed with the timeline for vertical space and the KeyboardAvoiding
- * logic was clunky (user feedback). The new pattern matches iOS Mail
- * "Compose" / Slack thread reply.
+ * Read-mostly timeline with an inline comment composer pinned to the
+ * bottom (`<InlineCommentComposer>`). The composer is a single
+ * `<TextInput>` + mention suggestion bar — no modal route, no toolbar,
+ * no draft persistence. Sticks to the keyboard via `KeyboardStickyView`.
  *
  * Header note: the parent _layout.tsx already declares the `issue/[id]`
  * Stack.Screen with title "Issue". We override that here once the data
@@ -31,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
+import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
 import {
   issueDetailOptions,
   issueKeys,
@@ -88,13 +86,6 @@ export default function IssueDetail() {
       qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, id) }),
     ]);
   }, [detail, qc, wsId, id]);
-
-  const openNewComment = useCallback(() => {
-    router.push({
-      pathname: "/[workspace]/issue/[id]/new-comment",
-      params: { workspace: wsSlug, id },
-    });
-  }, [wsSlug, id]);
 
   const issue = detail.data;
   const deleteIssue = useDeleteIssue();
@@ -189,15 +180,7 @@ export default function IssueDetail() {
             highlightCommentId={highlight}
             highlightNonce={h}
           />
-          {/* Bottom Comment button — push the new-comment modal. Replaces
-           *  the old always-on inline composer (user feedback: cramped,
-           *  keyboard avoidance clunky). Linear / Slack thread reply
-           *  pattern. */}
-          <View className="px-4 py-3 border-t border-border bg-background">
-            <Button onPress={openNewComment}>
-              <Text>Comment</Text>
-            </Button>
-          </View>
+          <InlineCommentComposer issueId={id} />
         </View>
       )}
     </SafeAreaView>

@@ -5,6 +5,7 @@ import { Stack, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ThemeProvider } from "@react-navigation/native";
 import { PortalHost } from "@rn-primitives/portal";
@@ -61,21 +62,23 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
-          <ThemeProvider value={NAV_THEME[colorScheme]}>
-            <AuthInitializer>
-              <LightboxProvider>
-                <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
-                <Stack screenOptions={{ headerShown: false }}>
-                  <Stack.Screen name="index" />
-                  <Stack.Screen name="(auth)" />
-                  <Stack.Screen name="(app)" />
-                </Stack>
-                <PortalHost />
-              </LightboxProvider>
-            </AuthInitializer>
-          </ThemeProvider>
-        </QueryClientProvider>
+        <KeyboardProvider>
+          <QueryClientProvider client={queryClient}>
+            <ThemeProvider value={NAV_THEME[colorScheme]}>
+              <AuthInitializer>
+                <LightboxProvider>
+                  <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
+                  <Stack screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="index" />
+                    <Stack.Screen name="(auth)" />
+                    <Stack.Screen name="(app)" />
+                  </Stack>
+                  <PortalHost />
+                </LightboxProvider>
+              </AuthInitializer>
+            </ThemeProvider>
+          </QueryClientProvider>
+        </KeyboardProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

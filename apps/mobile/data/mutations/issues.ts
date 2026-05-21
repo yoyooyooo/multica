@@ -29,6 +29,7 @@ import { issueKeys } from "@/data/queries/issues";
 import { inboxKeys } from "@/data/queries/inbox";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
 
 export type ToggleCommentReactionVars = {
   commentId: string;
@@ -49,6 +50,13 @@ export type CreateCommentVars = {
   content: string;
   /** When set, the new comment is a threaded reply to this comment id. */
   parentId?: string;
+  /** Attachment ids previously returned by `useFileAttach.pickAndUpload*`,
+   *  filtered by the caller to only those whose `url` is still referenced
+   *  in `content`. The server re-parents each attachment from issue-scoped
+   *  to comment-scoped so a `DELETE /comment/:id` cascades the attachments
+   *  too. Mirrors web's `CommentInput.handleSubmit` `activeIds` derivation
+   *  (`packages/views/issues/components/comment-input.tsx:76-78`). */
+  attachmentIds?: string[];
 };
 
 export function useCreateComment(issueId: string) {
@@ -57,17 +65,18 @@ export function useCreateComment(issueId: string) {
   const userId = useAuthStore((s) => s.user?.id ?? null);
 
   return useMutation({
-    mutationFn: ({ content, parentId }: CreateCommentVars) =>
-      api.createComment(issueId, content, { parentId }),
+    mutationFn: ({ content, parentId, attachmentIds }: CreateCommentVars) =>
+      api.createComment(issueId, content, { parentId, attachmentIds }),
     onMutate: async ({ content, parentId }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
       const prev = qc.getQueryData<TimelineEntry[]>(key);
-      if (!userId) return { prev, key };
+      if (!userId) return { prev, key, optimisticId: null };
 
+      const optimisticId = `optimistic-${Date.now()}`;
       const optimistic: TimelineEntry = {
         type: "comment",
-        id: `optimistic-${Date.now()}`,
+        id: optimisticId,
         actor_type: "member",
         actor_id: userId,
         content,
@@ -84,19 +93,53 @@ export function useCreateComment(issueId: string) {
         old ? [...old, optimistic] : [optimistic],
       );
 
-      return { prev, key };
+      return { prev, key, optimisticId };
     },
-    onError: (_err, _vars, ctx) => {
-      if (ctx?.prev !== undefined && ctx.key) {
-        qc.setQueryData(ctx.key, ctx.prev);
+    onError: (err, vars, ctx) => {
+      // Deliberately do NOT roll back here — the optimistic entry stays in
+      // the cache so the user sees an inline "Failed · Retry · Discard"
+      // affordance instead of having their typed comment vanish into a
+      // toast. The matching failed-comments store entry carries the
+      // payload needed to re-fire the same submission. Note: this is the
+      // only mutation in the issues file that intentionally avoids
+      // rollback — every other path treats error as "undo the optimism".
+      if (ctx?.optimisticId) {
+        useFailedCommentsStore.getState().markFailed(ctx.optimisticId, {
+          content: vars.content,
+          parentId: vars.parentId,
+          attachmentIds: vars.attachmentIds,
+          error: err instanceof Error ? err.message : "Send failed",
+        });
       }
     },
-    onSettled: () => {
+    // Invalidate only on success — the failed-comment path needs the cache
+    // to keep its optimistic entry so the inline retry UI has something to
+    // render against. The success refetch replaces the synthetic id with
+    // the server-issued one (same ASC bottom position).
+    onSuccess: () => {
       qc.invalidateQueries({
         queryKey: issueKeys.timeline(wsId, issueId),
       });
     },
   });
+}
+
+/**
+ * Drop a failed-but-still-rendered optimistic comment from both the cache
+ * and the failed-comments store. Mirrors the Discard half of the inline
+ * "Failed · Retry · Discard" affordance on a failed CommentBody.
+ */
+export function discardFailedComment(
+  qc: ReturnType<typeof useQueryClient>,
+  wsId: string,
+  issueId: string,
+  optimisticId: string,
+) {
+  qc.setQueryData<TimelineEntry[]>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => (old ? old.filter((e) => e.id !== optimisticId) : old),
+  );
+  useFailedCommentsStore.getState().clear(optimisticId);
 }
 
 /**

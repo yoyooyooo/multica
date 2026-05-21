@@ -44,10 +44,10 @@ import {
   patchIssueLabels,
   patchMyIssuesList,
   patchTimelineEntry,
+  removeCommentCascade,
   removeCommentReaction,
   removeFromMyIssuesList,
   removeIssueReaction,
-  removeTimelineEntry,
 } from "./issue-ws-updaters";
 
 type TaskEventPayload =
@@ -135,14 +135,41 @@ export function useIssueRealtime(
             () => entry,
           );
         }),
-        ws.on("comment:deleted", (payload) => {
-          if (payload.issue_id !== issueId) return;
-          removeTimelineEntry(
+        // Resolve / unresolve broadcast from any client. Payload carries the
+        // full Comment with the new resolved_at/resolved_by_* fields, so we
+        // can in-place-replace the entry via commentToTimelineEntry — no
+        // refetch. Without these handlers the resolved state only updated
+        // via the local mutation or via reconnect invalidate (the second
+        // costs a full timeline refetch and busts every CommentCard memo).
+        ws.on("comment:resolved", (payload) => {
+          if (payload.comment.issue_id !== issueId) return;
+          const entry = commentToTimelineEntry(payload.comment);
+          patchTimelineEntry(
             qc,
             wsId,
             issueId,
-            (e) => e.type === "comment" && e.id === payload.comment_id,
+            (e) => e.type === "comment" && e.id === payload.comment.id,
+            () => entry,
           );
+        }),
+        ws.on("comment:unresolved", (payload) => {
+          if (payload.comment.issue_id !== issueId) return;
+          const entry = commentToTimelineEntry(payload.comment);
+          patchTimelineEntry(
+            qc,
+            wsId,
+            issueId,
+            (e) => e.type === "comment" && e.id === payload.comment.id,
+            () => entry,
+          );
+        }),
+        ws.on("comment:deleted", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          // Cascade: descendant replies must come out alongside the parent,
+          // otherwise buildTimelineRows promotes them to top-level rows and
+          // the user sees ghost replies after another client deletes the
+          // thread. Server already cascades; this mirrors it in the cache.
+          removeCommentCascade(qc, wsId, issueId, payload.comment_id);
         }),
         ws.on("activity:created", (payload) => {
           if (payload.issue_id !== issueId) return;

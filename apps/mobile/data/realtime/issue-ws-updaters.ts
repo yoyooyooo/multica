@@ -111,6 +111,57 @@ export function removeTimelineEntry(
   );
 }
 
+/**
+ * Cascade-delete a comment and every descendant reply (reply-to-reply
+ * chains included). Mirrors the server's cascade in `comment.go:DeleteComment`
+ * and web's `comment:deleted` handler at
+ * `packages/views/issues/hooks/use-issue-timeline.ts:164-194`.
+ *
+ * Without this, removing only the root entry leaves the replies as
+ * "orphans" — `buildTimelineRows` then promotes them to top-level rows
+ * (its orphan-rescue branch), so the user would see ghost replies after a
+ * thread delete on another client. Same-N rule violation.
+ *
+ * BFS rather than recursive Set-union: cheaper for arbitrary depth chains
+ * and avoids recursion-depth concerns on large threads.
+ */
+export function removeCommentCascade(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+) {
+  qc.setQueryData<TimelineEntry[]>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      const removed = new Set<string>([commentId]);
+      // Iterate to fixed point — a single forward pass catches direct
+      // children; later passes catch reply-to-reply chains. Bounded by
+      // the timeline length, so worst case O(N²) on a degenerate chain
+      // but N is p99 30 and chains are typically depth 1-2.
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const e of old) {
+          if (
+            e.type === "comment" &&
+            e.parent_id &&
+            removed.has(e.parent_id) &&
+            !removed.has(e.id)
+          ) {
+            removed.add(e.id);
+            changed = true;
+          }
+        }
+      }
+      return old.filter(
+        (e) => !(e.type === "comment" && removed.has(e.id)),
+      );
+    },
+  );
+}
+
 // =====================================================
 // My Issues list (flat Issue[] across many keys)
 // =====================================================
@@ -302,5 +353,13 @@ export function commentToTimelineEntry(comment: Comment): TimelineEntry {
     comment_type: comment.type,
     reactions: comment.reactions,
     attachments: comment.attachments,
+    // Carry resolve state through. Web's commentToTimelineEntry includes
+    // these (`packages/views/issues/hooks/use-issue-timeline.ts:42-58`); the
+    // earlier mobile copy dropped them, so a `comment:updated` event on a
+    // resolved comment would silently strip the resolved flag from the
+    // cache and the UI would un-dim.
+    resolved_at: comment.resolved_at,
+    resolved_by_type: comment.resolved_by_type,
+    resolved_by_id: comment.resolved_by_id,
   };
 }

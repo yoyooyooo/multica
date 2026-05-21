@@ -9,15 +9,23 @@
  * different layout — web shows recursive tree, mobile shows one bubble per
  * thread. Counts agree (no comment is dropped or duplicated).
  *
- * Long-press on any CommentBody (parent or reply) pushes the
- * `issue/[id]/comment/[commentId]/actions` formSheet route — the iOS-native
- * entry point for quick reactions, reply, and copy. Reactions render under
- * each comment body via ReactionBar (existing behavior, only visible when
- * a reaction exists).
+ * Long-press on any CommentBody (parent or reply) opens a UIKit-native
+ * `UIContextMenuInteraction` (wired via `<CommentContextMenu>`): system
+ * blur + bubble snapshot scale + grouped menu (Reply / Edit / Copy /
+ * Select Text / Copy Link / Resolve / New Issue / Delete) + an
+ * auxiliary-preview reactions row above the snapshot for quick Tapback-
+ * style emoji. Reactions still render under each body via ReactionBar
+ * (existing behavior, only visible when a reaction exists).
+ *
+ * Resolved threads render in a collapsed `<ResolvedThreadBar>` by default —
+ * mirrors the same state language web uses (`packages/views/issues/
+ * components/resolved-thread-bar.tsx`), but the visual is a single-line
+ * tap-to-expand bar at iOS section-row scale. Tap expands the bar in place;
+ * when expanded the resolved indicator stays at the top of the body so the
+ * user keeps the "this thread is resolved" signal even while reading.
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, View } from "react-native";
-import { router } from "expo-router";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -25,20 +33,32 @@ import Animated, {
   withSequence,
   withTiming,
 } from "react-native-reanimated";
-import * as Haptics from "expo-haptics";
+import { Ionicons } from "@expo/vector-icons";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Markdown } from "@/lib/markdown";
-import { useToggleCommentReaction } from "@/data/mutations/issues";
+import {
+  discardFailedComment,
+  useCreateComment,
+  useToggleCommentReaction,
+} from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { issueAttachmentsOptions } from "@/data/queries/issues";
+import {
+  issueAttachmentsOptions,
+  issueDetailOptions,
+} from "@/data/queries/issues";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 import { ReactionBar } from "./reaction-bar";
+import { CommentContextMenu } from "./comment-context-menu";
 
 interface Props {
   entry: TimelineEntry;
@@ -61,6 +81,37 @@ export function CommentCard({
   issueId,
   highlightedCommentId,
 }: Props) {
+  // Resolved threads default to a single-line bar; tap expands in place for
+  // the current session. Unmount (scroll out of viewport) resets — same
+  // behavior as iOS Mail's "tap to expand a thread" pattern. Replies cannot
+  // themselves be resolved (server enforces root-only), so the resolved flag
+  // on the root is the single source of truth for this card.
+  const resolved = !!entry.resolved_at;
+  const [expanded, setExpanded] = useState(false);
+
+  // Inbox deep-link target inside a resolved thread expands automatically —
+  // otherwise tapping a notification would just reveal a bar with no content
+  // and force the user to tap again.
+  useEffect(() => {
+    if (!resolved || !highlightedCommentId) return;
+    if (
+      highlightedCommentId === entry.id ||
+      replies.some((r) => r.id === highlightedCommentId)
+    ) {
+      setExpanded(true);
+    }
+  }, [resolved, highlightedCommentId, entry.id, replies]);
+
+  if (resolved && !expanded) {
+    return (
+      <ResolvedThreadBar
+        entry={entry}
+        replies={replies}
+        onExpand={() => setExpanded(true)}
+      />
+    );
+  }
+
   return (
     <View className="px-4">
       <View className="rounded-2xl">
@@ -72,8 +123,23 @@ export function CommentCard({
          *  (L 90%), 8% darker than the bubble — well over the 5%
          *  perceptibility threshold so the inner box is clearly framed.
          *  Border (L 84%) adds 6% on top for the outline. See global.css
-         *  for the full 5-tier elevation scale. */}
-        <View className="bg-surface-1 rounded-2xl px-4 py-3 gap-3">
+         *  for the full 5-tier elevation scale.
+         *
+         *  Resolved-and-expanded path dims the bubble to 70% so the
+         *  "this is settled" signal persists even while reading the
+         *  body — mirrors web's muted resolved card visual. */}
+        <View
+          className={cn(
+            "bg-surface-1 rounded-2xl px-4 py-3 gap-3",
+            resolved && "opacity-70",
+          )}
+        >
+          {resolved ? (
+            <ResolvedIndicator
+              entry={entry}
+              onCollapse={() => setExpanded(false)}
+            />
+          ) : null}
           <CommentBody entry={entry} issueId={issueId} />
           {replies.map((reply) => (
             <View key={reply.id} className="border-t border-border/60 pt-3">
@@ -87,6 +153,121 @@ export function CommentCard({
         <RootHighlightOverlay active={highlightedCommentId === entry.id} />
       </View>
     </View>
+  );
+}
+
+/**
+ * Compact "thread is resolved" bar — substitutes the full card when a
+ * resolved root is collapsed (default state). Tap anywhere to expand.
+ *
+ * Mirrors web's `<ResolvedThreadBar>` (`packages/views/issues/components/
+ * resolved-thread-bar.tsx`): checkmark + N participant authors + reply
+ * count + chevron. On mobile we drop the dedicated <Card> chrome and use
+ * the same `bg-surface-1` bubble so the resolved bar reads as the same
+ * "row" rhythm as the full card it stands in for.
+ */
+function ResolvedThreadBar({
+  entry,
+  replies,
+  onExpand,
+}: {
+  entry: TimelineEntry;
+  replies: TimelineEntry[];
+  onExpand: () => void;
+}) {
+  const { getName } = useActorLookup();
+  const { colorScheme } = useColorScheme();
+  const mutedFg = THEME[colorScheme].mutedForeground;
+
+  // Unique participant set across root + replies, preserving chronological
+  // order of first appearance. Up to two authors are named; the rest are
+  // rolled into "+N more" so the bar stays a single line on a narrow phone.
+  const authorsLabel = useMemo(() => {
+    const MAX_NAMED = 2;
+    const seen = new Set<string>();
+    const ordered: { type: string | null; id: string | null }[] = [];
+    for (const e of [entry, ...replies]) {
+      const key = `${e.actor_type}:${e.actor_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ordered.push({ type: e.actor_type, id: e.actor_id });
+    }
+    const named = ordered
+      .slice(0, MAX_NAMED)
+      .map((a) =>
+        getName(a.type as "member" | "agent" | null | undefined, a.id),
+      )
+      .join(", ");
+    const remaining = ordered.length - MAX_NAMED;
+    return remaining > 0 ? `${named} +${remaining}` : named;
+  }, [entry, replies, getName]);
+
+  const total = 1 + replies.length;
+
+  return (
+    <View className="px-4">
+      <Pressable
+        onPress={onExpand}
+        className="flex-row items-center gap-2.5 px-4 py-3 rounded-2xl bg-surface-1 active:opacity-70"
+        accessibilityRole="button"
+        accessibilityLabel={`Resolved thread by ${authorsLabel}, ${total} ${total === 1 ? "message" : "messages"}. Tap to expand.`}
+      >
+        <Ionicons name="checkmark-circle" size={18} color={mutedFg} />
+        <Text
+          className="flex-1 text-sm text-muted-foreground"
+          numberOfLines={1}
+        >
+          Resolved · {total} {total === 1 ? "message" : "messages"} by{" "}
+          {authorsLabel}
+        </Text>
+        <Ionicons name="chevron-down" size={14} color={mutedFg} />
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * Resolved indicator row that sits at the top of an expanded resolved
+ * thread. Carries the "who resolved + when" attribution and a collapse
+ * affordance — equivalent to web's "Mark as resolved" header bar
+ * (`packages/views/issues/components/comment-card.tsx:519-532`).
+ *
+ * Tap collapses the thread back to the bar without firing the
+ * <CommentBody> long-press action sheet (the row is a self-contained
+ * Pressable, sits above CommentBody in the bubble's gap-3 layout).
+ */
+function ResolvedIndicator({
+  entry,
+  onCollapse,
+}: {
+  entry: TimelineEntry;
+  onCollapse: () => void;
+}) {
+  const { getName } = useActorLookup();
+  const { colorScheme } = useColorScheme();
+  const mutedFg = THEME[colorScheme].mutedForeground;
+  const resolverName = getName(
+    entry.resolved_by_type as "member" | "agent" | null | undefined,
+    entry.resolved_by_id,
+  );
+
+  return (
+    <Pressable
+      onPress={onCollapse}
+      className="flex-row items-center gap-2 active:opacity-60"
+      accessibilityRole="button"
+      accessibilityLabel="Collapse resolved thread"
+    >
+      <Ionicons name="checkmark-circle" size={14} color={mutedFg} />
+      <Text className="text-xs text-muted-foreground flex-1" numberOfLines={1}>
+        Resolved by{" "}
+        <Text className="text-xs text-foreground font-medium">
+          {resolverName}
+        </Text>
+        {entry.resolved_at ? ` · ${timeAgo(entry.resolved_at)}` : ""}
+      </Text>
+      <Text className="text-xs text-muted-foreground">Collapse</Text>
+    </Pressable>
   );
 }
 
@@ -165,22 +346,36 @@ function CommentBody({
   const { getName } = useActorLookup();
   const userId = useAuthStore((s) => s.user?.id);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const toggle = useToggleCommentReaction(issueId);
+  const qc = useQueryClient();
+  const createComment = useCreateComment(issueId);
+  // Failed-comment state for THIS entry — undefined when the entry is a
+  // normal server-backed comment OR an in-flight optimistic. Only set when
+  // the matching `useCreateComment` mutation errored and the entry was
+  // intentionally left in the cache to surface inline retry.
+  const failed = useFailedCommentsStore((s) => s.failed[entry.id]);
   // Same query as IssueDescription — TanStack dedupes so this fires once
   // per issue regardless of how many comments need to resolve attachments.
   const { data: attachments } = useQuery(
     issueAttachmentsOptions(wsId, issueId),
   );
-  // Selection mode toggle. When this comment is the one the user picked
-  // "Select text" on from the action sheet, we flip the Markdown to
-  // `selectable={true}` (handing the long-press to iOS' native selection
-  // magnifier) and disable the outer Pressable.onLongPress so the action
-  // sheet doesn't race the magnifier — see data/comment-select-store.ts
-  // for the full rationale.
+  // Issue detail (cached by IssueDetailScreen) — only needed for the
+  // identifier passed into the context-menu "Copy link" / "New issue"
+  // actions. TanStack dedupes against the screen-level subscription.
+  const { data: issue } = useQuery(issueDetailOptions(wsId, issueId));
+  // Selection mode: when the user picked "Select Text" from the
+  // CommentContextMenu, the store remembers this comment's id. We then
+  // (a) skip the context-menu wrapper so UIKit no longer owns long-press,
+  // and (b) flip Markdown to `selectable={true}` so the next long-press
+  // hands off to UIKit's native selection magnifier (handles + Copy/Look
+  // Up callout). Same UX as iOS 26 iMessage "Select" — no race, no flicker.
   const isSelecting = useCommentSelectStore(
     (s) => s.selectingId === entry.id,
   );
+  // Optimistic comments (synthetic ids minted by useCreateComment) don't
+  // have server-side ids yet — every menu action (toggle / copy link /
+  // delete / resolve) would no-op or break, so we render the body bare.
+  const isOptimistic = entry.id.startsWith("optimistic-");
 
   const name = getName(
     entry.actor_type as "member" | "agent" | null | undefined,
@@ -211,71 +406,134 @@ function CommentBody({
     [reactions, userId, toggle, entry.id],
   );
 
-  const handleLongPress = useCallback(() => {
-    // Optimistic comments (synthetic ids from the create mutation) shouldn't
-    // accept actions — server-side ids haven't been assigned yet, so a
-    // toggle/copy/reply against the synthetic id would no-op or break.
-    if (entry.id.startsWith("optimistic-")) return;
-    if (!wsSlug) return;
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push({
-      pathname: "/[workspace]/issue/[id]/comment/[commentId]/actions",
-      params: {
-        workspace: wsSlug,
-        id: issueId,
-        commentId: entry.id,
-      },
+  const handleRetry = useCallback(() => {
+    if (!failed || !wsId) return;
+    // Remove the stale optimistic + failed marker BEFORE re-firing so the
+    // mutation's own optimistic insert lands on a clean slate instead of
+    // creating a duplicate row. The new attempt mints a fresh optimistic id.
+    discardFailedComment(qc, wsId, issueId, entry.id);
+    createComment.mutate({
+      content: failed.content,
+      parentId: failed.parentId,
+      attachmentIds: failed.attachmentIds,
     });
-  }, [entry.id, wsSlug, issueId]);
+  }, [failed, qc, wsId, issueId, entry.id, createComment]);
+
+  const handleDiscard = useCallback(() => {
+    if (!wsId) return;
+    discardFailedComment(qc, wsId, issueId, entry.id);
+  }, [qc, wsId, issueId, entry.id]);
 
   // Note: entry.attachments is not rendered separately — the markdown
   // renderer handles inline images (`![]()`) and file cards
   // (`!file[name](url)` → preprocessed into a 📎-prefixed link). The
   // attachments[] array is backend cleanup metadata, not display content
   // (matches web's behavior).
-  return (
-    <Pressable
-      onLongPress={isSelecting ? undefined : handleLongPress}
-      delayLongPress={400}
-    >
-      <View className="gap-2">
-        <View className="flex-row items-center gap-2">
-          <ActorAvatar
-            type={entry.actor_type as "member" | "agent"}
-            id={entry.actor_id}
-            size={24}
-            showPresence
-          />
-          <Text className="text-sm font-medium text-foreground">{name}</Text>
-          <Text className="text-xs text-muted-foreground">
-            · {timeAgo(entry.created_at)}
-            {edited ? " · (edited)" : ""}
-          </Text>
-        </View>
-        {entry.content ? (
-          // Default `selectable={false}` kills UIKit's UITextView.isSelectable
-          // on the underlying enriched-markdown native view (and on our
-          // CodeBlock <Text>s), so the long-press magnifier doesn't fire in
-          // parallel with the parent Pressable.onLongPress that opens the
-          // comment action sheet. Users still copy the full body via the
-          // action sheet's "Copy text" entry. Element X PR #1584 documents
-          // the same bug + fix in a Matrix client.
-          //
-          // When the user explicitly picks "Select text" from the sheet,
-          // `isSelecting` flips and we hand the long-press to iOS' native
-          // selection magnifier instead — see data/comment-select-store.ts.
-          <Markdown
-            content={entry.content}
-            attachments={attachments}
-            selectable={isSelecting}
-          />
-        ) : null}
+  //
+  // `selectable={isSelecting}`: default false so UIKit's UITextView.
+  // isSelectable doesn't fight UIContextMenuInteraction for the long-press
+  // gesture on the enriched-markdown native view. When the user picks
+  // "Select Text" from the menu, `isSelecting` flips true and UIKit's
+  // native selection (magnifier + handles + Copy/Look Up callout) takes
+  // over the next long-press inside the bubble — Safari / Notes / Mail
+  // standard. We also drop the CommentContextMenu wrapper in that branch
+  // so only one long-press handler is bound at a time.
+  const body = (
+    <View className="gap-2">
+      <View className="flex-row items-center gap-2">
+        <ActorAvatar
+          type={entry.actor_type as "member" | "agent"}
+          id={entry.actor_id}
+          size={24}
+          showPresence
+        />
+        <Text className="text-sm font-medium text-foreground">{name}</Text>
+        <Text className="text-xs text-muted-foreground">
+          · {timeAgo(entry.created_at)}
+          {edited ? " · (edited)" : ""}
+        </Text>
+      </View>
+      {entry.content ? (
+        <Markdown
+          content={entry.content}
+          attachments={attachments}
+          selectable={isSelecting}
+        />
+      ) : null}
+      {failed ? (
+        <FailedActions
+          error={failed.error}
+          onRetry={handleRetry}
+          onDiscard={handleDiscard}
+        />
+      ) : (
         <ReactionBar
           reactions={reactions}
           currentUserId={userId}
           onToggle={onToggleReaction}
         />
-      </View>
-    </Pressable>
+      )}
+    </View>
+  );
+
+  if (isSelecting || isOptimistic) return body;
+
+  return (
+    <CommentContextMenu
+      entry={entry}
+      issueId={issueId}
+      issueIdentifier={issue?.identifier}
+    >
+      {body}
+    </CommentContextMenu>
+  );
+}
+
+/**
+ * Inline retry strip shown beneath a failed optimistic comment body. Sits
+ * where ReactionBar normally lives — same vertical rhythm, but the slot
+ * carries the error message + Retry/Discard buttons. Single source of the
+ * error surface (no parallel toast), so the user always lands on the row
+ * they typed if they come back later.
+ */
+function FailedActions({
+  error,
+  onRetry,
+  onDiscard,
+}: {
+  error: string;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
+  const { colorScheme } = useColorScheme();
+  const destructive = THEME[colorScheme].destructive;
+  return (
+    <View className="flex-row items-center gap-2 mt-0.5">
+      <Ionicons name="alert-circle" size={14} color={destructive} />
+      <Text
+        className="flex-1 text-xs text-destructive"
+        numberOfLines={1}
+      >
+        {error || "Couldn't send"}
+      </Text>
+      <Pressable
+        onPress={onRetry}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel="Retry sending comment"
+      >
+        <Text className="text-xs text-primary font-medium">Retry</Text>
+      </Pressable>
+      <Pressable
+        onPress={onDiscard}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel="Discard failed comment"
+      >
+        <Text className="text-xs text-muted-foreground font-medium">
+          Discard
+        </Text>
+      </Pressable>
+    </View>
   );
 }

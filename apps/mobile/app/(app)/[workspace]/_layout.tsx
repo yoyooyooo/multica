@@ -160,15 +160,6 @@ export default function WorkspaceLayout() {
             headerLeft: () => <ModalCloseButton />,
           }}
         />
-        {/* Workspace menu sheet — isolated (no neighbour picker chip to
-            stay consistent with), so it overrides the shared
-            `[0.6, 0.95]` detents with `fitToContents`. The menu is short
-            (≤ 5 fixed actions) and the two-snap default would leave the
-            bottom 60% empty. */}
-        <Stack.Screen
-          name="menu"
-          options={{ ...SHEET_OPTIONS, sheetAllowedDetents: "fitToContents" }}
-        />
         {/* Issue-detail formSheet pickers. All share the same sheet config:
             explicit numeric detents to dodge expo/expo#42904+#42965 (the
             `fitToContents` zero-size / padding bugs on iOS 26 + Expo 55),
@@ -210,10 +201,6 @@ export default function WorkspaceLayout() {
           options={SHEET_OPTIONS}
         />
         <Stack.Screen name="issue/[id]/runs" options={SHEET_OPTIONS} />
-        <Stack.Screen
-          name="issue/[id]/comment/[commentId]/actions"
-          options={SHEET_OPTIONS}
-        />
         <Stack.Screen
           name="issue/[id]/comment/[commentId]/emoji-picker"
           options={SHEET_OPTIONS}
@@ -306,18 +293,6 @@ export default function WorkspaceLayout() {
           name="new-issue"
           options={{
             title: "New Issue",
-            presentation: "modal",
-            headerLeft: () => <ModalCloseButton />,
-          }}
-        />
-        <Stack.Screen
-          name="issue/[id]/new-comment"
-          options={{
-            // Comment composition is its own modal so we get the iOS slide-up
-            // sheet, full keyboard real estate, and a clean back-stack.
-            // Title flips between "New comment" and "Reply" via Stack.Screen
-            // override inside the screen based on route params.
-            title: "New comment",
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
