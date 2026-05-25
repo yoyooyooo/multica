@@ -75,6 +75,6 @@ const nextConfig: NextConfig = {
 // dynamic-import `.source/source.config.mjs` under the Turbopack Node evaluator
 // (see fumadocs#2658). `dev`/`build` scripts pass `--webpack` to opt out.
 // Drop the flag once fumadocs-mdx ships a Turbopack-compatible loader.
-const withMDX = createMDX();
+const withMDX = createMDX() as (config: NextConfig) => NextConfig;
 
 export default withMDX(nextConfig);
