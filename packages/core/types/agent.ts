@@ -6,12 +6,13 @@ export type AgentVisibility = "workspace" | "private";
 
 /**
  * Per-agent toggle controlling whether the runtime merges the host machine's
- * user-global skill directory into the agent. "ignore" (default) isolates the
- * runtime; "merge" preserves the legacy inherit-from-machine behavior. Today
- * only the Claude runtime honours the switch — others either already isolate
- * (Codex via CODEX_HOME) or treat it as a no-op. Older backends omit the
- * field; clients MUST treat undefined as "ignore" so the safer default wins
- * on drift.
+ * user-global skill directory into the agent. "merge" (default) preserves the
+ * inherit-from-machine behavior; "ignore" isolates the runtime so a broken
+ * local skill on one operator's machine cannot crash a shared agent (#3052).
+ * Today only the Claude runtime honours the switch — others either already
+ * isolate (Codex via CODEX_HOME) or treat it as a no-op. Older backends omit
+ * the field; clients MUST treat undefined as "merge" so the documented
+ * default wins on drift.
  */
 export type AgentSkillsLocal = "ignore" | "merge";
 
@@ -157,7 +158,8 @@ export interface Agent {
    * Per-agent toggle for merging the host machine's user-global skill
    * directory (e.g. Claude's `~/.claude/skills/`) into the agent. Older
    * backends that predate the column omit this field; consumers MUST
-   * default to `"ignore"` for safety on drift (#3052).
+   * default to `"merge"` on drift to match the documented platform
+   * default (#3052 hardening is opt-in via `"ignore"`).
    */
   skills_local?: AgentSkillsLocal;
   owner_id: string | null;
@@ -195,9 +197,9 @@ export interface CreateAgentRequest {
   model?: string;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
-  /** Per-agent host-skill merge toggle. Defaults to `"ignore"` server-side
-   *  when omitted; pass `"merge"` to opt the agent into inheriting the host
-   *  machine's user-global skill directory. */
+  /** Per-agent host-skill merge toggle. Defaults to `"merge"` server-side
+   *  when omitted (inherit-from-machine behavior); pass `"ignore"` to
+   *  isolate the agent from the host's user-global skill directory. */
   skills_local?: AgentSkillsLocal;
   /** Optional template slug used by the onboarding agent picker. Surfaced
    *  as the `template` property on the `agent_created` PostHog event. */

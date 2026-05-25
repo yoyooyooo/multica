@@ -94,11 +94,12 @@ export function CreateAgentDialog({
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(
     () => new Set(template?.skills.map((s) => s.id) ?? []),
   );
-  // Default to "ignore" for new agents (matches the server-side safe
-  // default and the rule for shared agents). Duplicate mode carries the
-  // source agent's value through so a personal agent stays personal.
+  // Default to "merge" for new agents (matches the server-side default —
+  // inherit-from-machine behavior preserved). Duplicate mode carries the
+  // source agent's explicit "ignore" through so a hardened agent stays
+  // hardened.
   const [skillsLocal, setSkillsLocal] = useState<AgentSkillsLocal>(
-    () => (template?.skills_local === "merge" ? "merge" : "ignore"),
+    () => (template?.skills_local === "ignore" ? "ignore" : "merge"),
   );
   const [creating, setCreating] = useState(false);
 
@@ -170,11 +171,11 @@ export function CreateAgentDialog({
         model: model.trim() || undefined,
         instructions: trimmedInstructions || undefined,
         avatar_url: avatarUrl ?? undefined,
-        // Only send the toggle when the user opted in. "ignore" is the
-        // server-side default; omitting the field keeps the request body
-        // small and prevents older backends without the column from
-        // rejecting the request.
-        skills_local: skillsLocal === "merge" ? "merge" : undefined,
+        // Only send the toggle when the user opted into isolation.
+        // "merge" is the server-side default; omitting the field keeps the
+        // request body small and prevents older backends without the
+        // column from rejecting the request.
+        skills_local: skillsLocal === "ignore" ? "ignore" : undefined,
       };
       if (template) {
         // Duplicate path: forward the hidden config fields the source

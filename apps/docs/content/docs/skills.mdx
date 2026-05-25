@@ -18,14 +18,14 @@ Most of the time you want **workspace skills**: import once, every teammate's ag
 
 ### Per-agent host-skill merge toggle
 
-By default Multica **isolates** the runtime from the host machine's user-global skill directory. The Claude runtime, for example, no longer reads `~/.claude/skills/` for a shared agent — a broken local skill on one operator's machine would otherwise crash the CLI before it ever read a prompt (silent `broken pipe` exits, see GitHub #3052).
+By default Multica **merges** the host machine's user-global skill directory into the agent (so existing personal workflows that rely on locally installed Claude skills keep working out of the box). You can flip the toggle to **ignore** when a shared agent should be hardened against a broken local skill on one operator's machine — that scenario crashes the Claude CLI before it ever reads a prompt (silent `broken pipe` exits, see GitHub #3052).
 
-Each agent now carries a `skills_local` switch you can flip from the **Create Agent** dialog or the agent's **Skills** tab:
+Each agent carries a `skills_local` switch you can change from the **Create Agent** dialog or the agent's **Skills** tab:
 
-- **Off — Ignore (default)**: the runtime launches against a per-task config directory that mirrors the host's effective Claude config dir *except* for `skills/`. The source is resolved with precedence agent `custom_env` `CLAUDE_CONFIG_DIR` > parent process `CLAUDE_CONFIG_DIR` > `~/.claude/`, so an operator who pinned Claude at a managed install keeps the right credentials and settings. Login credentials (`.credentials.json`), global settings, plugins, and agents pass through, so Claude Code authentication keeps working — only the user-global skills directory is hidden from the CLI. On Windows hosts without Developer Mode the mirror falls back to directory junctions and hardlink/copy for files, so the passthrough still works without elevated privileges. Recommended for any agent shared with teammates.
-- **On — Merge**: the runtime inherits the full `~/.claude/` directory, including its `skills/`. Use this for personal agents that intentionally rely on locally installed skills.
+- **On — Merge (default)**: the runtime inherits the full `~/.claude/` directory, including its `skills/`. Matches the pre-MUL-2603 behavior — recommended for personal agents that intentionally rely on locally installed skills.
+- **Off — Ignore**: the runtime launches against a per-task config directory that mirrors the host's effective Claude config dir *except* for `skills/`. The source is resolved with precedence agent `custom_env` `CLAUDE_CONFIG_DIR` > parent process `CLAUDE_CONFIG_DIR` > `~/.claude/`, so an operator who pinned Claude at a managed install keeps the right credentials and settings. Login credentials (`.credentials.json`), global settings, plugins, and agents pass through, so Claude Code authentication keeps working — only the user-global skills directory is hidden from the CLI. On Windows hosts without Developer Mode the mirror falls back to directory junctions and hardlink/copy for files, so the passthrough still works without elevated privileges. Recommended for any shared agent where host-skill safety matters.
 
-Workspace skills under `{workDir}/.claude/skills/` are loaded regardless of the toggle — this switch only governs the host's user-global skills directory. Codex already isolates skill discovery via `CODEX_HOME` and ignores the toggle.
+Workspace skills under `{workDir}/.claude/skills/` are loaded regardless of the toggle — this switch only governs the host's user-global skills directory. Only the Claude runtime acts on the toggle today: Codex isolates skill discovery via `CODEX_HOME`, the ACP backends (Hermes / Kimi / Kiro) and the JSON-stream backends (Copilot / Cursor / Gemini / Pi / OpenCode / OpenClaw) anchor discovery to the task workdir rather than reading a user-global skill directory, so the toggle is a no-op for them.
 
 ## Importing a skill
 

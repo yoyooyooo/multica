@@ -11,9 +11,9 @@ import (
 // TestCreateAgent_SkillsLocal_Validation pins the contract for the
 // per-agent host-skill merge switch added with MUL-2603 / GitHub #3052:
 //
-//   - Field omitted → safe default "ignore" is persisted (so a CLI client
-//     that hasn't upgraded behaves like the rest of the platform: shared
-//     agents stay isolated by default).
+//   - Field omitted → platform default "merge" is persisted (preserves the
+//     pre-MUL-2603 inherit-from-machine behavior so existing personal
+//     workflows that rely on locally installed skills keep working).
 //   - "ignore" / "merge" → accepted and round-tripped.
 //   - Any other value → 400 BadRequest. The DB CHECK would catch it as a
 //     500 fallback, but we want a clean error for clients.
@@ -32,7 +32,7 @@ func TestCreateAgent_SkillsLocal_Validation(t *testing.T) {
 		)
 	})
 
-	t.Run("omitted defaults to ignore", func(t *testing.T) {
+	t.Run("omitted defaults to merge", func(t *testing.T) {
 		body := map[string]any{
 			"name":                 "skills-local-test-default",
 			"runtime_id":           claudeRuntimeID,
@@ -46,28 +46,28 @@ func TestCreateAgent_SkillsLocal_Validation(t *testing.T) {
 		}
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
-		if resp["skills_local"] != "ignore" {
-			t.Errorf("expected skills_local=ignore (safe default), got %v", resp["skills_local"])
+		if resp["skills_local"] != "merge" {
+			t.Errorf("expected skills_local=merge (platform default), got %v", resp["skills_local"])
 		}
 	})
 
-	t.Run("explicit merge round-trips", func(t *testing.T) {
+	t.Run("explicit ignore round-trips", func(t *testing.T) {
 		body := map[string]any{
-			"name":                 "skills-local-test-merge",
+			"name":                 "skills-local-test-ignore",
 			"runtime_id":           claudeRuntimeID,
 			"visibility":           "private",
 			"max_concurrent_tasks": 1,
-			"skills_local":         "merge",
+			"skills_local":         "ignore",
 		}
 		w := httptest.NewRecorder()
 		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
 		if w.Code != http.StatusCreated {
-			t.Fatalf("skills_local=merge: expected 201, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("skills_local=ignore: expected 201, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
-		if resp["skills_local"] != "merge" {
-			t.Errorf("expected skills_local=merge, got %v", resp["skills_local"])
+		if resp["skills_local"] != "ignore" {
+			t.Errorf("expected skills_local=ignore, got %v", resp["skills_local"])
 		}
 	})
 
@@ -98,10 +98,10 @@ func TestUpdateAgent_SkillsLocal_Tristate(t *testing.T) {
 	ctx := context.Background()
 	claudeRuntimeID := createClaudeProviderRuntime(t)
 	agentID := createAgentOnRuntime(t, "skills-local-update-test", claudeRuntimeID, "")
-	// Promote the seed row to "merge" so we can verify both omit (preserve
-	// merge) and explicit-flip-back (set ignore) paths.
-	if _, err := testPool.Exec(ctx, `UPDATE agent SET skills_local = 'merge' WHERE id = $1`, agentID); err != nil {
-		t.Fatalf("seed skills_local=merge: %v", err)
+	// Demote the seed row to "ignore" so we can verify both omit (preserve
+	// ignore) and explicit-flip-back (set merge) paths.
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET skills_local = 'ignore' WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("seed skills_local=ignore: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -120,25 +120,25 @@ func TestUpdateAgent_SkillsLocal_Tristate(t *testing.T) {
 		}
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
-		if resp["skills_local"] != "merge" {
-			t.Errorf("name-only update silently changed skills_local: got %v, want merge", resp["skills_local"])
+		if resp["skills_local"] != "ignore" {
+			t.Errorf("name-only update silently changed skills_local: got %v, want ignore", resp["skills_local"])
 		}
 	})
 
-	t.Run("explicit ignore flips back", func(t *testing.T) {
+	t.Run("explicit merge flips back", func(t *testing.T) {
 		body := map[string]any{
-			"skills_local": "ignore",
+			"skills_local": "merge",
 		}
 		w := httptest.NewRecorder()
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
 		testHandler.UpdateAgent(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("update skills_local=ignore: expected 200, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("update skills_local=merge: expected 200, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
-		if resp["skills_local"] != "ignore" {
-			t.Errorf("expected skills_local=ignore after update, got %v", resp["skills_local"])
+		if resp["skills_local"] != "merge" {
+			t.Errorf("expected skills_local=merge after update, got %v", resp["skills_local"])
 		}
 	})
 
@@ -158,19 +158,21 @@ func TestUpdateAgent_SkillsLocal_Tristate(t *testing.T) {
 // TestNormalizeSkillsLocal_DriftStaysSafe is a unit-level safety net for
 // the on-read coercion: if a row gets written with anything other than
 // the two recognised values (hand edits, future schema drift, older
-// daemons sending up garbage), the API must surface "ignore" — never
-// leak an indeterminate value to clients or the daemon.
+// daemons sending up garbage), the API must surface "merge" — the
+// platform default — never leak an indeterminate value to clients or the
+// daemon. Only the exact literal "ignore" maps to ignore; anything else
+// coerces to the documented default.
 func TestNormalizeSkillsLocal_DriftStaysSafe(t *testing.T) {
 	cases := []struct {
 		stored string
 		want   string
 	}{
-		{"", "ignore"},
+		{"", "merge"},
 		{"ignore", "ignore"},
 		{"merge", "merge"},
-		{"MERGE", "ignore"}, // case-sensitive — drift falls back to safe default
-		{"yes", "ignore"},
-		{"true", "ignore"},
+		{"IGNORE", "merge"}, // case-sensitive — drift falls back to platform default
+		{"yes", "merge"},
+		{"true", "merge"},
 	}
 	for _, c := range cases {
 		if got := normalizeSkillsLocal(c.stored); got != c.want {

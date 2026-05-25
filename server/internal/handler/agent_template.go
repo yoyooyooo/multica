@@ -449,7 +449,7 @@ func (h *Handler) CreateAgentFromTemplate(w http.ResponseWriter, r *http.Request
 		// skills_local has a NOT NULL CHECK ('ignore' | 'merge'); the Go zero
 		// value "" would fail the constraint instead of falling back to the
 		// column default. Match the public CreateAgent default explicitly.
-		SkillsLocal: "ignore",
+		SkillsLocal: "merge",
 	})
 	if err != nil {
 		// Mirror handler/agent.go:CreateAgent: when the duplicate is the

@@ -24,10 +24,11 @@ export function SkillsTab({
   const { t } = useT("agents");
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
-  // Default missing values to "ignore". Older backends omit the field
-  // entirely; the safer default wins on drift (see AgentSkillsLocal).
+  // Default missing values to "merge". Older backends omit the field
+  // entirely; the documented platform default wins on drift (see
+  // AgentSkillsLocal — "ignore" is the explicit hardening opt-in).
   const currentSkillsLocal: AgentSkillsLocal =
-    agent.skills_local === "merge" ? "merge" : "ignore";
+    agent.skills_local === "ignore" ? "ignore" : "merge";
   const [skillsLocalSaving, setSkillsLocalSaving] = useState(false);
   // Same query the SkillAddDialog uses (TanStack Query dedupes by key, so
   // this isn't an extra request) — used here only to grey out the "Add

@@ -18,14 +18,14 @@ Multica 支持两种 Skill 来源：
 
 ### 按智能体维度的"合并本机 Skill"开关
 
-默认情况下 Multica 会让运行时**和本机用户级 skill 目录隔离**。比如 Claude 运行时不再读取共享智能体所在机器的 `~/.claude/skills/`——否则某台机器上有问题的本机 skill 会在 CLI 还没读到 prompt 前就崩溃（典型表现是 `broken pipe`，参见 GitHub #3052）。
+默认情况下 Multica **会**把本机用户级 skill 目录合并进智能体（保持 MUL-2603 之前的"继承本机"行为，避免误伤依赖本机 skill 的个人智能体）。如果某个共享智能体需要防御"某台机器上有问题的本机 skill"——这种情况会让 Claude CLI 还没读到 prompt 就崩（典型表现是 `broken pipe`，参见 GitHub #3052）——你可以把开关切到 ignore。
 
-每个智能体现在带有一个 `skills_local` 开关，可在 **创建 Agent** 弹窗或智能体的 **Skills** 标签页里切换：
+每个智能体都带有一个 `skills_local` 开关，可在 **创建 Agent** 弹窗或智能体的 **Skills** 标签页里切换：
 
-- **关闭 —— Ignore（默认）**：运行时使用按任务隔离的配置目录，目录里通过软链镜像了主机实际生效的 Claude 配置目录中除 `skills/` 之外的全部内容。源目录的解析顺序为：agent `custom_env` 中的 `CLAUDE_CONFIG_DIR` > 父进程 `CLAUDE_CONFIG_DIR` > `~/.claude/`，因此把 Claude 固定到托管安装目录的运维者仍能拿到正确的凭据和设置。登录凭据（`.credentials.json`）、全局设置、插件、本地 agent 仍会被 CLI 看到，Claude Code 登录态不受影响，只屏蔽用户级 skill 目录。在未开启开发者模式的 Windows 主机上，软链失败时会自动回退为目录联结（junction）以及文件的硬链接/拷贝，保证无管理员权限时镜像仍然可用。**推荐用于团队共享智能体**。
-- **开启 —— Merge**：运行时直接继承完整的 `~/.claude/`，包括 `skills/`。适合个人智能体、且明确依赖本机 skill 的场景。
+- **开启 —— Merge（默认）**：运行时直接继承完整的 `~/.claude/`，包括 `skills/`。沿用 MUL-2603 之前的行为，适合个人智能体或明确依赖本机 skill 的场景。
+- **关闭 —— Ignore**：运行时使用按任务隔离的配置目录，目录里通过软链镜像了主机实际生效的 Claude 配置目录中除 `skills/` 之外的全部内容。源目录的解析顺序为：agent `custom_env` 中的 `CLAUDE_CONFIG_DIR` > 父进程 `CLAUDE_CONFIG_DIR` > `~/.claude/`，因此把 Claude 固定到托管安装目录的运维者仍能拿到正确的凭据和设置。登录凭据（`.credentials.json`）、全局设置、插件、本地 agent 仍会被 CLI 看到，Claude Code 登录态不受影响，只屏蔽用户级 skill 目录。在未开启开发者模式的 Windows 主机上，软链失败时会自动回退为目录联结（junction）以及文件的硬链接/拷贝，保证无管理员权限时镜像仍然可用。**推荐在需要防御本机 skill 风险的共享智能体上启用**。
 
-无论开关如何，工作区目录下的 `{workDir}/.claude/skills/` 都会照常加载——这个开关只控制本机用户级 skill 目录。Codex 本身已经通过 `CODEX_HOME` 做了隔离，所以开关对 Codex 没有影响。
+无论开关如何，工作区目录下的 `{workDir}/.claude/skills/` 都会照常加载——这个开关只控制本机用户级 skill 目录。目前只有 Claude 运行时会读取这个开关：Codex 已经通过 `CODEX_HOME` 做了隔离，ACP 后端（Hermes / Kimi / Kiro）和 JSON-stream 后端（Copilot / Cursor / Gemini / Pi / OpenCode / OpenClaw）都把 skill 发现路径锚在任务工作目录，不会读取本机用户级 skill 目录，所以这些 runtime 对开关是 no-op。
 
 ## 导入 Skill
 

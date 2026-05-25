@@ -93,9 +93,13 @@ describe("SkillsTab", () => {
     renderSkillsTab();
 
     // Top informational callout should still render; that's how we know
-    // the tab body itself rendered (not stuck in a loading state).
+    // the tab body itself rendered (not stuck in a loading state). The
+    // toggle hint also includes the same phrase, so anchor on the intro
+    // copy specifically.
     expect(
-      await screen.findByText(/host machine's user-global skill directory/i),
+      await screen.findByText(
+        /Workspace skills assigned to this agent/i,
+      ),
     ).toBeInTheDocument();
 
     // The removed section's heading and its trigger button must be gone.
@@ -105,7 +109,11 @@ describe("SkillsTab", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the local-skill toggle off by default (safe-default for shared agents)", async () => {
+  it("renders the local-skill toggle ON by default (merge — preserves inherit-from-machine behavior)", async () => {
+    // Bohan's MUL-2603 product decision: keep the legacy "merge" default so
+    // personal workflows that rely on locally installed Claude Skills keep
+    // working unchanged. Owners flip the toggle off ("ignore") when they
+    // explicitly need to harden a shared agent.
     renderSkillsTab();
 
     const toggle = await screen.findByRole("switch", {
@@ -113,15 +121,15 @@ describe("SkillsTab", () => {
     });
     // Base UI Switch reflects state via data-state; aria-checked is the
     // accessible read.
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("reflects merge mode when the agent opted in", async () => {
-    renderSkillsTab({ skills_local: "merge" });
+  it("reflects ignore mode when the agent opted into isolation", async () => {
+    renderSkillsTab({ skills_local: "ignore" });
 
     const toggle = await screen.findByRole("switch", {
       name: /Allow locally installed skills/i,
     });
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });

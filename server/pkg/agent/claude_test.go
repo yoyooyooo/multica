@@ -651,15 +651,16 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 	return data
 }
 
-func TestClaudeExecuteIsolatesHostSkillsByDefault(t *testing.T) {
+func TestClaudeExecuteIsolatesHostSkillsWhenIgnoreOptedIn(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
 
 	// Fake claude binary that prints its CLAUDE_CONFIG_DIR to stdout so we
-	// can confirm the runtime redirected the CLI off `~/.claude/`. The
-	// daemon-default mode (no SkillsLocal opt-in) must isolate.
+	// can confirm the runtime redirected the CLI off `~/.claude/` when the
+	// agent explicitly opted into "ignore" mode (the platform default is
+	// "merge", which preserves the host's CLAUDE_CONFIG_DIR).
 	fakePath := filepath.Join(t.TempDir(), "claude")
 	script := "#!/bin/sh\n" +
 		"cat >/dev/null\n" +
@@ -675,9 +676,13 @@ func TestClaudeExecuteIsolatesHostSkillsByDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cwd := t.TempDir()
-	// Default ExecOptions → SkillsLocal == "" → backend treats as "ignore"
-	// and points CLAUDE_CONFIG_DIR at a per-task scratch dir under cwd.
-	session, err := backend.Execute(ctx, "ignored", ExecOptions{Cwd: cwd, Timeout: 5 * time.Second})
+	// Explicit SkillsLocal == "ignore" → backend points CLAUDE_CONFIG_DIR at
+	// a per-task scratch dir under cwd.
+	session, err := backend.Execute(ctx, "ignored", ExecOptions{
+		Cwd:         cwd,
+		Timeout:     5 * time.Second,
+		SkillsLocal: "ignore",
+	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -695,13 +700,68 @@ func TestClaudeExecuteIsolatesHostSkillsByDefault(t *testing.T) {
 		// dir under our task cwd, not the host user's ~/.claude.
 		got := strings.TrimSpace(result.Output)
 		if got == "" {
-			t.Fatalf("expected CLAUDE_CONFIG_DIR to be non-empty in default mode")
+			t.Fatalf("expected CLAUDE_CONFIG_DIR to be non-empty in ignore mode")
 		}
 		if !strings.Contains(got, "multica-claude-config-") {
 			t.Fatalf("expected isolated scratch dir, got %q", got)
 		}
 		if !strings.HasPrefix(got, cwd) {
 			t.Fatalf("expected isolated dir under %q, got %q", cwd, got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
+func TestClaudeExecuteDefaultModeKeepsHostConfigDir(t *testing.T) {
+	// NOT parallel — t.Setenv mutates global env.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// Default ExecOptions (no SkillsLocal) must preserve the host's
+	// CLAUDE_CONFIG_DIR — the platform default is "merge", which inherits
+	// the host's user-global skill directory (Bohan's product decision on
+	// MUL-2603: keep MUL-2603 hardening as an explicit opt-in to avoid
+	// regressing personal workflows that rely on locally installed skills).
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"printf '%s\\n' \"{\\\"type\\\":\\\"system\\\",\\\"session_id\\\":\\\"sess\\\"}\"\n" +
+		"printf '%s\\n' \"{\\\"type\\\":\\\"result\\\",\\\"subtype\\\":\\\"success\\\",\\\"is_error\\\":false,\\\"session_id\\\":\\\"sess\\\",\\\"result\\\":\\\"${CLAUDE_CONFIG_DIR:-unset}\\\"}\"\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/test-host-claude")
+
+	backend, err := New("claude", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Default ExecOptions → SkillsLocal == "" → backend treats as merge
+	// (inherit-from-machine) and the host CLAUDE_CONFIG_DIR is preserved.
+	session, err := backend.Execute(ctx, "ignored", ExecOptions{
+		Cwd:     t.TempDir(),
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result := <-session.Result:
+		if result.Status != "completed" {
+			t.Fatalf("expected completed, got %q (err=%q)", result.Status, result.Error)
+		}
+		got := strings.TrimSpace(result.Output)
+		if got != "/tmp/test-host-claude" {
+			t.Fatalf("expected host CLAUDE_CONFIG_DIR preserved in default mode, got %q", got)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for result")
@@ -1285,9 +1345,15 @@ func TestClaudeExecuteIsolatesUsesCustomEnvSource(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Default SkillsLocal → ignore → backend builds scratch dir mirrored
-	// from custom_env CLAUDE_CONFIG_DIR.
-	session, err := backend.Execute(ctx, "ignored", ExecOptions{Cwd: t.TempDir(), Timeout: 5 * time.Second})
+	// Explicit SkillsLocal == "ignore" → backend builds scratch dir mirrored
+	// from custom_env CLAUDE_CONFIG_DIR. (The platform default is "merge",
+	// which would just preserve the host CLAUDE_CONFIG_DIR untouched and
+	// never exercise the mirror path — see MUL-2603 product decision.)
+	session, err := backend.Execute(ctx, "ignored", ExecOptions{
+		Cwd:         t.TempDir(),
+		Timeout:     5 * time.Second,
+		SkillsLocal: "ignore",
+	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

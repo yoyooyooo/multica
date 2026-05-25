@@ -53,9 +53,9 @@ type AgentResponse struct {
 	ThinkingLevel string `json:"thinking_level"`
 	// SkillsLocal controls whether the runtime merges the host machine's
 	// user-global skill directory (e.g. Claude's `~/.claude/skills/`) into
-	// the agent's skill set. "ignore" (default) isolates the runtime so a
-	// broken local skill cannot crash a shared agent (#3052); "merge"
-	// preserves the pre-existing inherit-from-machine behavior. Workspace
+	// the agent's skill set. "merge" (default) preserves the pre-existing
+	// inherit-from-machine behavior; "ignore" isolates the runtime so a
+	// broken local skill cannot crash a shared agent (#3052). Workspace
 	// skills (`{workDir}/.claude/skills/`) are always loaded regardless.
 	SkillsLocal string              `json:"skills_local"`
 	OwnerID     *string             `json:"owner_id"`
@@ -235,7 +235,7 @@ type TaskAgentData struct {
 	// SkillsLocal mirrors the agent column of the same name. Daemon reads
 	// it to decide whether to isolate the Claude runtime from the host's
 	// user-global `~/.claude/skills/`. Empty string is treated as the
-	// safe default ("ignore") by the daemon — see normalizeSkillsLocal.
+	// platform default ("merge") by the daemon — see normalizeSkillsLocal.
 	SkillsLocal string `json:"skills_local,omitempty"`
 }
 
@@ -460,7 +460,7 @@ type CreateAgentRequest struct {
 	ThinkingLevel      string            `json:"thinking_level"`
 	// SkillsLocal opts the agent into ("merge") or out of ("ignore") the
 	// runtime's user-global skill discovery. Empty / missing defaults to
-	// "ignore". Validated in CreateAgent / UpdateAgent against the
+	// "merge". Validated in CreateAgent / UpdateAgent against the
 	// recognised set; anything else returns 400.
 	SkillsLocal string `json:"skills_local"`
 	// Template records which template slug was used to seed this agent
@@ -562,12 +562,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Request validation is strict: a missing field defaults to "ignore", but a
-	// present-but-bogus value must 400 rather than silently normalize. The
-	// drift-safe normalize is only for on-read coercion of stored values
-	// (normalizeSkillsLocal) — applying it to request input would mask client
-	// typos as a successful create.
-	skillsLocal := "ignore"
+	// Request validation is strict: a missing field defaults to "merge" (the
+	// pre-MUL-2603 inherit-from-machine behavior), but a present-but-bogus
+	// value must 400 rather than silently normalize. The drift-safe normalize
+	// is only for on-read coercion of stored values (normalizeSkillsLocal) —
+	// applying it to request input would mask client typos as a successful
+	// create.
+	skillsLocal := "merge"
 	if req.SkillsLocal != "" {
 		if !isValidSkillsLocal(req.SkillsLocal) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("skills_local %q is invalid (expected \"ignore\" or \"merge\")", req.SkillsLocal))
@@ -689,16 +690,17 @@ type UpdateAgentRequest struct {
 	SkillsLocal *string `json:"skills_local"`
 }
 
-// normalizeSkillsLocal coerces empty / unknown stored values to the safe
-// default "ignore". Older rows written before the column existed get a
-// NOT NULL default at migration time, but the helper still guards against
-// any future schema drift or hand-edited rows so we never surface an
-// in-between state to clients or the daemon.
+// normalizeSkillsLocal coerces empty / unknown stored values to the platform
+// default "merge" — the pre-MUL-2603 inherit-from-machine behavior. Older
+// rows written before the column existed get a NOT NULL default at migration
+// time, but the helper still guards against any future schema drift or
+// hand-edited rows so we never surface an in-between state to clients or the
+// daemon.
 func normalizeSkillsLocal(stored string) string {
-	if stored == "merge" {
-		return "merge"
+	if stored == "ignore" {
+		return "ignore"
 	}
-	return "ignore"
+	return "merge"
 }
 
 // isValidSkillsLocal mirrors the CHECK constraint on agent.skills_local.
@@ -878,7 +880,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.SkillsLocal != nil {
 		// PATCH is strictly opt-in: nil means no change. A non-nil value must
 		// validate as-is — normalizing here would let garbage silently land as
-		// "ignore" and hide a client bug. The drift-safe coercion lives in
+		// "merge" and hide a client bug. The drift-safe coercion lives in
 		// normalizeSkillsLocal for on-read use only.
 		if !isValidSkillsLocal(*req.SkillsLocal) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("skills_local %q is invalid (expected \"ignore\" or \"merge\")", *req.SkillsLocal))

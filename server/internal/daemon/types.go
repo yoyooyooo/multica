@@ -99,11 +99,12 @@ type AgentData struct {
 	Model         string            `json:"model,omitempty"`
 	ThinkingLevel string            `json:"thinking_level,omitempty"`
 	// SkillsLocal controls whether the runtime merges the host machine's
-	// user-global skill directory into the agent. "ignore" (default) hides
-	// it from the runtime so a broken local skill cannot crash a shared
-	// agent (#3052); "merge" preserves the inherit-from-machine behavior.
-	// Old servers that predate the column omit this field entirely; the
-	// daemon treats empty as "ignore" — see ExecOptions.SkillsLocal.
+	// user-global skill directory into the agent. "merge" (default)
+	// preserves the inherit-from-machine behavior; "ignore" hides the
+	// directory from the runtime so a broken local skill cannot crash a
+	// shared agent (#3052). Old servers that predate the column omit this
+	// field entirely; the daemon treats empty as "merge" — see
+	// ExecOptions.SkillsLocal.
 	SkillsLocal string `json:"skills_local,omitempty"`
 }
 

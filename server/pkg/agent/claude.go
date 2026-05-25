@@ -68,22 +68,24 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cmd.Dir = opts.Cwd
 	}
 
-	// Skill isolation. The default ("ignore") points CLAUDE_CONFIG_DIR at a
-	// per-run scratch dir that mirrors `~/.claude/` as symlinks — except for
-	// `skills/`, which is omitted so the CLI cannot discover the host user's
-	// `~/.claude/skills/`. A single broken skill on one operator's machine
-	// crashes the CLI before it ever reads stdin (GitHub #3052: silent
-	// "broken pipe" exits), so shared / team agents default to isolation.
-	// Everything else under `~/.claude/` — including the Linux/Windows
-	// `.credentials.json` login token, `settings.json`, `agents/`,
-	// `commands/`, `plugins/`, etc. — is symlinked through so Claude
-	// authentication and global config keep working without an
-	// `ANTHROPIC_API_KEY`. "merge" is the explicit opt-in for personal
-	// agents that want host-machine skills back; the env var is left
-	// alone and the CLI walks `~/.claude/` directly. Workspace skills
-	// (`{cwd}/.claude/skills/`) load from cwd regardless and are not
-	// affected by either mode.
-	isolateClaudeConfig := opts.SkillsLocal != "merge"
+	// Skill isolation. The platform default is "merge" — the CLI walks
+	// `~/.claude/` directly, including its `skills/`, so existing personal
+	// workflows that rely on locally installed Claude skills keep working
+	// out of the box. The agent owner can opt into "ignore" when a shared
+	// agent must be hardened against a broken local skill on one operator's
+	// machine, which otherwise crashes the CLI before it reads stdin
+	// (GitHub #3052: silent "broken pipe" exits).
+	//
+	// In "ignore" mode we point CLAUDE_CONFIG_DIR at a per-run scratch dir
+	// that mirrors `~/.claude/` as symlinks — except for `skills/`, which
+	// is omitted so the CLI cannot discover the host user's
+	// `~/.claude/skills/`. Everything else under `~/.claude/` — including
+	// the Linux/Windows `.credentials.json` login token, `settings.json`,
+	// `agents/`, `commands/`, `plugins/`, etc. — is symlinked through so
+	// Claude authentication and global config keep working without an
+	// `ANTHROPIC_API_KEY`. Workspace skills (`{cwd}/.claude/skills/`) load
+	// from cwd regardless and are not affected by either mode.
+	isolateClaudeConfig := opts.SkillsLocal == "ignore"
 	var claudeConfigDir string
 	var claudeConfigCleanup func()
 	if isolateClaudeConfig {
@@ -703,10 +705,9 @@ func resolveHostClaudeConfigDir(extraEnv map[string]string) string {
 // global settings, plugins, agents, commands, output styles, todos, etc. —
 // which all live in this directory and would otherwise be invisible to the
 // isolated child — while still keeping the user-global skills directory off
-// the CLI's discovery path. Without this passthrough, switching default
-// mode from "merge" to "ignore" would force every Claude agent on a
-// non-API-key host to re-authenticate, breaking the documented "run
-// `claude` once to log in" install flow.
+// the CLI's discovery path. Without this passthrough, opting into "ignore"
+// mode on a non-API-key host would force the Claude agent to re-authenticate,
+// breaking the documented "run `claude` once to log in" install flow.
 //
 // Each entry uses createDirLink / createFileLink, which try symlink first
 // and fall back to a directory junction (Windows `mklink /J`) for dirs or a
