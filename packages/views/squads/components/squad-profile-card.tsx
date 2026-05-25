@@ -93,11 +93,6 @@ export function SquadProfileCard({ squadId }: SquadProfileCardProps) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <p className="truncate text-sm font-semibold">{squad.name}</p>
-            <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-              {t(($) => $.profile_card.member_count, {
-                count: memberStatuses.length,
-              })}
-            </span>
             {isArchived && (
               <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                 {t(($) => $.profile_card.archived)}
@@ -153,8 +148,9 @@ function MembersList({
     <div className="flex flex-col gap-1.5 text-xs">
       <span className="text-muted-foreground">
         {t(($) => $.profile_card.members_section)}
+        <span className="ml-1 tabular-nums">· {members.length}</span>
       </span>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex max-h-[132px] flex-col gap-0.5 overflow-y-auto">
         {visible.map((m) => {
           const isLeader =
             m.member_type === "agent" && m.member_id === leaderId;
