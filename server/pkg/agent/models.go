@@ -1093,7 +1093,7 @@ func parseCodebuddyModels(helpOutput string) []Model {
 	}
 	raw := strings.Split(match[1], ",")
 	var models []Model
-	for i, s := range raw {
+	for _, s := range raw {
 		id := strings.TrimSpace(s)
 		if id == "" {
 			continue
@@ -1102,7 +1102,7 @@ func parseCodebuddyModels(helpOutput string) []Model {
 			ID:       id,
 			Label:    codebuddyModelLabel(id),
 			Provider: codebuddyModelProvider(id),
-			Default:  i == 0,
+			Default:  len(models) == 0,
 		})
 	}
 	return models
