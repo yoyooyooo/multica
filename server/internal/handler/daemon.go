@@ -1124,6 +1124,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			McpConfig:     mcpConfig,
 			Model:         agent.Model.String,
 			ThinkingLevel: agent.ThinkingLevel.String,
+			SkillsLocal:   normalizeSkillsLocal(agent.SkillsLocal),
 		}
 	}
 
