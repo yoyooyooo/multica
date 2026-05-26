@@ -444,8 +444,6 @@ export function ChatWindow() {
 
   const containerClass = "absolute bottom-2 right-2 z-50 flex flex-col rounded-xl ring-1 ring-foreground/10 bg-sidebar shadow-2xl overflow-hidden";
   const containerStyle: React.CSSProperties = {
-    width: renderWidth,
-    height: renderHeight,
     transformOrigin: "bottom right",
     pointerEvents: isOpen ? "auto" : "none",
   };
@@ -455,16 +453,16 @@ export function ChatWindow() {
       ref={windowRef}
       className={containerClass}
       style={containerStyle}
-      layout="position"
-      initial={{ opacity: 0, scale: 0.95 }}
+      initial={{ opacity: 0, scale: 0.95, width: renderWidth, height: renderHeight }}
       animate={{
         opacity: isVisible ? 1 : 0,
         scale: isVisible ? 1 : 0.95,
+        width: renderWidth,
+        height: renderHeight,
       }}
       transition={{
-        layout: isDragging
-          ? { duration: 0 }
-          : { type: "spring", duration: 0.3, bounce: 0 },
+        width: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
+        height: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
         opacity: { duration: 0.15 },
         scale: { type: "spring", duration: 0.2, bounce: 0 },
       }}
