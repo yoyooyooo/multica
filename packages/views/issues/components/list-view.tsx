@@ -29,7 +29,7 @@ import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
 import { useT } from "../../i18n";
 import {
   type DragMoveUpdates,
-  makeKanbanCollision,
+  makeListCollision,
   statusGroupId,
   buildColumns,
   computePosition,
@@ -149,7 +149,7 @@ export function ListView({
   }
 
   const collisionDetection = useMemo(
-    () => makeKanbanCollision(groupIds),
+    () => makeListCollision(groupIds),
     [groupIds],
   );
 
@@ -406,7 +406,7 @@ function StatusAccordionItem({
     <Accordion.Item value={status} ref={dragEnabled ? setDroppableRef : undefined}>
       <Accordion.Header
         className={`group/header sticky top-0 z-10 flex h-10 items-center rounded-lg bg-muted transition-colors hover:bg-accent ${
-          isOver && !isExpanded
+          isOver && (!isExpanded || issues.length === 0 || disableSorting)
             ? "ring-2 ring-brand/25 bg-accent/15"
             : ""
         }`}
@@ -481,9 +481,13 @@ function StatusAccordionItem({
             </>
           )
         ) : (
-          <p className="py-6 text-center text-xs text-muted-foreground">
-            {t(($) => $.list.empty_status)}
-          </p>
+          <div className={`flex min-h-20 items-center justify-center rounded-lg transition-colors ${
+            isOver ? "bg-accent/30 ring-2 ring-brand/25" : ""
+          }`}>
+            <p className="text-xs text-muted-foreground">
+              {t(($) => $.list.empty_status)}
+            </p>
+          </div>
         )}
       </Accordion.Panel>
     </Accordion.Item>

@@ -26,6 +26,24 @@ export function makeKanbanCollision(groupIds: Set<string>): CollisionDetection {
   };
 }
 
+export function makeListCollision(groupIds: Set<string>): CollisionDetection {
+  return (args) => {
+    const pointer = pointerWithin(args);
+    if (pointer.length > 0) {
+      const items = pointer.filter((c) => !groupIds.has(c.id as string));
+      if (items.length > 0) return items;
+      return pointer;
+    }
+    const groupOnly = {
+      ...args,
+      droppableContainers: args.droppableContainers.filter(
+        (c) => groupIds.has(c.id as string),
+      ),
+    };
+    return closestCenter(groupOnly);
+  };
+}
+
 export function statusGroupId(status: IssueStatus): string {
   return `status:${status}`;
 }
