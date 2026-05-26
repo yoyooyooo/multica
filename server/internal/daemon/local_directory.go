@@ -154,21 +154,31 @@ func validateLocalPath(absPath string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("local_directory: path is not a directory: %q", absPath)
 	}
-	// Re-check the blacklist after resolving symlinks. Without this a
-	// symlink (or a parent component that is one) could route around the
-	// home-dir / system-root rejection: the literal absPath check passes
-	// but every write lands in the resolved target. EvalSymlinks walks
-	// intermediate components too, so a non-symlink absPath whose parent
-	// is a symlink also fails closed.
+	// Re-check the blacklist after resolving symlinks. Two ways the
+	// literal check can be bypassed even when absPath itself is clean:
+	//
+	//   1. A user-created symlink (or a parent component) routes writes
+	//      into a banned target. Example: ~/proj/home-link -> /Users/me.
+	//   2. The user directly selects a canonical OS path that aliases a
+	//      banned root via an OS-level symlink. Example on macOS: typing
+	//      /private/tmp slips past the /tmp entry because the literal
+	//      strings don't match, and EvalSymlinks is a no-op since the
+	//      input is already canonical. This must be checked
+	//      unconditionally — not gated on realPath != absPath — or the
+	//      direct-canonical case is silently allowed.
+	//
+	// EvalSymlinks walks intermediate components too, so a non-symlink
+	// absPath whose parent is a symlink also fails closed.
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
 		return fmt.Errorf("local_directory: resolve symlinks for %q: %w", absPath, err)
 	}
 	realPath = filepath.Clean(realPath)
-	if realPath != filepath.Clean(absPath) {
-		if reason, blocked := isBlacklistedRealPath(realPath); blocked {
+	if reason, blocked := isBlacklistedRealPath(realPath); blocked {
+		if realPath != filepath.Clean(absPath) {
 			return fmt.Errorf("local_directory: %s (symlink target of %q is %q)", reason, absPath, realPath)
 		}
+		return fmt.Errorf("local_directory: %s (canonical path %q)", reason, absPath)
 	}
 	if err := checkDirReadWrite(absPath); err != nil {
 		return fmt.Errorf("local_directory: %w", err)
@@ -186,6 +196,9 @@ func validateLocalPath(absPath string) error {
 // a legitimate project under /Users/<user>/code/proj should pass.
 func isBlacklistedLocalPath(absPath string) (reason string, blocked bool) {
 	cleaned := filepath.Clean(absPath)
+	if isDriveRoot(cleaned) {
+		return fmt.Sprintf("path is a drive root %q", cleaned), true
+	}
 	for _, banned := range systemRootBlacklist() {
 		if cleaned == banned {
 			return fmt.Sprintf("path is a protected system root %q", banned), true
@@ -204,9 +217,14 @@ func isBlacklistedLocalPath(absPath string) (reason string, blocked bool) {
 // the symlink-resolved form of each blacklist entry so OS-level redirects
 // (notably macOS's /etc -> /private/etc, /tmp -> /private/tmp, /var ->
 // /private/var) cannot be used to slip a candidate past the literal
-// blacklist via a user-created symlink.
+// blacklist — whether the redirect is reached via a user-created symlink
+// (~/proj/home-link -> /Users/me) or by directly typing the canonical form
+// (/private/tmp), which is identical to the OS view of /tmp.
 func isBlacklistedRealPath(realPath string) (reason string, blocked bool) {
 	realClean := filepath.Clean(realPath)
+	if isDriveRoot(realClean) {
+		return fmt.Sprintf("path is a drive root %q", realClean), true
+	}
 	for _, banned := range systemRootBlacklist() {
 		bannedClean := filepath.Clean(banned)
 		if realClean == bannedClean {
@@ -232,17 +250,43 @@ func isBlacklistedRealPath(realPath string) (reason string, blocked bool) {
 	return "", false
 }
 
+// isDriveRoot reports whether absPath is the root of a Windows volume — any
+// of `C:\`, `D:\`, ..., `Z:\`, plus less common cases like `\\server\share`
+// (filepath.VolumeName treats UNC roots as volumes too). On non-Windows
+// this is always false because POSIX has no concept of drive letters and
+// `/` is covered by systemRootBlacklist.
+//
+// We rely on filepath.VolumeName rather than enumerating drive letters
+// statically: removable / network drives can be mounted at any letter
+// (`G:\`, `H:\`, ...), and Windows installs are increasingly happy to put
+// the user profile on a non-C drive. A static list (C..F) would miss them
+// all.
+func isDriveRoot(absPath string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	vol := filepath.VolumeName(absPath)
+	if vol == "" {
+		return false
+	}
+	// VolumeName returns the volume without trailing separator (`C:` or
+	// `\\srv\share`). A drive root is volume + one separator (or, after
+	// filepath.Clean, just the volume on bare-volume input).
+	rest := absPath[len(vol):]
+	return rest == "" || rest == `\` || rest == "/"
+}
+
 // systemRootBlacklist returns the per-OS list of paths the daemon never
 // allows as a local_directory root. POSIX systems get `/`, `/Users`, `/home`
-// (and macOS's `/Users/Shared` for good measure); Windows gets the drive
-// roots `C:\`, `D:\`, ..., plus `C:\Users`. The list is intentionally
-// conservative — it errs on the side of rejecting more, since the desktop
-// UI is expected to surface a friendly picker that never produces these
-// values.
+// (and macOS's `/Users/Shared` for good measure); Windows gets the
+// well-known account / shared trees under C:. Drive roots themselves are
+// handled by isDriveRoot so we don't have to enumerate G:\, H:\, etc.
+// The list is intentionally conservative — it errs on the side of
+// rejecting more, since the desktop UI is expected to surface a friendly
+// picker that never produces these values.
 func systemRootBlacklist() []string {
 	if runtime.GOOS == "windows" {
-		out := []string{`C:\`, `D:\`, `E:\`, `F:\`, `C:\Users`, `C:\ProgramData`, `C:\Program Files`}
-		return out
+		return []string{`C:\Users`, `C:\ProgramData`, `C:\Program Files`, `C:\Program Files (x86)`, `C:\Windows`}
 	}
 	return []string{"/", "/Users", "/Users/Shared", "/home", "/root", "/var", "/etc", "/tmp", "/usr", "/opt"}
 }

@@ -230,6 +230,66 @@ func TestValidateLocalPath(t *testing.T) {
 		}
 	})
 
+	// macOS aliases /tmp, /etc, /var to /private/{tmp,etc,var} via OS-level
+	// symlinks. A user typing the canonical /private/... form in the picker
+	// would pass the literal blacklist (it doesn't contain /private/tmp)
+	// and EvalSymlinks would be a no-op (the input is already canonical),
+	// so the old "only re-check when realPath != absPath" gate skipped it.
+	// Cover the regression so the realpath blacklist always runs.
+	t.Run("rejects canonical macOS /private/{tmp,etc,var}", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("macOS-only: /private/* aliases don't exist elsewhere")
+		}
+		for _, p := range []string{"/private/tmp", "/private/etc", "/private/var"} {
+			if _, statErr := os.Stat(p); statErr != nil {
+				t.Logf("skipping %q: %v", p, statErr)
+				continue
+			}
+			err := validateLocalPath(p)
+			if err == nil {
+				t.Errorf("expected error for canonical %q", p)
+				continue
+			}
+			if !strings.Contains(err.Error(), "protected system root") {
+				t.Errorf("error %q for %q did not flag the system-root reason", err.Error(), p)
+			}
+		}
+	})
+
+}
+
+// TestIsDriveRoot covers the Windows drive-root generalisation. Static
+// enumeration in the old blacklist (C..F) missed mounts at G:\ and up; the
+// new check goes through filepath.VolumeName so any drive letter (and UNC
+// roots) is rejected.
+func TestIsDriveRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		// filepath.VolumeName returns "" on POSIX, so isDriveRoot always
+		// returns false off Windows. The semantic contract is enforced by
+		// the early `runtime.GOOS != "windows"` guard; the case table
+		// below is only meaningful on a Windows runner.
+		t.Skip("windows-only behaviour")
+	}
+	cases := []struct {
+		p    string
+		want bool
+	}{
+		{`C:\`, true},
+		{`G:\`, true},
+		{`Z:\`, true},
+		{`C:/`, true},
+		{`C:`, true},
+		{`\\srv\share`, true},
+		{`\\srv\share\`, true},
+		{`C:\Users`, false},
+		{`D:\proj`, false},
+		{`C:\Users\me\code`, false},
+	}
+	for _, c := range cases {
+		if got := isDriveRoot(c.p); got != c.want {
+			t.Errorf("isDriveRoot(%q) = %v, want %v", c.p, got, c.want)
+		}
+	}
 }
 
 func TestLocalPathLockerSerializes(t *testing.T) {
