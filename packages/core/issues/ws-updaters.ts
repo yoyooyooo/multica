@@ -37,14 +37,6 @@ export function onIssueUpdated(
   wsId: string,
   issue: Partial<Issue> & { id: string },
 ) {
-  console.log(JSON.stringify({
-    _tag: "WS_ISSUE_UPDATED",
-    ts: Date.now(),
-    issueId: issue.id.slice(0, 8),
-    fields: Object.keys(issue).filter((k) => k !== "id"),
-    position: issue.position,
-    status: issue.status,
-  }));
   // Look up the OLD parent before mutating list state, so we can keep
   // the parent's children cache in sync (powers the sub-issues list
   // shown on the parent issue page).

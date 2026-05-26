@@ -77,21 +77,6 @@ export function patchIssueInBuckets(
   if (!loc) return resp;
   const merged: Issue = { ...loc.issue, ...patch };
   const nextStatus = patch.status ?? loc.status;
-  if (patch.position !== undefined || patch.status !== undefined) {
-    const bucket = resp.byStatus[nextStatus];
-    console.log(JSON.stringify({
-      _tag: "PATCH_IN_BUCKETS",
-      ts: Date.now(),
-      issueId: id.slice(0, 8),
-      oldPosition: loc.issue.position,
-      newPosition: merged.position,
-      statusChange: patch.status !== undefined ? `${loc.status}->${nextStatus}` : "same",
-      bucketOrder: bucket?.issues.slice(0, 8).map((i) => ({
-        id: i.id.slice(0, 8),
-        pos: i.position,
-      })),
-    }));
-  }
 
   if (nextStatus === loc.status) {
     const bucket = getBucket(resp, loc.status);

@@ -195,14 +195,6 @@ export function useUpdateIssue() {
     mutationFn: ({ id, ...data }: { id: string } & UpdateIssueRequest) =>
       api.updateIssue(id, data),
     onMutate: ({ id, ...data }) => {
-      console.log(JSON.stringify({
-        _tag: "UPDATE_ISSUE_ON_MUTATE",
-        ts: Date.now(),
-        issueId: id.slice(0, 8),
-        fields: Object.keys(data),
-        position: (data as Record<string, unknown>).position,
-        status: (data as Record<string, unknown>).status,
-      }));
       // Fire-and-forget cancelQueries — keeps onMutate synchronous so the
       // cache update happens in the same tick as mutate(). Awaiting would
       // yield to the event loop, letting @dnd-kit reset its visual state
@@ -269,12 +261,6 @@ export function useUpdateIssue() {
       }
     },
     onSettled: (_data, _err, vars, ctx) => {
-      console.log(JSON.stringify({
-        _tag: "UPDATE_ISSUE_ON_SETTLED",
-        ts: Date.now(),
-        issueId: vars.id.slice(0, 8),
-        hadError: !!_err,
-      }));
       qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, vars.id) });
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });

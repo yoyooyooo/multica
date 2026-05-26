@@ -48,14 +48,10 @@ function makeKanbanCollision(columnIds: Set<string>): CollisionDetection {
   return (args) => {
     const pointer = pointerWithin(args);
     if (pointer.length > 0) {
-      // Prefer card collisions over column collisions so that
-      // dragging down within a column finds the target card
-      // instead of the column droppable.
       const cards = pointer.filter((c) => !columnIds.has(c.id as string));
       if (cards.length > 0) return cards;
+      return pointer;
     }
-    // Fallback: closestCenter finds the nearest card even when
-    // the pointer is in a gap between cards (common when dragging down).
     return closestCenter(args);
   };
 }
@@ -308,6 +304,7 @@ export function BoardView({
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
   const isDraggingRef = useRef(false);
   const isSettlingRef = useRef(false);
+  const [settleVersion, setSettleVersion] = useState(0);
 
   // --- Local columns state ---
   // Between drags: follows TQ via useEffect.
@@ -319,23 +316,10 @@ export function BoardView({
   columnsRef.current = columns;
 
   useEffect(() => {
-    const blocked = isDraggingRef.current || isSettlingRef.current;
-    const rebuilt = buildColumns(groupedIssues, groups, grouping);
-    console.log(JSON.stringify({
-      _tag: "BOARD_COLUMNS_EFFECT",
-      ts: Date.now(),
-      blocked,
-      isDragging: isDraggingRef.current,
-      isSettling: isSettlingRef.current,
-      sampleCol: Object.entries(rebuilt).length > 0
-        ? { col: Object.entries(rebuilt)[0]![0], ids: (Object.entries(rebuilt)[0]![1] as string[]).slice(0, 6) }
-        : null,
-      issueCount: groupedIssues.length,
-    }));
-    if (!blocked) {
-      setColumns(rebuilt);
+    if (!isDraggingRef.current && !isSettlingRef.current) {
+      setColumns(buildColumns(groupedIssues, groups, grouping));
     }
-  }, [groupedIssues, groups, grouping]);
+  }, [groupedIssues, groups, grouping, settleVersion]);
 
   // After a cross-column move, lock for one animation frame so dnd-kit's
   // collision detection can stabilize before processing the next move.
@@ -390,6 +374,8 @@ export function BoardView({
         const overCol = findColumn(prev, overId, groupIds);
         if (!activeCol || !overCol || activeCol === overCol) return prev;
 
+        if (sortBy !== "position") return prev;
+
         recentlyMovedRef.current = true;
         const oldIds = prev[activeCol]!.filter((id) => id !== activeId);
         const newIds = [...prev[overCol]!];
@@ -399,7 +385,7 @@ export function BoardView({
         return { ...prev, [activeCol]: oldIds, [overCol]: newIds };
       });
     },
-    [groupIds],
+    [groupIds, sortBy],
   );
 
   const handleDragEnd = useCallback(
@@ -412,7 +398,6 @@ export function BoardView({
         setColumns(buildColumns(groupedIssues, groups, grouping));
 
       if (!over) {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "no_over" }));
         resetColumns();
         return;
       }
@@ -424,21 +409,13 @@ export function BoardView({
       const activeCol = findColumn(cols, activeId, groupIds);
       const overCol = findColumn(cols, overId, groupIds);
       if (!activeCol || !overCol) {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "col_not_found", activeCol, overCol }));
         resetColumns();
         return;
       }
 
-      // Non-manual sort: same-column reorder is meaningless.
-      if (activeCol === overCol && sortBy !== "position") {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_same_col", sortBy }));
-        resetColumns();
-        return;
-      }
-
-      // Same-column reorder
+      // Same-column reorder (manual sort only)
       let finalColumns = cols;
-      if (activeCol === overCol) {
+      if (activeCol === overCol && sortBy === "position") {
         const ids = cols[activeCol]!;
         const oldIndex = ids.indexOf(activeId);
         const newIndex = ids.indexOf(overId);
@@ -449,15 +426,15 @@ export function BoardView({
         }
       }
 
-      const finalCol = findColumn(finalColumns, activeId, groupIds);
+      const finalCol = sortBy === "position"
+        ? findColumn(finalColumns, activeId, groupIds)
+        : overCol;
       if (!finalCol) {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "final_col_not_found" }));
         resetColumns();
         return;
       }
       const finalGroup = groupMap.get(finalCol);
       if (!finalGroup) {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "final_group_not_found" }));
         resetColumns();
         return;
       }
@@ -468,19 +445,13 @@ export function BoardView({
         // Cross-column: only update group (status/assignee), keep original position.
         const currentIssue = map.get(activeId);
         if (!currentIssue || issueMatchesGroup(currentIssue, finalGroup)) {
-          console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_no_change" }));
           resetColumns();
           return;
         }
-        console.log(JSON.stringify({
-          _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_cross_col",
-          activeId: activeId.slice(0, 8),
-          fromCol: activeCol, toCol: finalCol,
-          position: currentIssue.position,
-        }));
         isSettlingRef.current = true;
         onMoveIssue(activeId, getMoveUpdates(finalGroup, currentIssue.position), () => {
           isSettlingRef.current = false;
+          setSettleVersion((v) => v + 1);
         });
         return;
       }
@@ -494,23 +465,9 @@ export function BoardView({
         issueMatchesGroup(currentIssue, finalGroup) &&
         currentIssue.position === newPosition
       ) {
-        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "no_change", position: newPosition }));
         return;
       }
 
-      console.log(JSON.stringify({
-        _tag: "DRAG_END", ts: Date.now(), reason: "move",
-        activeId: activeId.slice(0, 8),
-        sortBy,
-        sameCol: activeCol === overCol,
-        fromCol: activeCol, toCol: finalCol,
-        oldPosition: currentIssue?.position,
-        newPosition,
-        finalIdsInCol: finalIds.map((id) => ({
-          id: id.slice(0, 8),
-          pos: map.get(id)?.position,
-        })),
-      }));
       isSettlingRef.current = true;
       onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition), () => {
         isSettlingRef.current = false;
@@ -543,7 +500,6 @@ export function BoardView({
                 childProgressMap={childProgressMap}
                 myIssuesOpts={myIssuesOpts}
                 projectId={projectId}
-                isDragging={activeIssue !== null}
                 sortLabel={sortLabel}
               />
             ) : (
@@ -557,7 +513,6 @@ export function BoardView({
                   queryKey={assigneeGroupQueryKey}
                   filter={assigneeGroupFilter}
                   projectId={projectId}
-                  isDragging={activeIssue !== null}
                   sortLabel={sortLabel}
                 />
               ) : (
@@ -569,7 +524,6 @@ export function BoardView({
                   childProgressMap={childProgressMap}
                   projectId={projectId}
                   totalCount={group.totalCount}
-                  isDragging={activeIssue !== null}
                   sortLabel={sortLabel}
                 />
               )
@@ -604,7 +558,6 @@ function PaginatedAssigneeBoardColumn({
   queryKey,
   filter,
   projectId,
-  isDragging,
   sortLabel,
 }: {
   group: BoardColumnGroup;
@@ -614,7 +567,6 @@ function PaginatedAssigneeBoardColumn({
   queryKey: QueryKey;
   filter: AssigneeGroupedIssuesFilter;
   projectId?: string;
-  isDragging?: boolean;
   sortLabel?: string | null;
 }) {
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByAssigneeGroup(
@@ -634,7 +586,6 @@ function PaginatedAssigneeBoardColumn({
       childProgressMap={childProgressMap}
       totalCount={total}
       projectId={projectId}
-      isDragging={isDragging}
       sortLabel={sortLabel}
       footer={
         hasMore ? (
@@ -652,7 +603,6 @@ function PaginatedBoardColumn({
   childProgressMap,
   myIssuesOpts,
   projectId,
-  isDragging,
   sortLabel,
 }: {
   group: BoardColumnGroup & { status: IssueStatus };
@@ -661,7 +611,6 @@ function PaginatedBoardColumn({
   childProgressMap?: Map<string, ChildProgress>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   projectId?: string;
-  isDragging?: boolean;
   sortLabel?: string | null;
 }) {
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
@@ -676,7 +625,6 @@ function PaginatedBoardColumn({
       childProgressMap={childProgressMap}
       totalCount={total}
       projectId={projectId}
-      isDragging={isDragging}
       sortLabel={sortLabel}
       footer={
         hasMore ? (
