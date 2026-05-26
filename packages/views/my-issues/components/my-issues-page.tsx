@@ -295,6 +295,7 @@ export function MyIssuesPage() {
                 myIssuesScope={scope}
                 myIssuesFilter={filter}
                 sort={sort}
+                onMoveIssue={handleMoveIssue}
               />
             )}
           </div>
