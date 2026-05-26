@@ -14,6 +14,7 @@ export const DRAFT_NEW_SESSION = "__new__";
 const CHAT_WIDTH_KEY = "multica:chat:width";
 const CHAT_HEIGHT_KEY = "multica:chat:height";
 const CHAT_EXPANDED_KEY = "multica:chat:expanded";
+const CHAT_FULLSCREEN_KEY = "multica:chat:fullscreen";
 /** Focus mode is a personal preference — global across workspaces/sessions. */
 const FOCUS_MODE_KEY = "multica:chat:focusMode";
 /**
@@ -99,6 +100,7 @@ export interface ChatState {
   chatWidth: number;
   chatHeight: number;
   isExpanded: boolean;
+  isFullscreen: boolean;
   setOpen: (open: boolean) => void;
   toggle: () => void;
   setActiveSession: (id: string | null) => void;
@@ -110,6 +112,7 @@ export interface ChatState {
   /** Persist raw size and auto-exit expanded mode. */
   setChatSize: (width: number, height: number) => void;
   setExpanded: (expanded: boolean) => void;
+  setFullscreen: (fullscreen: boolean) => void;
 }
 
 export interface ChatStoreOptions {
@@ -139,6 +142,7 @@ export function createChatStore(options: ChatStoreOptions) {
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
+    isFullscreen: storage.getItem(wsKey(CHAT_FULLSCREEN_KEY)) === "true",
     setOpen: (open) => {
       logger.debug("setOpen", { from: get().isOpen, to: open });
       storage.setItem(OPEN_KEY, String(open));
@@ -206,12 +210,22 @@ export function createChatStore(options: ChatStoreOptions) {
       }
       set({ isExpanded: expanded });
     },
+    setFullscreen: (fullscreen) => {
+      logger.info("setFullscreen", { to: fullscreen });
+      if (fullscreen) {
+        storage.setItem(wsKey(CHAT_FULLSCREEN_KEY), "true");
+      } else {
+        storage.removeItem(wsKey(CHAT_FULLSCREEN_KEY));
+      }
+      set({ isFullscreen: fullscreen });
+    },
   }));
 
   registerForWorkspaceRehydration(() => {
     const nextSession = storage.getItem(wsKey(SESSION_STORAGE_KEY));
     const nextAgent = storage.getItem(wsKey(AGENT_STORAGE_KEY));
     const nextDrafts = readDrafts(storage, wsKey(DRAFTS_KEY));
+    const nextFullscreen = storage.getItem(wsKey(CHAT_FULLSCREEN_KEY)) === "true";
     logger.info("workspace rehydration", {
       prevSession: store.getState().activeSessionId,
       nextSession,
@@ -223,6 +237,7 @@ export function createChatStore(options: ChatStoreOptions) {
       activeSessionId: nextSession,
       selectedAgentId: nextAgent,
       inputDrafts: nextDrafts,
+      isFullscreen: nextFullscreen,
     });
   });
 
