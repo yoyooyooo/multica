@@ -182,31 +182,46 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				//
 				// APIClient selection: when MULTICA_LARK_HTTP_ENABLED is
 				// "true" the real Lark Open Platform HTTP client is wired
-				// (IM v1 send/patch + binding-prompt). Otherwise the stub
-				// stays in place and every outbound call surfaces
-				// ErrAPIClientNotConfigured — useful for deployments that
-				// want the inbound dispatcher / database surface online
-				// without committing to a Lark app yet.
+				// (IM v1 send/patch + binding-prompt + OAuth exchange).
+				// Otherwise the stub stays in place and every outbound
+				// call surfaces ErrAPIClientNotConfigured — useful for
+				// deployments that want the inbound dispatcher / database
+				// surface online without committing to a Lark app yet.
 				//
 				// MULTICA_LARK_HTTP_BASE_URL overrides the default
 				// open.feishu.cn host (set to https://open.larksuite.com
 				// for the Lark international tenant, or to a mock for
 				// integration tests).
+				//
+				// MULTICA_LARK_OAUTH_APP_ID / _APP_SECRET are read into
+				// HTTPClientConfig too so ExchangeOAuthCode authenticates
+				// the OAuth v2 token endpoint AND the /bot/v3/info call
+				// against the same parent Lark app credentials. The OAuth
+				// service below reads the same env vars: a deployment
+				// either has both halves of OAuth (handler + HTTP client)
+				// or neither, and the capability gate stays consistent.
+				oauthAppID := strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_ID"))
+				oauthAppSecret := strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_SECRET"))
 				var larkClient lark.APIClient
 				if strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_ENABLED")), "true") {
 					larkClient = lark.NewHTTPAPIClient(lark.HTTPClientConfig{
-						BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
-						Logger:  slog.Default(),
+						BaseURL:        strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
+						Logger:         slog.Default(),
+						OAuthAppID:     oauthAppID,
+						OAuthAppSecret: oauthAppSecret,
 					})
-					slog.Info("lark http api client enabled")
+					slog.Info("lark http api client enabled",
+						"oauth_install_supported", larkClient.SupportsOAuthInstall())
 				} else {
 					larkClient = lark.NewStubAPIClient(slog.Default())
 				}
 				// Expose the APIClient to handlers so the install
-				// surface can short-circuit when no real transport is
-				// wired (IsConfigured() == false). With the real HTTP
-				// client wired the install_supported flag flips and the
-				// UI reveals the install entry points.
+				// surface can consult the OAuth-install capability gate
+				// (SupportsOAuthInstall). install_supported flips true
+				// only once OAuth credentials are configured AND the
+				// real HTTP client is wired; without OAuth creds the
+				// HTTP client keeps outbound transport working for
+				// already-installed bots but the bind UI stays hidden.
 				h.LarkAPIClient = larkClient
 				patcher := lark.NewPatcher(queries, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
@@ -217,8 +232,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// only want the manual path leave MULTICA_LARK_OAUTH_*
 				// unset and these handlers fall back to "not configured".
 				oauthCfg := lark.OAuthConfig{
-					AppID:              strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_ID")),
-					AppSecret:          strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_SECRET")),
+					AppID:              oauthAppID,
+					AppSecret:          oauthAppSecret,
 					RedirectURI:        strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_REDIRECT_URI")),
 					StateSigningSecret: strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_STATE_SECRET")),
 					AuthorizeBaseURL:   strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_AUTHORIZE_URL")),
@@ -226,11 +241,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				}
 				if oauthCfg.Enabled() {
 					// OAuth callback delegates the code→credentials
-					// exchange to APIClient.ExchangeOAuthCode. The HTTP
-					// client returns ErrAPIClientNotConfigured for that
-					// path until the PersonalAgent install-time response
-					// shape lands, so operators still rely on the manual-
-					// paste InstallationService until then.
+					// exchange to APIClient.ExchangeOAuthCode. When the
+					// real HTTP client is wired with OAuth credentials,
+					// the exchange runs the v2 authorization-code flow
+					// against Lark; when only the stub is wired (or HTTP
+					// is enabled but OAuth creds are missing) the
+					// callback short-circuits to
+					// oauth_exchange_unimplemented and operators stay on
+					// the manual-paste InstallationService path.
 					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, larkClient, installSvc, h.LarkBindingTokens)
 					if oerr != nil {
 						slog.Error("lark: OAuthService init failed; oauth disabled", "error", oerr)

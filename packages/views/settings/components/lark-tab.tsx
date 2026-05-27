@@ -51,11 +51,12 @@ export function LarkTab() {
   });
   const installations = data?.installations ?? [];
   const configured = data?.configured === true;
-  // install_supported tracks whether a real Lark APIClient is wired
-  // server-side. When false, the OAuth callback would fail at the
-  // exchange step, so we hide install entry points and surface a
-  // "coming soon" notice in their place rather than send users into a
-  // broken flow. Existing installations remain manageable.
+  // install_supported tracks the OAuth-install capability gate on the
+  // server (APIClient.SupportsOAuthInstall). When false, scan-to-bind
+  // would fail at the exchange step, so we hide install entry points
+  // and surface a "coming soon" notice in their place rather than send
+  // users into a broken flow. Already-installed bots still appear in
+  // the listing below and remain manageable.
   const installSupported = data?.install_supported === true;
 
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
@@ -99,9 +100,10 @@ export function LarkTab() {
           </CardContent>
         </Card>
       ) : !installSupported && installations.length === 0 ? (
-        // Real APIClient is not wired yet. We deliberately do NOT
-        // direct users to the agent-detail "Bind" button because the
-        // OAuth callback would fail at the exchange step. Existing
+        // OAuth-install capability is closed (no parent app creds, or
+        // ExchangeOAuthCode unwired). We deliberately do NOT direct
+        // users to the agent-detail "Bind" button because the OAuth
+        // callback would fail at the exchange step. Existing
         // installations still render via the branch below; this only
         // hides the empty-state CTA when there is nothing to manage.
         <Card>
@@ -231,12 +233,12 @@ function InstallationRow({
 // detail page. The Settings panel above is the management view; this
 // button is the entry point.
 //
-// The button hides itself when the workspace does not have a real
-// Lark APIClient wired (install_supported == false on the listing
-// endpoint). This is the second half of the "don't expose a flow
-// that's guaranteed to fail" guarantee: even if a future view
-// mistakenly mounts the button before the install surface is fully
-// wired, it stays invisible to users.
+// The button hides itself when the OAuth-install capability is closed
+// (install_supported == false on the listing endpoint). This is the
+// second half of the "don't expose a flow that's guaranteed to fail"
+// guarantee: even if a future view mistakenly mounts the button while
+// the server-side OAuth path is unwired (or the parent Lark app creds
+// aren't supplied), it stays invisible to users.
 //
 // Keeping it in the same file so a future contributor adding a Lark
 // surface (e.g. an inline "you have N bots" widget on the workspace

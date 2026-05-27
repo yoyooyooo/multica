@@ -141,17 +141,18 @@ func (h *Handler) CreateLarkInstallation(w http.ResponseWriter, r *http.Request)
 //   - configured: at-rest encryption key is set (`LarkInstallations
 //     != nil`). When false, no install flow can succeed at all; the
 //     UI hides the tab.
-//   - install_supported: the wired APIClient can carry the OAuth
-//     install flow end-to-end (it both has outbound transport AND
-//     implements ExchangeOAuthCode). When false, the at-rest path
-//     still works for already-installed bots but new installs via
-//     OAuth would fail at the exchange step; the UI hides install
-//     entry points (the Settings tab surfaces a "coming soon"
-//     notice and the agent-detail "Bind to Lark" button is hidden).
-//     This is sourced from APIClient.SupportsOAuthInstall — NOT
-//     IsConfigured — so a half-wired client that has outbound
-//     transport but no ExchangeOAuthCode implementation does not
-//     accidentally reveal the install UI.
+//   - install_supported: the OAuth-install capability gate is open
+//     — the wired APIClient reports SupportsOAuthInstall()==true,
+//     meaning the deployment has supplied the parent Lark app
+//     credentials AND ExchangeOAuthCode is wired against the real
+//     v2 endpoint. When false, manual-paste installs still work for
+//     bots already in lark_installation but scan-to-bind would fail
+//     at the exchange step; the UI hides install entry points (the
+//     Settings tab surfaces a "coming soon" notice and the
+//     agent-detail "Bind to Lark" button stays hidden). This is
+//     sourced from APIClient.SupportsOAuthInstall — NOT IsConfigured
+//     — so a real HTTP client wired for outbound transport without
+//     OAuth credentials still keeps the bind UI hidden.
 func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) {
 	if h.LarkInstallations == nil {
 		writeJSON(w, http.StatusOK, map[string]any{

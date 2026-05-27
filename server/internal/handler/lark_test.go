@@ -260,24 +260,23 @@ func TestStartLarkInstall_TransportOnlyClientReportsNotConfigured(t *testing.T) 
 	}
 }
 
-// TestListLarkInstallations_TransportOnlyClientReportsInstallNotSupported
-// is the listing-side counterpart: even with outbound transport wired,
-// install_supported must remain false until OAuth install is actually
-// supported by the APIClient. The frontend reads install_supported to
-// decide whether to render the agent-detail "Bind to Lark" button, so
-// a regression here would re-expose the broken scan-to-bind UI.
+// TestListLarkInstallations_NotConfigured_HardCodedInstallSupportedFalse
+// pins the invariant for the early-return branch: when
+// LarkInstallations is nil (the deployment has no at-rest encryption
+// key wired), the response MUST return both configured:false AND
+// install_supported:false regardless of what APIClient is in place.
+// A transport-only APIClient (IsConfigured=true,
+// SupportsOAuthInstall=false) on a not-configured deployment must not
+// accidentally flip install_supported to true via the APIClient path
+// — that path is not consulted in the early-return branch.
 //
-// Note: this test exercises the explicit LarkInstallations!=nil path
-// so the handler reaches the `install_supported` computation. The
-// other "stub returns false" test (above) covers the nil-installation
-// short-circuit case.
-func TestListLarkInstallations_TransportOnlyClientReportsInstallNotSupported(t *testing.T) {
+// The non-nil branch's consultation of SupportsOAuthInstall is
+// exercised by the route-level handler tests that wire a real
+// InstallationService against the test DB.
+func TestListLarkInstallations_NotConfigured_HardCodedInstallSupportedFalse(t *testing.T) {
 	h := &Handler{
-		LarkInstallations: nil, // forces the early-return branch, which
-		// also exposes install_supported. Keep the test reading the
-		// shape end-to-end so future refactors that move the field
-		// don't silently lose it.
-		LarkAPIClient: stubConfiguredAPIClient{supportsOAuthInstall: false},
+		LarkInstallations: nil, // triggers the not-configured early return.
+		LarkAPIClient:     stubConfiguredAPIClient{supportsOAuthInstall: false},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
 	w := httptest.NewRecorder()
@@ -286,13 +285,17 @@ func TestListLarkInstallations_TransportOnlyClientReportsInstallNotSupported(t *
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var resp struct {
+		Configured       bool `json:"configured"`
 		InstallSupported bool `json:"install_supported"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if resp.Configured {
+		t.Fatalf("configured must be false when LarkInstallations is nil")
+	}
 	if resp.InstallSupported {
-		t.Fatalf("install_supported must be false while SupportsOAuthInstall()==false")
+		t.Fatalf("install_supported must be false in the early-return branch even with a transport-only APIClient")
 	}
 }
 
