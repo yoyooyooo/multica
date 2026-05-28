@@ -249,69 +249,6 @@ func TestBuildPromptSquadLeaderNoActionForAgentTrigger(t *testing.T) {
 	}
 }
 
-// TestBuildPromptCommentTriggerPromotesThreadReads pins MUL-2387 + MUL-2421:
-// the per-turn prompt for a comment-triggered task must default the trigger
-// thread read to `--thread <id> --tail 30` (so long threads don't dump
-// hundreds of replies into the agent's context) and explain reply-cursor
-// pagination for older replies. --recent N stays as the cross-thread
-// fallback. Locking this in test stops the guidance from decaying back to
-// either the legacy full-flat-dump or the unbounded `--thread` recipe.
-func TestBuildPromptCommentTriggerPromotesThreadReads(t *testing.T) {
-	const (
-		issueID   = "issue-thread-1"
-		triggerID = "trigger-comment-1"
-	)
-	task := Task{
-		IssueID:               issueID,
-		TriggerCommentID:      triggerID,
-		TriggerCommentContent: "anything",
-		TriggerAuthorType:     "member",
-		TriggerAuthorName:     "Bohan",
-	}
-	out := BuildPrompt(task, "claude")
-
-	mustContain := []string{
-		// Thread-first read pinned by trigger comment id, capped via --tail 30.
-		"--thread " + triggerID,
-		"--tail 30",
-		"`multica issue comment list " + issueID + " --thread " + triggerID + " --tail 30 --output json`",
-		// Reply cursor walks older replies inside the same thread.
-		"Next reply cursor:",
-		"--before-id <reply-id>",
-		// --recent stays as the cross-thread background fallback.
-		"--recent 20 --output json",
-		// Cursor walks via the stderr line the CLI emits, not invented flags.
-		"Next thread cursor",
-		"--before",
-		"--before-id",
-		// --since is preserved as an additional, combinable knob (now scoped
-		// to the post-MUL-2421 mode names).
-		"--since",
-		"may combine with `--thread --tail` or `--recent`",
-		// Discourage the unfiltered full dump on long-running issues.
-		"Avoid the unfiltered",
-		"wastes context",
-	}
-	for _, s := range mustContain {
-		if !strings.Contains(out, s) {
-			t.Errorf("buildCommentPrompt missing thread-first guidance %q\n--- output ---\n%s", s, out)
-		}
-	}
-
-	// The old "dump everything via --output json alone" prose is exactly the
-	// pattern this PR is replacing — guard against the legacy phrasing
-	// sneaking back in.
-	if strings.Contains(out, "returns all comments for the issue (server caps at 2000)") {
-		t.Errorf("buildCommentPrompt still carries the legacy full-dump phrasing")
-	}
-	// The pre-MUL-2421 unbounded `--thread` recipe (no --tail) is also a
-	// regression target: it dumps the entire thread on long threads, which
-	// is exactly what --tail 30 is meant to bound.
-	if strings.Contains(out, "--thread "+triggerID+" --output json") {
-		t.Errorf("buildCommentPrompt regressed to unbounded --thread recipe (no --tail) — long threads will overflow context\n--- output ---\n%s", out)
-	}
-}
-
 // TestBuildPromptDefaultMentionsRecent pins that the catch-all fallback
 // prompt (no trigger comment, no chat, no autopilot, no quick-create) also
 // teaches the agent about --recent as the long-issue-friendly alternative
@@ -360,88 +297,56 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 	}
 }
 
-// TestBuildPromptUnresolvedHintIssueLevel pins that a comment-triggered task
-// whose trigger is a thread root (TriggerParentID == TriggerCommentID) gets the
-// issue-level unresolved hint pointing at `--unresolved`, but only when the
-// count is positive. This is the cheap "here's the backlog" signal that lets a
-// cold-entering agent pull every open comment in one call instead of walking
-// threads blind.
-func TestBuildPromptUnresolvedHintIssueLevel(t *testing.T) {
+// TestBuildPromptNewCommentsHint pins that a comment-triggered task whose agent
+// ran before on this issue (NewCommentsSince set, NewCommentCount > 0) gets the
+// one-line since-delta hint pointing at `--since`, so the agent catches up on
+// exactly the comments that arrived since its last run instead of re-reading
+// everything or walking threads blind.
+func TestBuildPromptNewCommentsHint(t *testing.T) {
 	const (
-		issueID   = "issue-unresolved-1"
-		triggerID = "trigger-root-1"
+		issueID = "issue-new-1"
+		since   = "2026-05-28T11:00:00Z"
 	)
 	task := Task{
 		IssueID:               issueID,
-		TriggerCommentID:      triggerID,
+		TriggerCommentID:      "trigger-1",
 		TriggerCommentContent: "please look",
 		TriggerAuthorType:     "member",
-		// Trigger is itself a root: server stamps TriggerParentID == its own id.
-		TriggerParentID: triggerID,
-		UnresolvedCount: 3,
+		NewCommentCount:       3,
+		NewCommentsSince:      since,
 	}
 	out := BuildPrompt(task, "claude")
 
-	if !strings.Contains(out, "3 unresolved comment(s) on this issue") {
-		t.Errorf("issue-level hint must report the unresolved count, got:\n%s", out)
+	if !strings.Contains(out, "3 new comment(s) since your last run") {
+		t.Errorf("hint must report the new-comment count, got:\n%s", out)
 	}
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --unresolved --output json") {
-		t.Errorf("issue-level hint must point at --unresolved, got:\n%s", out)
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
+		t.Errorf("hint must point at the --since catch-up read, got:\n%s", out)
 	}
-	// Root trigger must NOT render the thread-pull variant.
-	if strings.Contains(out, "You were pulled into thread") {
-		t.Errorf("issue-level hint must not use the thread-pull wording for a root trigger, got:\n%s", out)
+	// The old cursor-heavy paragraph must be gone.
+	if strings.Contains(out, "Next reply cursor") || strings.Contains(out, "--before-id") {
+		t.Errorf("the old cursor-pagination paragraph must not render, got:\n%s", out)
 	}
 }
 
-// TestBuildPromptUnresolvedHintThread pins the thread variant: when the trigger
-// is a reply (TriggerParentID differs from TriggerCommentID), the agent is told
-// it was pulled into the parent thread and to read that thread first, with the
-// other unresolved comments offered as a secondary source.
-func TestBuildPromptUnresolvedHintThread(t *testing.T) {
-	const (
-		issueID   = "issue-unresolved-2"
-		triggerID = "reply-comment-2"
-		parentID  = "thread-root-2"
-	)
+// TestBuildPromptColdStartNoHint pins the cold-start case: no prior run means no
+// since anchor (NewCommentsSince empty), so we suppress the delta hint and fall
+// back to a plain "read the discussion" line.
+func TestBuildPromptColdStartNoHint(t *testing.T) {
+	const issueID = "issue-cold-1"
 	task := Task{
 		IssueID:               issueID,
-		TriggerCommentID:      triggerID,
-		TriggerCommentContent: "follow-up",
-		TriggerAuthorType:     "member",
-		TriggerParentID:       parentID,
-		UnresolvedCount:       2,
-	}
-	out := BuildPrompt(task, "claude")
-
-	if !strings.Contains(out, "You were pulled into thread `"+parentID+"`") {
-		t.Errorf("thread hint must name the parent thread, got:\n%s", out)
-	}
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread "+parentID+" --output json") {
-		t.Errorf("thread hint must point at the parent thread read, got:\n%s", out)
-	}
-	if !strings.Contains(out, "2 other unresolved comment(s)") {
-		t.Errorf("thread hint must mention the other unresolved count, got:\n%s", out)
-	}
-	if !strings.Contains(out, "--unresolved --output json") {
-		t.Errorf("thread hint must still offer --unresolved as the wider-picture call, got:\n%s", out)
-	}
-}
-
-// TestBuildPromptUnresolvedHintSuppressedWhenZero pins that no hint renders when
-// there is no backlog (count == 0). A noisy "0 unresolved comments" line would
-// just waste context on the common case.
-func TestBuildPromptUnresolvedHintSuppressedWhenZero(t *testing.T) {
-	task := Task{
-		IssueID:               "issue-unresolved-3",
-		TriggerCommentID:      "trigger-3",
+		TriggerCommentID:      "trigger-1",
 		TriggerCommentContent: "hi",
 		TriggerAuthorType:     "member",
-		TriggerParentID:       "trigger-3",
-		UnresolvedCount:       0,
+		NewCommentCount:       0,
+		NewCommentsSince:      "",
 	}
 	out := BuildPrompt(task, "claude")
-	if strings.Contains(out, "unresolved comment(s)") {
-		t.Errorf("no unresolved hint should render when count is 0, got:\n%s", out)
+	if strings.Contains(out, "new comment(s) since your last run") {
+		t.Errorf("no since-delta hint should render on cold start, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Read the discussion: `multica issue comment list "+issueID+" --output json`") {
+		t.Errorf("cold start must fall back to the plain read line, got:\n%s", out)
 	}
 }

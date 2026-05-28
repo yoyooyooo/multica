@@ -153,52 +153,51 @@ func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 	}
 }
 
-// The CLAUDE.md workflow surface must carry the same unresolved-comments hint
-// and the resolve step as the per-turn prompt. PR #2816 requires the two
-// surfaces stay in sync, so this pins both the count-driven hint and the
-// `comment resolve` step into the comment-triggered brief.
-func TestCommentTriggeredBriefCarriesUnresolvedHintAndResolveStep(t *testing.T) {
+// The CLAUDE.md workflow surface must carry the same since-delta new-comment
+// hint as the per-turn prompt. PR #2816 requires the two surfaces stay in sync,
+// so this pins the count-driven `--since` hint into the comment-triggered brief.
+func TestCommentTriggeredBriefCarriesNewCommentsHint(t *testing.T) {
 	t.Parallel()
 	const (
-		issueID  = "55555555-6666-7777-8888-999999999999"
-		parentID = "thread-root-xyz"
+		issueID = "55555555-6666-7777-8888-999999999999"
+		since   = "2026-05-28T11:00:00Z"
 	)
 	ctx := TaskContextForEnv{
 		IssueID:          issueID,
 		TriggerCommentID: "reply-abc",
-		TriggerParentID:  parentID,
-		UnresolvedCount:  4,
+		NewCommentCount:  4,
+		NewCommentsSince: since,
 	}
 	out := buildMetaSkillContent("claude", ctx)
 
-	// Thread-variant hint (trigger is a reply, parent differs).
-	if !strings.Contains(out, "You were pulled into thread `"+parentID+"`") {
-		t.Errorf("comment brief must carry the thread unresolved hint, got:\n%s", out)
+	if !strings.Contains(out, "4 new comment(s) since your last run") {
+		t.Errorf("comment brief must report the new-comment count, got:\n%s", out)
 	}
-	if !strings.Contains(out, "4 other unresolved comment(s)") {
-		t.Errorf("comment brief must report the unresolved count, got:\n%s", out)
+	if !strings.Contains(out, "--since "+since+" --output json") {
+		t.Errorf("comment brief must point at the --since catch-up read, got:\n%s", out)
 	}
-	if !strings.Contains(out, "--unresolved --output json") {
-		t.Errorf("comment brief must point at --unresolved, got:\n%s", out)
-	}
-	// Resolve step (F).
-	if !strings.Contains(out, "multica comment resolve <thread-root>") {
-		t.Errorf("comment brief must instruct the agent to resolve a finished thread, got:\n%s", out)
+	// The removed resolve step must not reappear.
+	if strings.Contains(out, "multica comment resolve") {
+		t.Errorf("comment brief must not carry the dropped resolve step, got:\n%s", out)
 	}
 }
 
-// Zero backlog must not render the hint in the CLAUDE.md surface either.
-func TestCommentTriggeredBriefSuppressesUnresolvedHintWhenZero(t *testing.T) {
+// Cold start (no prior run → no since anchor) must fall back to the plain read
+// line instead of the since-delta hint.
+func TestCommentTriggeredBriefColdStartNoHint(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{
 		IssueID:          "55555555-6666-7777-8888-999999999999",
 		TriggerCommentID: "trigger-1",
-		TriggerParentID:  "trigger-1",
-		UnresolvedCount:  0,
+		NewCommentCount:  0,
+		NewCommentsSince: "",
 	}
 	out := buildMetaSkillContent("claude", ctx)
-	if strings.Contains(out, "unresolved comment(s)") {
-		t.Errorf("no unresolved hint should render when count is 0, got:\n%s", out)
+	if strings.Contains(out, "new comment(s) since your last run") {
+		t.Errorf("no since-delta hint should render on cold start, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Catch up on comments") {
+		t.Errorf("cold start must fall back to the plain catch-up line, got:\n%s", out)
 	}
 }
 

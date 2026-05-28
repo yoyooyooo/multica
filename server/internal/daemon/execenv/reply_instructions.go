@@ -2,41 +2,27 @@ package execenv
 
 import "fmt"
 
-// BuildUnresolvedCommentsHint returns a lightweight pointer to the issue's open
-// comments for a comment-triggered task. It deliberately ships only the COUNT
-// and the relevant CLI invocation — never the comment bodies — so the server
-// stays cheap and the agent fetches details on demand.
+// BuildNewCommentsHint returns a one-line pointer telling a comment-triggered
+// agent how many comments arrived since its last run on this issue, and the
+// exact `--since` invocation to fetch just those. It ships only the COUNT and
+// the cursor — never the comment bodies — so the server stays cheap and the
+// agent pulls details on demand.
 //
 // Both the per-turn prompt (daemon.buildCommentPrompt) and the CLAUDE.md
 // workflow (InjectRuntimeConfig) call this so the two surfaces cannot drift
 // (hard requirement from PR #2816).
 //
-// Two shapes:
-//   - thread case (triggerParentID set and != trigger comment id): the agent
-//     was pulled into a specific thread, so point it there first and mention
-//     the other open comments as a secondary source.
-//   - issue case (otherwise): point straight at `--unresolved` to pull every
-//     open comment in one call.
-//
-// Renders nothing when unresolvedCount <= 0 (no backlog to advertise) or when
-// issueID is empty (no issue to query).
-func BuildUnresolvedCommentsHint(issueID, triggerCommentID, triggerParentID string, unresolvedCount int) string {
-	if unresolvedCount <= 0 || issueID == "" {
+// Renders nothing on cold start (no prior run → newCommentsSince empty) or when
+// there are no new comments (newCommentCount <= 0) or issueID is empty. In
+// those cases the caller falls back to a plain "read the discussion" line.
+func BuildNewCommentsHint(issueID, newCommentsSince string, newCommentCount int) string {
+	if newCommentCount <= 0 || newCommentsSince == "" || issueID == "" {
 		return ""
 	}
-	if triggerParentID != "" && triggerParentID != triggerCommentID {
-		return fmt.Sprintf(
-			"You were pulled into thread `%s`. Read it first: "+
-				"`multica issue comment list %s --thread %s --output json`. "+
-				"There are %d other unresolved comment(s) on this issue — "+
-				"pull them all with `multica issue comment list %s --unresolved --output json` if you need the wider picture.\n\n",
-			triggerParentID, issueID, triggerParentID, unresolvedCount, issueID,
-		)
-	}
 	return fmt.Sprintf(
-		"There are %d unresolved comment(s) on this issue. "+
-			"Get them all in one call: `multica issue comment list %s --unresolved --output json`.\n\n",
-		unresolvedCount, issueID,
+		"%d new comment(s) since your last run. Catch up: "+
+			"`multica issue comment list %s --since %s --output json`.\n\n",
+		newCommentCount, issueID, newCommentsSince,
 	)
 }
 

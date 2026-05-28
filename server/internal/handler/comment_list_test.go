@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -1028,110 +1029,53 @@ func resolveCommentRow(t *testing.T, commentID string) {
 	}
 }
 
-// TestListComments_UnresolvedFiltersResolvedRows pins the additive
-// `--unresolved` filter: only comments with resolved_at IS NULL come back, and
-// the default path (no param) is unaffected.
-func TestListComments_UnresolvedFiltersResolvedRows(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	fx := newCommentListFixture(t)
-
-	// Resolve thread 1's root and one of its replies.
-	resolveCommentRow(t, fx.Root1)
-	resolveCommentRow(t, fx.R1a)
-
-	// Default path: still returns everything (compatibility — old callers).
-	_, all := listComments(t, fx.IssueID, "")
-	if len(all) != 7 {
-		t.Fatalf("default list must be unaffected by resolved state, got %d rows", len(all))
-	}
-
-	v := url.Values{}
-	v.Set("unresolved", "true")
-	w, rows := listComments(t, fx.IssueID, v.Encode())
-	if w.Code != http.StatusOK {
-		t.Fatalf("unresolved list should succeed, got %d: %s", w.Code, w.Body.String())
-	}
-	want := []string{fx.R1b, fx.R1b1, fx.Root2, fx.R2a, fx.R2b}
-	eqIDs(t, ids(rows), want, "unresolved filter drops resolved rows")
-}
-
-// TestListComments_UnresolvedRejectsThreadAndRecent pins the combination guard:
-// unresolved is a whole-issue filter and must not compose with the
-// thread/recent navigation models.
-func TestListComments_UnresolvedRejectsThreadAndRecent(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	fx := newCommentListFixture(t)
-
-	for _, tc := range []struct {
-		name  string
-		query string
-	}{
-		{"with thread", "unresolved=true&thread=" + fx.Root1},
-		{"with recent", "unresolved=true&recent=5"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w, _ := listComments(t, fx.IssueID, tc.query)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400 for %s, got %d: %s", tc.name, w.Code, w.Body.String())
-			}
-		})
-	}
-}
-
-// TestCountUnresolvedComments_ExcludesAgentOwn pins the claim-side count query:
-// it counts open comments and excludes the agent's own, so a chatty agent does
-// not inflate its own backlog.
-func TestCountUnresolvedComments_ExcludesAgentOwn(t *testing.T) {
+// TestCountNewCommentsSince_ExcludesAgentOwn pins the claim-side count query: it
+// counts comments created after the given anchor and excludes the agent's own,
+// so a chatty agent does not inflate its own new-comment count.
+func TestCountNewCommentsSince_ExcludesAgentOwn(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	fx := newCommentListFixture(t)
 	agentID := createHandlerTestAgent(t, "count-agent", []byte("[]"))
 
-	insertAgentComment := func(parent *string, body string) string {
-		t.Helper()
-		var id string
-		if err := testPool.QueryRow(context.Background(), `
+	// Two agent-authored comments — must NOT be counted.
+	for _, body := range []string{"agent reply 1", "agent reply 2"} {
+		if _, err := testPool.Exec(context.Background(), `
 			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)
 			VALUES ($1, $2, 'agent', $3, $4, 'comment', $5)
-			RETURNING id
-		`, fx.IssueID, testWorkspaceID, agentID, body, parent).Scan(&id); err != nil {
+		`, fx.IssueID, testWorkspaceID, agentID, body, fx.Root2); err != nil {
 			t.Fatalf("insert agent comment: %v", err)
 		}
-		return id
 	}
-	// Two agent-authored comments — must NOT be counted.
-	insertAgentComment(&fx.Root2, "agent reply 1")
-	insertAgentComment(&fx.Root2, "agent reply 2")
 
 	ctx := context.Background()
-	params := db.CountUnresolvedCommentsParams{
+
+	// Anchor in the far past: all 7 member comments are newer; agent's 2 excluded.
+	got, err := testHandler.Queries.CountNewCommentsSince(ctx, db.CountNewCommentsSinceParams{
 		IssueID:     parseUUID(fx.IssueID),
 		WorkspaceID: parseUUID(testWorkspaceID),
+		Since:       pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true},
 		AuthorID:    parseUUID(agentID),
-	}
-
-	// Baseline: 7 member comments open, 2 agent comments excluded → 7.
-	got, err := testHandler.Queries.CountUnresolvedComments(ctx, params)
+	})
 	if err != nil {
-		t.Fatalf("count unresolved: %v", err)
+		t.Fatalf("count new since epoch: %v", err)
 	}
 	if got != 7 {
-		t.Fatalf("expected 7 unresolved (agent's own excluded), got %d", got)
+		t.Fatalf("expected 7 new member comments since epoch (agent's own excluded), got %d", got)
 	}
 
-	// Resolve two member comments → count drops to 5.
-	resolveCommentRow(t, fx.Root1)
-	resolveCommentRow(t, fx.R1a)
-	got, err = testHandler.Queries.CountUnresolvedComments(ctx, params)
+	// Anchor in the future: nothing is newer.
+	got, err = testHandler.Queries.CountNewCommentsSince(ctx, db.CountNewCommentsSinceParams{
+		IssueID:     parseUUID(fx.IssueID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Since:       pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+		AuthorID:    parseUUID(agentID),
+	})
 	if err != nil {
-		t.Fatalf("count unresolved after resolve: %v", err)
+		t.Fatalf("count new since future: %v", err)
 	}
-	if got != 5 {
-		t.Fatalf("expected 5 unresolved after resolving 2, got %d", got)
+	if got != 0 {
+		t.Fatalf("expected 0 new comments after a future anchor, got %d", got)
 	}
 }

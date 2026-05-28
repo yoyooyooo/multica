@@ -146,11 +146,6 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	threadStr := q.Get("thread")
 	recentStr := q.Get("recent")
 	tailStr := q.Get("tail")
-	// unresolved is an additive top-level filter (resolved_at IS NULL). An old
-	// CLI never sends it, so the param defaults off and the response shape is
-	// unchanged. Only "true"/"1" enable it; any other value (including absent)
-	// is treated as off so a typo can't silently drop resolved comments.
-	unresolved := q.Get("unresolved") == "true" || q.Get("unresolved") == "1"
 	beforeTimeStr := q.Get("before")
 	beforeIDStr := q.Get("before_id")
 	if beforeIDStr == "" {
@@ -161,14 +156,6 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	// --- combination validation ----------------------------------------
 	if threadStr != "" && recentStr != "" {
 		writeError(w, http.StatusBadRequest, "thread and recent are mutually exclusive")
-		return
-	}
-	// unresolved is a whole-issue filter and does not compose with the
-	// thread/recent navigation models (a tailed thread or recent window is its
-	// own selection; mixing in "resolved_at IS NULL" would create a confusing
-	// matrix). It does combine with since (incremental polling of open items).
-	if unresolved && (threadStr != "" || recentStr != "") {
-		writeError(w, http.StatusBadRequest, "unresolved cannot be combined with thread or recent")
 		return
 	}
 	if tailStr != "" && threadStr == "" {
@@ -251,7 +238,6 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		ThreadTail:    threadTail,
 		ThreadTailSet: threadTailSet,
 		RecentN:       recentN,
-		Unresolved:    unresolved,
 		HasCursor:     hasCursor,
 		BeforeAt:      beforeCursor,
 		BeforeID:      beforeUUID,
@@ -313,7 +299,6 @@ type fetchCommentsArgs struct {
 	ThreadTail    int
 	ThreadTailSet bool
 	RecentN       int
-	Unresolved    bool
 	HasCursor     bool
 	BeforeAt      pgtype.Timestamptz
 	BeforeID      pgtype.UUID
@@ -575,31 +560,6 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			out.NextBeforeID = uuidToString(headRoot)
 		}
 		return out, nil
-	}
-
-	// Unresolved-only path: flat chronological dump filtered to open comments.
-	// The since filter (if any) is applied in-memory so the same query covers
-	// both "all open" and "open since cursor" without a second SQL variant.
-	if args.Unresolved {
-		rows, err := h.Queries.ListUnresolvedCommentsForIssue(ctx, db.ListUnresolvedCommentsForIssueParams{
-			IssueID:     issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			RowLimit:    commentHardCap,
-		})
-		if err != nil {
-			return fetchCommentsResult{}, err
-		}
-		if !args.Since.Valid {
-			return fetchCommentsResult{Comments: rows}, nil
-		}
-		out := make([]db.Comment, 0, len(rows))
-		for _, c := range rows {
-			if !c.CreatedAt.Time.After(args.Since.Time) {
-				continue
-			}
-			out = append(out, c)
-		}
-		return fetchCommentsResult{Comments: out}, nil
 	}
 
 	// Default + since paths preserved verbatim (no behavioural change for

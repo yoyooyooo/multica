@@ -315,7 +315,6 @@ func init() {
 	issueCommentListCmd.Flags().String("thread", "", "Comment UUID — return the thread containing this comment (root + every descendant). May be a root or a reply id.")
 	issueCommentListCmd.Flags().Int("tail", 0, "Only valid with --thread. Cap reply count to the N most recent replies; the thread root is always included (even with --tail 0). Use --before/--before-id to scroll to older replies.")
 	issueCommentListCmd.Flags().Int("recent", 0, "Return the N most recently active threads (root + descendants per thread). Use --before/--before-id from the previous response to scroll to older threads.")
-	issueCommentListCmd.Flags().Bool("unresolved", false, "Only return unresolved comments (resolved_at IS NULL). Cannot be combined with --thread or --recent. May combine with --since.")
 	issueCommentListCmd.Flags().String("before", "", "Cursor (RFC3339Nano timestamp). With --recent: thread cursor (last_activity_at). With --thread + --tail: reply cursor (reply created_at). Read from the X-Multica-Next-Before response header; must be paired with --before-id.")
 	issueCommentListCmd.Flags().String("before-id", "", "Cursor UUID. With --recent: thread root UUID. With --thread + --tail: oldest reply UUID. Read from the X-Multica-Next-Before-Id response header; must be paired with --before.")
 
@@ -950,7 +949,6 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	// also keeps "--tail 0" (root-only) distinguishable from "no --tail".
 	recentSet := cmd.Flags().Changed("recent")
 	tailSet := cmd.Flags().Changed("tail")
-	unresolved, _ := cmd.Flags().GetBool("unresolved")
 	before, _ := cmd.Flags().GetString("before")
 	beforeID, _ := cmd.Flags().GetString("before-id")
 
@@ -965,9 +963,6 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	}
 	if thread != "" && recentSet {
 		return fmt.Errorf("--thread and --recent are mutually exclusive")
-	}
-	if unresolved && (thread != "" || recentSet) {
-		return fmt.Errorf("--unresolved cannot be combined with --thread or --recent")
 	}
 	if tailSet && thread == "" {
 		return fmt.Errorf("--tail requires --thread (it is a thread-scoped limit)")
@@ -991,9 +986,6 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	}
 	if recentSet {
 		params.Set("recent", fmt.Sprintf("%d", recent))
-	}
-	if unresolved {
-		params.Set("unresolved", "true")
 	}
 	if before != "" {
 		params.Set("before", before)

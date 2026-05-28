@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,15 +26,6 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
-
-// resumeCommentSessionEnabled reports whether comment-triggered tasks may
-// resume the prior Claude session. Default OFF: resumed comment turns can
-// inherit the prior turn's "Done." final message. This is a temporary rollout
-// gate — it affects even old daemons, which already consume prior_session_id.
-func resumeCommentSessionEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("MULTICA_RESUME_COMMENT_SESSION")))
-	return v == "true" || v == "1"
-}
 
 // ---------------------------------------------------------------------------
 // Daemon workspace ownership helpers
@@ -1267,29 +1257,26 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				// Thread root of the trigger: parent_id when it is a reply, its
-				// own id when it is already a root. Lets the daemon point the
-				// agent at the right thread without the agent walking up the
-				// tree itself.
-				if comment.ParentID.Valid {
-					resp.TriggerParentID = uuidToString(comment.ParentID)
-				} else {
-					resp.TriggerParentID = uuidToString(comment.ID)
-				}
-
-				// Surface how many comments on the issue are still unresolved,
-				// so the daemon can tell the agent up front instead of relying
-				// on it to self-fetch every thread. Excludes the agent's own
-				// comments so a chatty agent doesn't inflate its own backlog.
-				// Scope from the trigger comment (issue + workspace) so we don't
-				// depend on the issue var, which is out of scope here.
-				// Best-effort: a DB error leaves the count at 0 (hint suppressed).
-				if cnt, err := h.Queries.CountUnresolvedComments(r.Context(), db.CountUnresolvedCommentsParams{
-					IssueID:     comment.IssueID,
-					WorkspaceID: comment.WorkspaceID,
-					AuthorID:    task.AgentID,
-				}); err == nil {
-					resp.UnresolvedCount = int(cnt)
+				// Count comments that arrived since this agent's last run on the
+				// issue, so the daemon can tell it up front instead of relying on
+				// it to self-fetch. Anchor = the prior task's started_at (never
+				// completed_at: a long run would miss comments posted while it
+				// ran). Cold start (no prior task) → no anchor → no hint.
+				// Excludes the agent's own comments. Best-effort: any DB error or
+				// zero count leaves the hint suppressed.
+				if startedAt, err := h.Queries.GetLastTaskStartedAtForIssueAndAgent(r.Context(), db.GetLastTaskStartedAtForIssueAndAgentParams{
+					AgentID: task.AgentID,
+					IssueID: comment.IssueID,
+				}); err == nil && startedAt.Valid {
+					if cnt, err := h.Queries.CountNewCommentsSince(r.Context(), db.CountNewCommentsSinceParams{
+						IssueID:     comment.IssueID,
+						WorkspaceID: comment.WorkspaceID,
+						Since:       startedAt,
+						AuthorID:    task.AgentID,
+					}); err == nil && cnt > 0 {
+						resp.NewCommentCount = int(cnt)
+						resp.NewCommentsSince = startedAt.Time.UTC().Format(time.RFC3339)
+					}
 				}
 			}
 		}
@@ -1300,28 +1287,19 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		// Skip all prior state when the task was flagged as a manual rerun:
 		// the user just judged the prior output bad, so the daemon must start a
 		// fresh agent session in a fresh workdir instead of resuming anything
-		// from the same conversation that produced that output. For
-		// comment-triggered follow-ups, skip only the session resume: resumed
-		// issue conversations often inherit the prior final assistant message
-		// (for example "Done.") and answer a new human comment with that stale
-		// completion marker instead of the comment itself. Keep reusing the
-		// workdir for comment follow-ups so the agent still sees the same checkout.
+		// from the same conversation that produced that output.
 		if !task.ForceFreshSession {
 			if prior, err := h.Queries.GetLastTaskSession(r.Context(), db.GetLastTaskSessionParams{
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				// Comment-triggered follow-ups skip session resume by default
-				// (only workdir is reused): a resumed conversation tends to
-				// inherit the prior turn's final assistant message (e.g.
-				// "Done.") and answer a new comment with that stale marker.
-				// MULTICA_RESUME_COMMENT_SESSION is a rollout gate to let
-				// comment triggers ALSO resume the session; the runtime-match
-				// and poisoned-session guards stay in force regardless. The
-				// "Focus on THIS comment" guard in prompt.go still defends
-				// against Done.-inheritance when resume is on.
-				resumeComment := resumeCommentSessionEnabled()
-				if (!task.TriggerCommentID.Valid || resumeComment) && prior.RuntimeID == task.RuntimeID {
+				// Resume the prior session when it ran on the same runtime —
+				// including comment-triggered follow-ups, so the agent keeps the
+				// issue's conversation context across turns. The "Focus on THIS
+				// comment" guard in prompt.go defends against inheriting the prior
+				// turn's "Done." marker, and GetLastTaskSession already excludes
+				// poisoned sessions.
+				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
 				}
 				if prior.WorkDir.Valid {

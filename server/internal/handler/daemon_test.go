@@ -2718,8 +2718,10 @@ func TestClaimTask_IssuePriorSessionRuntimeGuard(t *testing.T) {
 	}
 
 	task = claimTaskForRuntimeGuard(t, runtimeID, daemonID)
-	if task.PriorSessionID != "" {
-		t.Fatalf("comment trigger: expected empty PriorSessionID, got %q", task.PriorSessionID)
+	// Comment-triggered tasks now resume the prior session by default (same
+	// runtime), so the agent keeps the issue's conversation context across turns.
+	if task.PriorSessionID != "comment-prior-session" {
+		t.Fatalf("comment trigger: expected PriorSessionID='comment-prior-session' (resume default-on), got %q", task.PriorSessionID)
 	}
 	if task.PriorWorkDir != "/tmp/comment-prior-workdir" {
 		t.Fatalf("comment trigger: expected PriorWorkDir='/tmp/comment-prior-workdir', got %q", task.PriorWorkDir)
@@ -3470,9 +3472,9 @@ type claimCommentTaskResp struct {
 	Task *struct {
 		ID               string `json:"id"`
 		PriorSessionID   string `json:"prior_session_id"`
-		TriggerParentID  string `json:"trigger_parent_id"`
 		TriggerCommentID string `json:"trigger_comment_id"`
-		UnresolvedCount  int    `json:"unresolved_count"`
+		NewCommentCount  int    `json:"new_comment_count"`
+		NewCommentsSince string `json:"new_comments_since"`
 	} `json:"task"`
 }
 
@@ -3495,48 +3497,48 @@ func claimCommentTask(t *testing.T, runtimeID, daemonID string) claimCommentTask
 	return resp
 }
 
-// TestClaimTaskByRuntime_CommentTaskPopulatesUnresolvedAndParent verifies the
-// claim response carries trigger_parent_id (thread root) and unresolved_count
-// for comment-triggered tasks.
-func TestClaimTaskByRuntime_CommentTaskPopulatesUnresolvedAndParent(t *testing.T) {
+// TestClaimTaskByRuntime_CommentTaskPopulatesNewCommentCount verifies the claim
+// response carries new_comment_count + new_comments_since for a comment task
+// when the agent ran on this issue before: the count is comments created after
+// the prior run's started_at, and the since anchor is that started_at.
+func TestClaimTaskByRuntime_CommentTaskPopulatesNewCommentCount(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	runtimeID := createClaimReclaimRuntime(t, ctx, "Comment unresolved runtime")
-	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Comment unresolved agent")
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Comment newcount runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Comment newcount agent")
 
-	// Seed a root comment, then a reply under it that triggers the task.
-	var rootID string
+	// A prior run establishes the "since" anchor (its started_at, in the past).
+	var priorTaskID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
-		VALUES ($1, $2, 'member', $3, 'root', 'comment') RETURNING id
-	`, issueID, testWorkspaceID, testUserID).Scan(&rootID); err != nil {
-		t.Fatalf("insert root comment: %v", err)
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at, completed_at)
+		VALUES ($1, $2, $3, 'completed', 0, now() - interval '1 hour', now() - interval '50 minutes')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&priorTaskID); err != nil {
+		t.Fatalf("insert prior task: %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, rootID) })
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, priorTaskID) })
 
-	_, triggerID := createCommentTriggeredClaimTask(t, ctx, agentID, runtimeID, issueID, &rootID)
+	// The trigger comment (member-authored, created now) lands after the anchor.
+	_, triggerID := createCommentTriggeredClaimTask(t, ctx, agentID, runtimeID, issueID, nil)
 
-	resp := claimCommentTask(t, runtimeID, "comment-unresolved-claim")
+	resp := claimCommentTask(t, runtimeID, "comment-newcount-claim")
 	if resp.Task.TriggerCommentID != triggerID {
 		t.Fatalf("trigger_comment_id = %s, want %s", resp.Task.TriggerCommentID, triggerID)
 	}
-	// Trigger is a reply rooted at rootID → parent must be the root.
-	if resp.Task.TriggerParentID != rootID {
-		t.Errorf("trigger_parent_id = %s, want thread root %s", resp.Task.TriggerParentID, rootID)
+	if resp.Task.NewCommentsSince == "" {
+		t.Errorf("new_comments_since must be set when a prior run exists, got empty")
 	}
-	// Two member comments open (root + trigger), neither authored by the agent.
-	if resp.Task.UnresolvedCount != 2 {
-		t.Errorf("unresolved_count = %d, want 2", resp.Task.UnresolvedCount)
+	if resp.Task.NewCommentCount < 1 {
+		t.Errorf("new_comment_count = %d, want >= 1 (the trigger comment is newer than the anchor)", resp.Task.NewCommentCount)
 	}
 }
 
-// TestClaimTaskByRuntime_CommentResumeGatedByEnvFlag verifies the rollout gate:
-// a comment-triggered task does NOT resume the prior session by default, but
-// does when MULTICA_RESUME_COMMENT_SESSION is set. The prior session must be on
-// the same runtime to qualify.
-func TestClaimTaskByRuntime_CommentResumeGatedByEnvFlag(t *testing.T) {
+// TestClaimTaskByRuntime_CommentResumeDefaultOn verifies comment-triggered tasks
+// resume the prior session by default (no env flag), as long as the prior
+// session ran on the same runtime.
+func TestClaimTaskByRuntime_CommentResumeDefaultOn(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -3558,28 +3560,8 @@ func TestClaimTaskByRuntime_CommentResumeGatedByEnvFlag(t *testing.T) {
 
 	createCommentTriggeredClaimTask(t, ctx, agentID, runtimeID, issueID, nil)
 
-	t.Run("flag off → no session resume", func(t *testing.T) {
-		t.Setenv("MULTICA_RESUME_COMMENT_SESSION", "")
-		resp := claimCommentTask(t, runtimeID, "comment-resume-off")
-		if resp.Task.PriorSessionID != "" {
-			t.Errorf("prior_session_id = %q, want empty when flag off", resp.Task.PriorSessionID)
-		}
-	})
-
-	// Re-queue the task the previous claim dispatched so the second sub-test
-	// has a claimable comment task again.
-	if _, err := testPool.Exec(ctx, `
-		UPDATE agent_task_queue SET status = 'queued', dispatched_at = NULL
-		WHERE agent_id = $1 AND issue_id = $2 AND trigger_comment_id IS NOT NULL
-	`, agentID, issueID); err != nil {
-		t.Fatalf("re-queue comment task: %v", err)
+	resp := claimCommentTask(t, runtimeID, "comment-resume-default")
+	if resp.Task.PriorSessionID != priorSession {
+		t.Errorf("prior_session_id = %q, want %q (comment resume is default-on)", resp.Task.PriorSessionID, priorSession)
 	}
-
-	t.Run("flag on → session resumes", func(t *testing.T) {
-		t.Setenv("MULTICA_RESUME_COMMENT_SESSION", "true")
-		resp := claimCommentTask(t, runtimeID, "comment-resume-on")
-		if resp.Task.PriorSessionID != priorSession {
-			t.Errorf("prior_session_id = %q, want %q when flag on", resp.Task.PriorSessionID, priorSession)
-		}
-	})
 }

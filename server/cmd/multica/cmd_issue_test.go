@@ -1555,7 +1555,6 @@ func newIssueCommentListTestCmd() *cobra.Command {
 	cmd.Flags().String("thread", "", "")
 	cmd.Flags().Int("recent", 0, "")
 	cmd.Flags().Int("tail", 0, "")
-	cmd.Flags().Bool("unresolved", false, "")
 	cmd.Flags().String("before", "", "")
 	cmd.Flags().String("before-id", "", "")
 	return cmd

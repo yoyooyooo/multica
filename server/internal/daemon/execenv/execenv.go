@@ -54,8 +54,8 @@ type PrepareParams struct {
 type TaskContextForEnv struct {
 	IssueID                 string
 	TriggerCommentID        string // comment that triggered this task (empty for on_assign)
-	TriggerParentID         string // thread root of the triggering comment (its parent_id, or its own id when a root)
-	UnresolvedCount         int    // count of unresolved comments on the issue (excludes this agent's own)
+	NewCommentCount         int    // comments created since this agent's last run on the issue (excludes its own)
+	NewCommentsSince        string // RFC3339 anchor (last run's started_at) the count is measured from; empty on cold start
 	AgentID                 string // unique ID of the dispatched agent
 	AgentName               string
 	AgentInstructions       string // agent identity/persona instructions, injected into CLAUDE.md

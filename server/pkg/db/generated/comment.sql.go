@@ -28,25 +28,32 @@ func (q *Queries) CountComments(ctx context.Context, arg CountCommentsParams) (i
 	return count, err
 }
 
-const countUnresolvedComments = `-- name: CountUnresolvedComments :one
+const countNewCommentsSince = `-- name: CountNewCommentsSince :one
 SELECT count(*) FROM comment
 WHERE issue_id = $1
   AND workspace_id = $2
-  AND resolved_at IS NULL
-  AND NOT (author_type = 'agent' AND author_id = $3)
+  AND created_at > $3
+  AND NOT (author_type = 'agent' AND author_id = $4)
 `
 
-type CountUnresolvedCommentsParams struct {
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	AuthorID    pgtype.UUID `json:"author_id"`
+type CountNewCommentsSinceParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	AuthorID    pgtype.UUID        `json:"author_id"`
 }
 
-// Counts unresolved comments on an issue, excluding any authored by the given
-// agent (@author_id). Feeds the daemon claim response so the agent learns how
-// many open comments are waiting without the server shipping their bodies.
-func (q *Queries) CountUnresolvedComments(ctx context.Context, arg CountUnresolvedCommentsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countUnresolvedComments, arg.IssueID, arg.WorkspaceID, arg.AuthorID)
+// Counts comments on an issue created strictly after @since, excluding any
+// authored by the given agent (@author_id). Feeds the daemon claim response so
+// a comment-triggered task can tell the agent how many comments arrived since
+// its last run on this issue, without shipping their bodies.
+func (q *Queries) CountNewCommentsSince(ctx context.Context, arg CountNewCommentsSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countNewCommentsSince,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.AuthorID,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -679,57 +686,6 @@ func (q *Queries) ListThreadCommentsForIssuePaged(ctx context.Context, arg ListT
 	items := []ListThreadCommentsForIssuePagedRow{}
 	for rows.Next() {
 		var i ListThreadCommentsForIssuePagedRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.IssueID,
-			&i.AuthorType,
-			&i.AuthorID,
-			&i.Content,
-			&i.Type,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ParentID,
-			&i.WorkspaceID,
-			&i.ResolvedAt,
-			&i.ResolvedByType,
-			&i.ResolvedByID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listUnresolvedCommentsForIssue = `-- name: ListUnresolvedCommentsForIssue :many
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
-WHERE issue_id = $1 AND workspace_id = $2
-  AND resolved_at IS NULL
-ORDER BY created_at ASC, id ASC
-LIMIT $3
-`
-
-type ListUnresolvedCommentsForIssueParams struct {
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RowLimit    int32       `json:"row_limit"`
-}
-
-// Unresolved-only chronological dump, capped at @row_limit. Powers the CLI's
-// `comment list --unresolved` agent flow. Additive: existing callers stay on
-// ListCommentsForIssue and are unaffected.
-func (q *Queries) ListUnresolvedCommentsForIssue(ctx context.Context, arg ListUnresolvedCommentsForIssueParams) ([]Comment, error) {
-	rows, err := q.db.Query(ctx, listUnresolvedCommentsForIssue, arg.IssueID, arg.WorkspaceID, arg.RowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Comment{}
-	for rows.Next() {
-		var i Comment
 		if err := rows.Scan(
 			&i.ID,
 			&i.IssueID,
