@@ -254,6 +254,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				//     piggybacks on its tenant_access_token cache.
 				connectorFactory, connectorLabel := buildLarkConnectorFactory(larkClient, installSvc)
 				h.LarkHub = lark.NewHub(queries, connectorFactory, dispatcher, lark.HubConfig{})
+
+				// OutcomeReplier wires the outbound side of the
+				// EventEmitter contract: NeedsBinding / AgentOffline /
+				// AgentArchived translate to a Lark-side reply card.
+				// Requires the real APIClient (the stub returns
+				// ErrAPIClientNotConfigured on every send) and the
+				// binding token service. When either is missing, the
+				// Hub falls back to the noop replier and the outcomes
+				// get logged but not delivered — clearly visible in
+				// boot output so operators understand the gap.
+				replier := lark.NewLarkOutcomeReplier(lark.OutcomeReplierConfig{
+					APIClient:   larkClient,
+					BindingSvc:  h.LarkBindingTokens,
+					Credentials: installSvc,
+					Queries:     queries,
+					PublicURL:   signupConfig.PublicURL,
+					Logger:      slog.Default(),
+				})
+				h.LarkHub.SetOutcomeReplier(replier)
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// Device-flow registration service: end-to-end install
@@ -861,28 +880,27 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 // buildLarkConnectorFactory picks between the staging-mode
 // NoopConnector and the real WS long-conn connector based on
-// MULTICA_LARK_WS_ENABLED. The real connector requires an HTTP
-// APIClient that can mint a tenant_access_token; the stub cannot, so we
-// fall back to noop with a warning if the operator enables the WS flag
-// without also enabling MULTICA_LARK_HTTP_ENABLED. Returns the factory
-// the Hub will use plus a short label for the boot log so operators
-// can see at a glance which mode they are in.
+// MULTICA_LARK_WS_ENABLED. The real connector talks to
+// /callback/ws/endpoint directly with app_id/app_secret (no
+// tenant_access_token bearer needed for the bootstrap), so it can
+// run independently of MULTICA_LARK_HTTP_ENABLED — but outbound
+// reply cards (binding prompt, offline / archived notices) require
+// the HTTP APIClient. We still recommend enabling both together;
+// when only WS is on, the OutcomeReplier surfaces a warning and
+// downgrades to silent drops.
+//
+// Returns the factory plus a short label for the boot log so
+// operators can see at a glance which mode they are in.
 func buildLarkConnectorFactory(client lark.APIClient, installSvc *lark.InstallationService) (lark.ConnectorFactory, string) {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_LARK_WS_ENABLED")), "true") {
 		return lark.NoopConnectorFactory(slog.Default()), "noop"
 	}
-	tokenSource, err := lark.NewHTTPAPIClientTokenSource(client)
-	if err != nil {
-		slog.Warn("lark ws: MULTICA_LARK_WS_ENABLED requires MULTICA_LARK_HTTP_ENABLED; falling back to noop", "error", err)
-		return lark.NoopConnectorFactory(slog.Default()), "noop"
-	}
 	endpointFetcher, err := lark.NewHTTPConnectionTokenFetcher(lark.HTTPConnectionTokenConfig{
-		BaseURL:     strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
-		TokenSource: tokenSource,
-		Logger:      slog.Default(),
+		BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_CALLBACK_BASE_URL")),
+		Logger:  slog.Default(),
 	})
 	if err != nil {
-		slog.Error("lark ws: connection_token fetcher init failed; falling back to noop", "error", err)
+		slog.Error("lark ws: endpoint fetcher init failed; falling back to noop", "error", err)
 		return lark.NoopConnectorFactory(slog.Default()), "noop"
 	}
 	decoder := lark.NewLarkJSONFrameDecoder()
@@ -912,6 +930,7 @@ func buildLarkConnectorFactory(client lark.APIClient, installSvc *lark.Installat
 		slog.Error("lark ws: connector init failed; falling back to noop", "error", err)
 		return lark.NoopConnectorFactory(slog.Default()), "noop"
 	}
+	_ = client // outbound APIClient flows in through OutcomeReplier wiring on the Hub
 	return func(_ db.LarkInstallation) (lark.EventConnector, error) {
 		return conn, nil
 	}, "ws-long-conn"

@@ -16,26 +16,30 @@ import (
 )
 
 // fakeWSConn is a programmable WSConn driven by tests. ReadMessage
-// blocks until either Push delivers a frame or Close is invoked — this
-// is how we simulate the "blocked in TCP read" condition the watchdog
-// has to break.
+// blocks until either Push delivers a frame or Close is invoked —
+// this is how we simulate the "blocked in TCP read" condition the
+// watchdog has to break.
+//
+// Frames sent via WriteMessage are buffered into writes[] so tests
+// can assert on outbound traffic (ACK, ping) without race conditions.
 type fakeWSConn struct {
-	mu          sync.Mutex
-	frames      chan []byte
-	closeOnce   sync.Once
-	closed      chan struct{}
-	pongHandler func(string) error
-	pings       int32
-	writeErr    error // optional injection for WriteControl
+	mu     sync.Mutex
+	writes [][]byte
+
+	frames    chan []byte
+	closeOnce sync.Once
+	closed    chan struct{}
+	writeErr  error // optional injection for WriteMessage
 }
 
 func newFakeWSConn() *fakeWSConn {
 	return &fakeWSConn{
-		frames: make(chan []byte, 8),
+		frames: make(chan []byte, 16),
 		closed: make(chan struct{}),
 	}
 }
 
+// Push enqueues a binary frame for the next ReadMessage call.
 func (f *fakeWSConn) Push(b []byte) {
 	select {
 	case f.frames <- b:
@@ -49,32 +53,26 @@ func (f *fakeWSConn) ReadMessage() (int, []byte, error) {
 		if !ok {
 			return 0, nil, io.EOF
 		}
-		return websocket.TextMessage, b, nil
+		return websocket.BinaryMessage, b, nil
 	case <-f.closed:
 		return 0, nil, &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "fake closed"}
 	}
 }
 
-func (f *fakeWSConn) WriteControl(messageType int, data []byte, deadline time.Time) error {
+func (f *fakeWSConn) WriteMessage(messageType int, data []byte) error {
 	f.mu.Lock()
-	err := f.writeErr
-	f.mu.Unlock()
-	if err != nil {
-		return err
+	defer f.mu.Unlock()
+	if f.writeErr != nil {
+		return f.writeErr
 	}
-	if messageType == websocket.PingMessage {
-		atomic.AddInt32(&f.pings, 1)
-	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.writes = append(f.writes, cp)
 	return nil
 }
 
-func (f *fakeWSConn) SetReadDeadline(t time.Time) error { return nil }
-
-func (f *fakeWSConn) SetPongHandler(h func(string) error) {
-	f.mu.Lock()
-	f.pongHandler = h
-	f.mu.Unlock()
-}
+func (f *fakeWSConn) SetReadDeadline(t time.Time) error  { return nil }
+func (f *fakeWSConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (f *fakeWSConn) Close() error {
 	f.closeOnce.Do(func() {
@@ -83,7 +81,15 @@ func (f *fakeWSConn) Close() error {
 	return nil
 }
 
-func (f *fakeWSConn) pingCount() int { return int(atomic.LoadInt32(&f.pings)) }
+func (f *fakeWSConn) snapshot() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]byte, len(f.writes))
+	for i, w := range f.writes {
+		out[i] = append([]byte(nil), w...)
+	}
+	return out
+}
 
 // fakeWSDialer hands back a pre-built fakeWSConn so tests can drive
 // frames + observe closes deterministically.
@@ -99,16 +105,21 @@ func (d *fakeWSDialer) DialContext(ctx context.Context, urlStr string, h http.He
 	return d.conn, nil, nil
 }
 
-func quietConnector(t *testing.T, conn *fakeWSConn, decoder FrameDecoder) *WSLongConnConnector {
+// quietConnector wires a connector with a deterministic decoder + the
+// fakeWSConn. Caller controls the decoder so each test can assert
+// per-payload behaviour.
+func quietConnector(t *testing.T, conn *fakeWSConn, decoder FrameDecoder, pingInterval time.Duration) *WSLongConnConnector {
 	t.Helper()
 	c, err := NewWSLongConnConnector(WSConnectorConfig{
 		Dialer:          &fakeWSDialer{conn: conn},
-		EndpointFetcher: EndpointFetcherFunc(func(context.Context, InstallationCredentials) (WSEndpoint, error) { return WSEndpoint{URL: "wss://test/ignored"}, nil }),
+		EndpointFetcher: EndpointFetcherFunc(func(context.Context, InstallationCredentials) (WSEndpoint, error) {
+			return WSEndpoint{URL: "wss://test/ignored", ServiceID: 7, PingInterval: pingInterval}, nil
+		}),
 		FrameDecoder:    decoder,
 		CredentialsProvider: CredentialsProviderFunc(func(context.Context, db.LarkInstallation) (InstallationCredentials, error) {
 			return InstallationCredentials{AppID: "test_app", AppSecret: "secret"}, nil
 		}),
-		PingInterval: 10 * time.Millisecond,
+		PingInterval: pingInterval,
 		ReadDeadline: time.Second,
 		WriteTimeout: time.Second,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -119,13 +130,28 @@ func quietConnector(t *testing.T, conn *fakeWSConn, decoder FrameDecoder) *WSLon
 	return c
 }
 
+// pushDataFrame writes a Lark long-conn data Frame envelope wrapping
+// the supplied JSON payload onto the conn's read queue.
+func pushDataFrame(conn *fakeWSConn, payload []byte, messageID string) {
+	f := &Frame{
+		Method:  FrameMethodData,
+		Service: 7,
+		Headers: []FrameHeader{
+			{Key: FrameHeaderTypeKey, Value: FrameHeaderTypeEvent},
+			{Key: FrameHeaderMessageIDKey, Value: messageID},
+		},
+		Payload: payload,
+	}
+	conn.Push(f.Marshal())
+}
+
 func TestWSConnectorRunReturnsOnCtxCancelEvenWhenReadIsBlocked(t *testing.T) {
 	t.Parallel()
 	conn := newFakeWSConn()
 	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
 		return InboundMessage{}, false, nil
 	})
-	c := quietConnector(t, conn, decoder)
+	c := quietConnector(t, conn, decoder, 10*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -151,20 +177,25 @@ func TestWSConnectorRunReturnsOnCtxCancelEvenWhenReadIsBlocked(t *testing.T) {
 	}
 }
 
-func TestWSConnectorEmitsDecodedFrames(t *testing.T) {
+// TestWSConnectorEmitsDecodedFramesAndAcks verifies that:
+//   - data frames whose decoder returns ok=true reach emit;
+//   - every data frame yields an ACK Frame written back to the conn;
+//   - heartbeat / non-event payloads are dropped but still ACKed (so
+//     the server stops resending them).
+func TestWSConnectorEmitsDecodedFramesAndAcks(t *testing.T) {
 	t.Parallel()
 	conn := newFakeWSConn()
-	decoder := FrameDecoderFunc(func(raw []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
-		if string(raw) == "heartbeat" {
+	decoder := FrameDecoderFunc(func(payload []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
+		if string(payload) == "heartbeat" {
 			return InboundMessage{}, false, nil
 		}
 		return InboundMessage{
-			EventID:   string(raw),
+			EventID:   string(payload),
 			AppID:     "test_app",
-			MessageID: "msg-" + string(raw),
+			MessageID: "msg-" + string(payload),
 		}, true, nil
 	})
-	c := quietConnector(t, conn, decoder)
+	c := quietConnector(t, conn, decoder, time.Hour) // disable ping cadence
 
 	var emitted []InboundMessage
 	var emitMu sync.Mutex
@@ -183,11 +214,10 @@ func TestWSConnectorEmitsDecodedFrames(t *testing.T) {
 		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, emit)
 	}()
 
-	conn.Push([]byte("evt-1"))
-	conn.Push([]byte("heartbeat"))
-	conn.Push([]byte("evt-2"))
+	pushDataFrame(conn, []byte("evt-1"), "m1")
+	pushDataFrame(conn, []byte("heartbeat"), "m2")
+	pushDataFrame(conn, []byte("evt-2"), "m3")
 
-	// Allow the read loop to process all three frames.
 	deadline := time.After(2 * time.Second)
 	for {
 		emitMu.Lock()
@@ -210,26 +240,192 @@ func TestWSConnectorEmitsDecodedFrames(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 
-	if got := emitted[0].EventID; got != "evt-1" {
-		t.Errorf("first emit EventID = %q, want evt-1", got)
+	if emitted[0].EventID != "evt-1" || emitted[1].EventID != "evt-2" {
+		t.Errorf("emit ordering wrong: %+v", emitted)
 	}
-	if got := emitted[1].EventID; got != "evt-2" {
-		t.Errorf("second emit EventID = %q, want evt-2", got)
+
+	// Every data frame should have produced an ACK frame on the wire
+	// regardless of decode outcome (drop or emit).
+	writes := conn.snapshot()
+	if len(writes) < 3 {
+		t.Fatalf("expected >=3 outbound ACK frames, got %d", len(writes))
+	}
+	for i, w := range writes[:3] {
+		f, err := UnmarshalFrame(w)
+		if err != nil {
+			t.Fatalf("write[%d] unmarshal: %v", i, err)
+		}
+		if f.Method != FrameMethodData {
+			t.Errorf("ack[%d] Method = %d; want Data", i, f.Method)
+		}
+		if f.HeaderValue(FrameHeaderTypeKey) != FrameHeaderTypeEvent {
+			t.Errorf("ack[%d] type header = %q", i, f.HeaderValue(FrameHeaderTypeKey))
+		}
+		if len(f.Payload) == 0 || !contains(string(f.Payload), `"code":200`) {
+			t.Errorf("ack[%d] payload missing code=200: %s", i, string(f.Payload))
+		}
 	}
 }
 
-func TestWSConnectorDecoderErrorDoesNotBreakLoop(t *testing.T) {
+func TestWSConnectorRespondsToServerPingWithPong(t *testing.T) {
+	t.Parallel()
+	conn := newFakeWSConn()
+	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
+		return InboundMessage{}, false, nil
+	})
+	c := quietConnector(t, conn, decoder, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, func(context.Context, InboundMessage) (DispatchResult, error) {
+			return DispatchResult{}, nil
+		})
+	}()
+
+	// Server-initiated ping (control frame, type=ping).
+	pingFrame := &Frame{
+		Method:  FrameMethodControl,
+		Service: 7,
+		Headers: []FrameHeader{{Key: FrameHeaderTypeKey, Value: FrameHeaderTypePing}},
+	}
+	conn.Push(pingFrame.Marshal())
+
+	// Allow the read loop to react.
+	deadline := time.After(2 * time.Second)
+	for {
+		writes := conn.snapshot()
+		if len(writes) >= 1 {
+			f, err := UnmarshalFrame(writes[0])
+			if err != nil {
+				t.Fatalf("pong unmarshal: %v", err)
+			}
+			if f.HeaderValue(FrameHeaderTypeKey) != FrameHeaderTypePong {
+				t.Errorf("response type = %q; want pong", f.HeaderValue(FrameHeaderTypeKey))
+			}
+			if f.Service != 7 {
+				t.Errorf("response Service = %d; want 7", f.Service)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("connector did not pong in 2s")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestWSConnectorEmitInfraErrorSendsNackAndReturns(t *testing.T) {
+	t.Parallel()
+	conn := newFakeWSConn()
+	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
+		return InboundMessage{EventID: "x"}, true, nil
+	})
+	c := quietConnector(t, conn, decoder, time.Hour)
+
+	infra := errors.New("dispatcher infra failure")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, func(context.Context, InboundMessage) (DispatchResult, error) {
+			return DispatchResult{}, infra
+		})
+	}()
+
+	pushDataFrame(conn, []byte("triggers-infra"), "m-infra")
+
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, infra) {
+			t.Fatalf("expected Run to wrap infra error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after infra error")
+	}
+
+	// NACK should have been written on the way out (code=500).
+	writes := conn.snapshot()
+	found := false
+	for _, w := range writes {
+		f, err := UnmarshalFrame(w)
+		if err != nil {
+			continue
+		}
+		if f.Method == FrameMethodData && contains(string(f.Payload), `"code":500`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected NACK (code=500) frame written on infra error path")
+	}
+}
+
+func TestWSConnectorSendsAppLayerPings(t *testing.T) {
+	t.Parallel()
+	conn := newFakeWSConn()
+	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
+		return InboundMessage{}, false, nil
+	})
+	c := quietConnector(t, conn, decoder, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, func(context.Context, InboundMessage) (DispatchResult, error) {
+			return DispatchResult{}, nil
+		})
+	}()
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		writes := conn.snapshot()
+		pings := 0
+		for _, w := range writes {
+			f, err := UnmarshalFrame(w)
+			if err != nil {
+				continue
+			}
+			if f.Method == FrameMethodControl && f.HeaderValue(FrameHeaderTypeKey) == FrameHeaderTypePing {
+				pings++
+			}
+		}
+		if pings >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected >=3 app-layer pings, got %d writes total", len(writes))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+func TestWSConnectorDecoderErrorAcksAndContinues(t *testing.T) {
 	t.Parallel()
 	conn := newFakeWSConn()
 	decodeCount := int32(0)
-	decoder := FrameDecoderFunc(func(raw []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
+	decoder := FrameDecoderFunc(func(payload []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
 		n := atomic.AddInt32(&decodeCount, 1)
 		if n == 1 {
 			return InboundMessage{}, false, errors.New("synthetic decode failure")
 		}
 		return InboundMessage{EventID: "good"}, true, nil
 	})
-	c := quietConnector(t, conn, decoder)
+	c := quietConnector(t, conn, decoder, time.Hour)
 
 	emits := make(chan InboundMessage, 1)
 	emit := func(_ context.Context, msg InboundMessage) (DispatchResult, error) {
@@ -244,8 +440,8 @@ func TestWSConnectorDecoderErrorDoesNotBreakLoop(t *testing.T) {
 		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, emit)
 	}()
 
-	conn.Push([]byte("bad"))
-	conn.Push([]byte("good"))
+	pushDataFrame(conn, []byte("bad"), "mb")
+	pushDataFrame(conn, []byte("good"), "mg")
 
 	select {
 	case msg := <-emits:
@@ -260,44 +456,13 @@ func TestWSConnectorDecoderErrorDoesNotBreakLoop(t *testing.T) {
 	<-done
 }
 
-func TestWSConnectorEmitInfraErrorReturnsFromRun(t *testing.T) {
-	t.Parallel()
-	conn := newFakeWSConn()
-	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
-		return InboundMessage{EventID: "x"}, true, nil
-	})
-	c := quietConnector(t, conn, decoder)
-
-	infra := errors.New("dispatcher infra failure")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, func(context.Context, InboundMessage) (DispatchResult, error) {
-			return DispatchResult{}, infra
-		})
-	}()
-
-	conn.Push([]byte("triggers-infra"))
-
-	select {
-	case err := <-done:
-		if err == nil || !errors.Is(err, infra) {
-			t.Fatalf("expected Run to wrap infra error, got %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after infra error")
-	}
-}
-
 func TestWSConnectorReadErrorReturnsToHub(t *testing.T) {
 	t.Parallel()
 	conn := newFakeWSConn()
 	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
 		return InboundMessage{}, false, nil
 	})
-	c := quietConnector(t, conn, decoder)
+	c := quietConnector(t, conn, decoder, time.Hour)
 
 	ctx := context.Background()
 	done := make(chan error, 1)
@@ -320,42 +485,6 @@ func TestWSConnectorReadErrorReturnsToHub(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after underlying conn closed")
 	}
-}
-
-func TestWSConnectorSendsPings(t *testing.T) {
-	t.Parallel()
-	conn := newFakeWSConn()
-	decoder := FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) {
-		return InboundMessage{}, false, nil
-	})
-	c := quietConnector(t, conn, decoder)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, func(context.Context, InboundMessage) (DispatchResult, error) {
-			return DispatchResult{}, nil
-		})
-	}()
-
-	// PingInterval was set to 10ms in quietConnector; wait long enough
-	// for several pings to fire.
-	deadline := time.After(500 * time.Millisecond)
-	for {
-		if conn.pingCount() >= 3 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("expected >=3 pings, got %d", conn.pingCount())
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-
-	cancel()
-	<-done
 }
 
 func TestWSConnectorRequiresAllDeps(t *testing.T) {
@@ -401,7 +530,7 @@ func TestWSConnectorDialErrorIsReturned(t *testing.T) {
 	dialErr := errors.New("dial blew up")
 	c, err := NewWSLongConnConnector(WSConnectorConfig{
 		Dialer:          &fakeWSDialer{dialErr: dialErr},
-		EndpointFetcher: EndpointFetcherFunc(func(context.Context, InstallationCredentials) (WSEndpoint, error) { return WSEndpoint{URL: "wss://x"}, nil }),
+		EndpointFetcher: EndpointFetcherFunc(func(context.Context, InstallationCredentials) (WSEndpoint, error) { return WSEndpoint{URL: "wss://x", ServiceID: 1}, nil }),
 		FrameDecoder:    FrameDecoderFunc(func([]byte, db.LarkInstallation) (InboundMessage, bool, error) { return InboundMessage{}, false, nil }),
 		CredentialsProvider: CredentialsProviderFunc(func(context.Context, db.LarkInstallation) (InstallationCredentials, error) {
 			return InstallationCredentials{AppID: "a"}, nil

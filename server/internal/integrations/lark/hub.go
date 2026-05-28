@@ -189,6 +189,7 @@ type Hub struct {
 	queries    HubQueries
 	factory    ConnectorFactory
 	dispatcher *Dispatcher
+	replier    OutcomeReplier
 	cfg        HubConfig
 
 	// nodeID is the per-process lease ownership token. The CAS
@@ -206,18 +207,35 @@ type Hub struct {
 
 // NewHub constructs a Hub bound to the supplied queries, connector
 // factory and dispatcher. The Hub does not start any goroutines until
-// Run is called.
+// Run is called. The replier (OutcomeReplier) handles the outbound
+// side of the EventEmitter contract — NeedsBinding / AgentOffline /
+// AgentArchived cards — and is best-effort: failures are logged and
+// do not interrupt inbound processing. A nil replier falls back to
+// the noop replier so callers that have not wired outbound replies
+// yet still get the inbound pipeline running.
 func NewHub(queries HubQueries, factory ConnectorFactory, dispatcher *Dispatcher, cfg HubConfig) *Hub {
 	cfg = cfg.withDefaults()
 	return &Hub{
 		queries:    queries,
 		factory:    factory,
 		dispatcher: dispatcher,
+		replier:    NewNoopOutcomeReplier(cfg.Logger),
 		cfg:        cfg,
 		nodeID:     newNodeID(),
 		stopFns:    make(map[string]context.CancelFunc),
 		stopChan:   make(chan struct{}),
 	}
+}
+
+// SetOutcomeReplier installs the production replier on the Hub. Must
+// be called BEFORE Run; setting it afterwards is a data race against
+// the supervisor's emit goroutines. Nil resets back to the noop
+// replier (useful for tests).
+func (h *Hub) SetOutcomeReplier(r OutcomeReplier) {
+	if r == nil {
+		r = NewNoopOutcomeReplier(h.cfg.Logger)
+	}
+	h.replier = r
 }
 
 // NodeID exposes the per-process lease token. Useful for tests and
@@ -414,7 +432,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 
 		startedAt := h.cfg.Now()
 		runErr := conn.Run(runCtx, inst, func(emitCtx context.Context, msg InboundMessage) (DispatchResult, error) {
-			return h.handleEvent(emitCtx, log, msg)
+			return h.handleEvent(emitCtx, inst, log, msg)
 		})
 		runCancel()
 		<-renewDone
@@ -530,16 +548,18 @@ func (h *Hub) releaseLease(instID pgtype.UUID) {
 }
 
 // handleEvent is the seam between the connector (which emits normalized
-// InboundMessage) and the inbound Dispatcher. We deliberately do not
-// retry here — the Dispatcher classifies errors itself (productizable
-// outcomes vs. infra failures), and infra failures propagate up to the
-// connector, which decides whether to reconnect.
+// InboundMessage) and the inbound Dispatcher + outbound OutcomeReplier.
+// We deliberately do not retry here — the Dispatcher classifies errors
+// itself (productizable outcomes vs. infra failures), and infra
+// failures propagate up to the connector, which decides whether to
+// reconnect.
 //
-// The result + error are returned to the connector via the EventEmitter
-// callback so it can post the Lark-side reply that matches the
-// outcome (binding card, offline card, etc.) and react to infra
-// failures (e.g. tear the WS down so the Hub re-establishes it).
-func (h *Hub) handleEvent(ctx context.Context, log *slog.Logger, msg InboundMessage) (DispatchResult, error) {
+// On a clean dispatch (err==nil) we invoke the replier inline so the
+// connector returns to its read loop only after the Lark-side reply
+// has been attempted. The replier is best-effort — its own failures
+// are logged and swallowed so an outbound Lark outage cannot stall
+// the inbound pipeline.
+func (h *Hub) handleEvent(ctx context.Context, inst db.LarkInstallation, log *slog.Logger, msg InboundMessage) (DispatchResult, error) {
 	if h.dispatcher == nil {
 		log.Warn("lark hub: dispatcher not configured; dropping event",
 			"event_id", msg.EventID,
@@ -559,6 +579,9 @@ func (h *Hub) handleEvent(ctx context.Context, log *slog.Logger, msg InboundMess
 		"outcome", string(res.Outcome),
 		"drop_reason", string(res.DropReason),
 	)
+	if h.replier != nil {
+		h.replier.Reply(ctx, inst, msg, res)
+	}
 	return res, nil
 }
 
