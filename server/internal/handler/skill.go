@@ -328,6 +328,15 @@ func (h *Handler) canManageSkill(w http.ResponseWriter, r *http.Request, skill d
 	return true
 }
 
+// canOverwriteSkillByLocalImport reports whether userID may overwrite skill via
+// a runtime-local-skill re-import. This is intentionally NARROWER than
+// canManageSkill: only the original creator may overwrite by re-importing.
+// Workspace owners/admins who want to change a skill they did not create must
+// edit it in-app instead. See MUL-2701 / MUL-2800.
+func canOverwriteSkillByLocalImport(userID string, skill db.Skill) bool {
+	return skill.CreatedBy.Valid && uuidToString(skill.CreatedBy) == userID
+}
+
 func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	skill, ok := h.loadSkillForUser(w, r, id)

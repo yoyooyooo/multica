@@ -262,18 +262,20 @@ func NewRedisLocalSkillImportStore(rdb *redis.Client) *RedisLocalSkillImportStor
 	return &RedisLocalSkillImportStore{rdb: rdb}
 }
 
-func (s *RedisLocalSkillImportStore) Create(ctx context.Context, runtimeID, creatorID, skillKey string, name, description *string) (*RuntimeLocalSkillImportRequest, error) {
+func (s *RedisLocalSkillImportStore) Create(ctx context.Context, runtimeID, creatorID, skillKey string, name, description *string, action LocalSkillImportAction, targetSkillID string) (*RuntimeLocalSkillImportRequest, error) {
 	now := time.Now()
 	req := &RuntimeLocalSkillImportRequest{
-		ID:          randomID(),
-		RuntimeID:   runtimeID,
-		SkillKey:    skillKey,
-		Name:        name,
-		Description: description,
-		Status:      RuntimeLocalSkillPending,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		CreatorID:   creatorID,
+		ID:            randomID(),
+		RuntimeID:     runtimeID,
+		SkillKey:      skillKey,
+		Name:          name,
+		Description:   description,
+		Action:        action,
+		TargetSkillID: targetSkillID,
+		Status:        RuntimeLocalSkillPending,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		CreatorID:     creatorID,
 	}
 	data, err := s.marshalImport(req)
 	if err != nil {
@@ -490,6 +492,21 @@ func (s *RedisLocalSkillImportStore) Complete(ctx context.Context, id string, sk
 	}
 	req.Status = RuntimeLocalSkillCompleted
 	req.Skill = &skill
+	req.UpdatedAt = time.Now()
+	return s.persistImportRequest(ctx, req)
+}
+
+func (s *RedisLocalSkillImportStore) Conflict(ctx context.Context, id string, info LocalSkillImportConflict) error {
+	req, err := s.loadImportRequest(ctx, id)
+	if err != nil {
+		return err
+	}
+	if req == nil {
+		return nil
+	}
+	req.Status = RuntimeLocalSkillConflict
+	conflict := info
+	req.Conflict = &conflict
 	req.UpdatedAt = time.Now()
 	return s.persistImportRequest(ctx, req)
 }

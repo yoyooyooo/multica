@@ -187,7 +187,7 @@ func TestInMemoryLocalSkillListStore_TimesOutRunningRequests(t *testing.T) {
 func TestInMemoryLocalSkillImportStore_TimesOutRunningRequests(t *testing.T) {
 	ctx := context.Background()
 	store := NewInMemoryLocalSkillImportStore()
-	req, err := store.Create(ctx, "runtime-xyz", "user-1", "review-helper", nil, nil)
+	req, err := store.Create(ctx, "runtime-xyz", "user-1", "review-helper", nil, nil, LocalSkillImportActionCreate, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestGetLocalSkillImportRequest_RequiresRuntimeOwner(t *testing.T) {
 
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
 	adminUserID := createRuntimeLocalSkillTestMember(t, "admin")
-	importReq, err := testHandler.LocalSkillImportStore.Create(context.Background(), runtimeID, testUserID, "review-helper", nil, nil)
+	importReq, err := testHandler.LocalSkillImportStore.Create(context.Background(), runtimeID, testUserID, "review-helper", nil, nil, LocalSkillImportActionCreate, "")
 	if err != nil {
 		t.Fatalf("create import request: %v", err)
 	}
@@ -484,6 +484,8 @@ func TestReportLocalSkillImportResult_IgnoresTimedOutRequests(t *testing.T) {
 		"review-helper",
 		cleanOptionalString(ptr("Timed Out Import")),
 		cleanOptionalString(ptr("Should not be created")),
+		LocalSkillImportActionCreate,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create import request: %v", err)
@@ -534,7 +536,7 @@ func TestReportLocalSkillImportResult_RejectsCrossWorkspaceDaemonToken(t *testin
 	}
 
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
-	importReq, err := testHandler.LocalSkillImportStore.Create(context.Background(), runtimeID, testUserID, "review-helper", nil, nil)
+	importReq, err := testHandler.LocalSkillImportStore.Create(context.Background(), runtimeID, testUserID, "review-helper", nil, nil, LocalSkillImportActionCreate, "")
 	if err != nil {
 		t.Fatalf("create import request: %v", err)
 	}
