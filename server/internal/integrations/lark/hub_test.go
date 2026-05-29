@@ -313,6 +313,140 @@ func TestHubReapsSupervisorWhenInstallationRevoked(t *testing.T) {
 	}
 }
 
+// TestHubRestartsSupervisorOnCredentialsRotation pins the rotation
+// invariant Bohan hit on the live env: re-scanning the same agent
+// runs the device flow again, which mints a brand-new Lark bot with
+// a fresh app_id / encrypted app_secret. The lark_installation row is
+// updated in place (UNIQUE(agent_id)), but the running supervisor
+// holds the OLD inst struct by value. Without a fingerprint-driven
+// restart the connector keeps a WS open against the OLD bot's app_id
+// and the new bot silently goes dark — exactly the "claude code 没反应"
+// symptom Bohan reported.
+//
+// Repro: start the hub with installation A (app_id=app_one), wait for
+// the connector factory to be called, then mutate the row to a new
+// app_id (app_two). The next sweep MUST cancel the first supervisor
+// and start a second one with the new credentials.
+func TestHubRestartsSupervisorOnCredentialsRotation(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "abcdabcd-abcd-abcd-abcd-abcdabcdabcd")
+	q.installations = []db.LarkInstallation{{
+		ID:                 instID,
+		Status:             "active",
+		AppID:              "app_one",
+		BotOpenID:          "bot_open_id_one",
+		AppSecretEncrypted: []byte("encrypted_one"),
+	}}
+
+	type seenInst struct{ AppID string }
+	var mu sync.Mutex
+	var seen []seenInst
+	factory := func(inst db.LarkInstallation) (EventConnector, error) {
+		mu.Lock()
+		seen = append(seen, seenInst{AppID: inst.AppID})
+		mu.Unlock()
+		return &fakeConnector{}, nil
+	}
+
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 50 * time.Millisecond,
+		PollInterval:       20 * time.Millisecond,
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  1 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+	defer func() { cancel(); hub.Wait() }()
+
+	if !waitFor(300*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(seen) >= 1
+	}) {
+		t.Fatalf("expected initial connector start; got %d", len(seen))
+	}
+
+	// Rotate credentials in place — same installation_id, new app_id +
+	// new encrypted secret. This is exactly what device-flow re-scan
+	// produces.
+	q.mu.Lock()
+	q.installations[0].AppID = "app_two"
+	q.installations[0].BotOpenID = "bot_open_id_two"
+	q.installations[0].AppSecretEncrypted = []byte("encrypted_two")
+	q.mu.Unlock()
+
+	if !waitFor(500*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, s := range seen {
+			if s.AppID == "app_two" {
+				return true
+			}
+		}
+		return false
+	}) {
+		mu.Lock()
+		got := append([]seenInst(nil), seen...)
+		mu.Unlock()
+		t.Fatalf("expected a second connector start with rotated app_id; got %+v", got)
+	}
+}
+
+// TestHubDoesNotRestartSupervisorOnUnchangedRow pins the negative case:
+// a sweep that observes an installation row identical to the fingerprint
+// the supervisor was started with MUST NOT restart. Without this guard
+// the rotation logic would degrade into a busy-loop, tearing the
+// connector down on every poll tick.
+func TestHubDoesNotRestartSupervisorOnUnchangedRow(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "bcdebcde-bcde-bcde-bcde-bcdebcdebcde")
+	q.installations = []db.LarkInstallation{{
+		ID:                 instID,
+		Status:             "active",
+		AppID:              "app_stable",
+		BotOpenID:          "bot_stable",
+		AppSecretEncrypted: []byte("stable"),
+	}}
+
+	starts := int32(0)
+	factory := func(_ db.LarkInstallation) (EventConnector, error) {
+		atomic.AddInt32(&starts, 1)
+		return &fakeConnector{}, nil
+	}
+
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 50 * time.Millisecond,
+		PollInterval:       10 * time.Millisecond,
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  1 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+	defer func() { cancel(); hub.Wait() }()
+
+	// Wait until the supervisor has called the factory at least once.
+	if !waitFor(200*time.Millisecond, func() bool { return atomic.LoadInt32(&starts) >= 1 }) {
+		t.Fatalf("expected initial connector start; got %d", starts)
+	}
+	// Let several sweep ticks happen with an unchanged row.
+	time.Sleep(120 * time.Millisecond)
+	got := atomic.LoadInt32(&starts)
+	if got > 2 {
+		// Allow one extra start in case the fakeConnector returns
+		// immediately and the supervise loop re-enters the connector
+		// factory under backoff. More than that is the busy-loop bug.
+		t.Fatalf("supervisor restarted unexpectedly on unchanged row: %d factory calls in 320ms", got)
+	}
+}
+
 func TestHubBacksOffOnFactoryError(t *testing.T) {
 	q := newFakeHubQueries()
 	instID := uuidFromString(t, "55555555-5555-5555-5555-555555555555")

@@ -3,6 +3,7 @@ package lark
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -213,11 +214,23 @@ type Hub struct {
 	// Hub's lifetime, lease renewals don't ping-pong between replicas.
 	nodeID string
 
-	mu       sync.Mutex
-	stopFns  map[string]context.CancelFunc // installation_id -> per-supervisor cancel
-	wg       sync.WaitGroup
-	stopped  bool
-	stopChan chan struct{}
+	mu sync.Mutex
+	// supervisors keys each in-flight supervisor goroutine by
+	// installation_id, alongside a fingerprint of the credentials the
+	// connector was started with. When the underlying lark_installation
+	// row changes (re-scan creates a fresh bot → new app_id / new
+	// encrypted secret), the next sweep detects the fingerprint drift
+	// and forces a restart so the new connector picks up fresh
+	// credentials. Without this, a stale connector keeps a WS open
+	// against the OLD bot's app_id and the new bot silently goes dark.
+	supervisors map[string]supervisorEntry
+	// supervisorGen is the source of the monotonic gen counter stored
+	// on each supervisorEntry. Bumped under mu when a new entry is
+	// minted (initial start OR rotation restart).
+	supervisorGen uint64
+	wg            sync.WaitGroup
+	stopped       bool
+	stopChan      chan struct{}
 
 	// replyWg tracks in-flight outbound reply goroutines (NeedsBinding
 	// card, offline notice, etc.). The replier is detached from the
@@ -228,6 +241,22 @@ type Hub struct {
 	// hung outbound Lark HTTP call cannot block shutdown beyond the
 	// timeout.
 	replyWg sync.WaitGroup
+}
+
+// supervisorEntry is the per-installation state the Hub holds on each
+// running supervisor goroutine. cancel terminates the goroutine
+// (cascading into connector teardown + lease release); fingerprint is
+// the credentials snapshot the connector was launched with, used by
+// sweep to detect mid-life rotation (re-scan replaces the bot's
+// app_id / app_secret) and force a restart; gen is a monotonic
+// counter so the goroutine's deferred cleanup can tell its own entry
+// apart from a successor entry that the rotation path already swapped
+// in. Without the gen check, the old goroutine's defer would race to
+// delete the new entry it knows nothing about.
+type supervisorEntry struct {
+	cancel      context.CancelFunc
+	fingerprint string
+	gen         uint64
 }
 
 // NewHub constructs a Hub bound to the supplied queries, connector
@@ -241,14 +270,14 @@ type Hub struct {
 func NewHub(queries HubQueries, factory ConnectorFactory, dispatcher *Dispatcher, cfg HubConfig) *Hub {
 	cfg = cfg.withDefaults()
 	return &Hub{
-		queries:    queries,
-		factory:    factory,
-		dispatcher: dispatcher,
-		replier:    NewNoopOutcomeReplier(cfg.Logger),
-		cfg:        cfg,
-		nodeID:     newNodeID(),
-		stopFns:    make(map[string]context.CancelFunc),
-		stopChan:   make(chan struct{}),
+		queries:     queries,
+		factory:     factory,
+		dispatcher:  dispatcher,
+		replier:     NewNoopOutcomeReplier(cfg.Logger),
+		cfg:         cfg,
+		nodeID:      newNodeID(),
+		supervisors: make(map[string]supervisorEntry),
+		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -347,7 +376,11 @@ func (h *Hub) ShutdownTimeout() time.Duration { return h.cfg.ShutdownTimeout }
 
 // sweep enumerates currently-active installations and starts a
 // supervisor for any that this Hub does not yet supervise. Supervisors
-// for revoked installations are cancelled.
+// for revoked installations are cancelled. Supervisors whose
+// underlying installation row has rotated credentials (re-scan in the
+// device flow creates a fresh app_id / app_secret) are cancelled and
+// replaced inline so the new connector picks up the fresh row instead
+// of running indefinitely against stale credentials.
 func (h *Hub) sweep(ctx context.Context) {
 	rows, err := h.queries.ListActiveLarkInstallations(ctx)
 	if err != nil {
@@ -358,18 +391,44 @@ func (h *Hub) sweep(ctx context.Context) {
 	for _, row := range rows {
 		id := uuidString(row.ID)
 		active[id] = struct{}{}
+		h.maybeRestartOnRotation(id, row)
 		h.startSupervisor(ctx, row)
 	}
 	// Reap supervisors whose installation is no longer active (revoked
 	// since the last sweep). The supervisor will exit on the next
 	// boundary, release its lease, and the goroutine returns.
 	h.mu.Lock()
-	for id, cancel := range h.stopFns {
+	for id, entry := range h.supervisors {
 		if _, stillActive := active[id]; !stillActive {
-			cancel()
-			delete(h.stopFns, id)
+			entry.cancel()
+			delete(h.supervisors, id)
 		}
 	}
+	h.mu.Unlock()
+}
+
+// maybeRestartOnRotation cancels an existing supervisor when its
+// credentials fingerprint differs from the current row's. The new
+// supervisor is started by the subsequent startSupervisor call within
+// the same sweep iteration. We drop the map entry inline so the
+// startSupervisor "skip if already supervised" guard does not race the
+// cancel — the deleted entry's goroutine releases its lease as part of
+// teardown, and the new supervisor's acquireLease takes over on its
+// own clock.
+func (h *Hub) maybeRestartOnRotation(id string, row db.LarkInstallation) {
+	want := installationFingerprint(row)
+	h.mu.Lock()
+	entry, ok := h.supervisors[id]
+	if !ok || entry.fingerprint == want {
+		h.mu.Unlock()
+		return
+	}
+	h.cfg.Logger.Info("lark hub: credentials rotated, restarting supervisor",
+		"installation_id", id,
+		"app_id", row.AppID,
+	)
+	entry.cancel()
+	delete(h.supervisors, id)
 	h.mu.Unlock()
 }
 
@@ -380,26 +439,54 @@ func (h *Hub) startSupervisor(parent context.Context, inst db.LarkInstallation) 
 		h.mu.Unlock()
 		return
 	}
-	if _, exists := h.stopFns[id]; exists {
+	if _, exists := h.supervisors[id]; exists {
 		h.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(parent)
-	h.stopFns[id] = cancel
+	h.supervisorGen++
+	gen := h.supervisorGen
+	h.supervisors[id] = supervisorEntry{
+		cancel:      cancel,
+		fingerprint: installationFingerprint(inst),
+		gen:         gen,
+	}
 	h.wg.Add(1)
 	h.mu.Unlock()
-	go h.supervise(ctx, inst, id)
+	go h.supervise(ctx, inst, id, gen)
+}
+
+// installationFingerprint condenses the credentials-bearing columns of
+// the installation row into an opaque string. Two rows with the same
+// fingerprint are interchangeable as far as the connector is concerned;
+// any byte difference here means the next sweep will tear the running
+// supervisor down and start it again with the fresh credentials. We
+// include app_id (which Lark rotates on every device-flow registration),
+// bot_open_id (sanity — protects against an app_id reuse with a
+// different bot identity), and a SHA-256 of the encrypted app_secret
+// blob so a re-encrypt at rest also triggers a restart. The plaintext
+// secret is never extracted; the encrypted ciphertext is fine to hash.
+func installationFingerprint(inst db.LarkInstallation) string {
+	sum := sha256.Sum256(inst.AppSecretEncrypted)
+	return inst.AppID + "|" + inst.BotOpenID + "|" + hex.EncodeToString(sum[:])
 }
 
 // supervise owns one installation's connection lifecycle. It loops:
 // acquire lease → spin up connector → renew lease while connector is
 // running → on connector exit, back off → repeat. Returns (and the
 // goroutine ends) when ctx is cancelled.
-func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string) {
+func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string, gen uint64) {
 	defer h.wg.Done()
 	defer func() {
+		// Only clear the supervisors map entry if it still belongs to
+		// us — gen disambiguates "this entry is mine" from "the
+		// rotation path already replaced me with a fresh supervisor."
+		// Without the gen check, the old goroutine's defer would race
+		// to delete the new entry it knows nothing about.
 		h.mu.Lock()
-		delete(h.stopFns, id)
+		if entry, ok := h.supervisors[id]; ok && entry.gen == gen {
+			delete(h.supervisors, id)
+		}
 		h.mu.Unlock()
 	}()
 
@@ -674,9 +761,9 @@ var ErrDispatcherNotConfigured = errors.New("lark hub: dispatcher not configured
 func (h *Hub) cancelAll() {
 	h.mu.Lock()
 	h.stopped = true
-	for id, cancel := range h.stopFns {
-		cancel()
-		delete(h.stopFns, id)
+	for id, entry := range h.supervisors {
+		entry.cancel()
+		delete(h.supervisors, id)
 	}
 	h.mu.Unlock()
 }
