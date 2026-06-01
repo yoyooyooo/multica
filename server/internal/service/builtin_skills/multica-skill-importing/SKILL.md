@@ -75,14 +75,29 @@ verified that it is already bound.
 
 ## Duplicate imports
 
-Duplicate imports may return `409` with a message like:
+Duplicate imports return `409`. On current servers, the response includes the
+existing workspace skill identity:
 
-```text
-a skill with this name already exists
+```json
+{
+  "error": "a skill with this name already exists",
+  "existing_skill": {
+    "id": "<skill-id>",
+    "name": "<skill-name>"
+  }
+}
 ```
 
-That is not a successful new import, but it also does not mean the user has no
-skill. Recover by finding the existing workspace skill:
+`multica skill import --url <url> --output json` prints that structured conflict
+body and exits successfully for this duplicate case. Treat `existing_skill.id` and
+`existing_skill.name` as the source of truth, then fetch details if needed:
+
+```bash
+multica skill get <skill-id> --output json
+```
+
+For legacy servers or old CLIs that only return a string like `a skill with this
+name already exists`, recover by finding the existing workspace skill:
 
 ```bash
 multica skill list --output json

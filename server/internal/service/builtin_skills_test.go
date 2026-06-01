@@ -212,6 +212,10 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		"github.com",
 		"config.origin",
 		"409",
+		"existing_skill",
+		"id",
+		"name",
+		"legacy",
 		"multica skill list --output json",
 		"npx skills add",
 		"multica agent skills set <agent-id> --skill-ids <skill-id>",
@@ -280,14 +284,23 @@ func TestSkillAuthoringSkillCoversCreateUpdateMaintainContracts(t *testing.T) {
 		"supporting files",
 		"secrets",
 		"PR numbers",
-		"--bundle-dir",
-		"current workaround",
+		"current CLI",
 		"source of truth",
 		"verify by reading it back",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("skill-authoring skill missing %q", want)
+		}
+	}
+
+	mustNotContain := []string{
+		"--bundle-dir",
+		"local bundle",
+	}
+	for _, forbidden := range mustNotContain {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("skill-authoring skill should not mention unsupported local import workflow %q", forbidden)
 		}
 	}
 }

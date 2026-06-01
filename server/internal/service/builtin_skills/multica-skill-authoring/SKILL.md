@@ -1,6 +1,6 @@
 ---
 name: multica-skill-authoring
-description: Use when a user asks to create, edit, or maintain a Multica workspace skill. Teaches the current CLI workflow for SKILL.md content, metadata, supporting files, verification, and the future bundle-dir path without treating one-off notes as durable skills.
+description: Use when a user asks to create, edit, or maintain a Multica workspace skill. Teaches the current CLI workflow for SKILL.md content, metadata, supporting files, and verification without treating one-off notes as durable skills.
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -53,8 +53,7 @@ in supporting files instead of bloating `SKILL.md`.
 
 ## Current create flow
 
-Until bundle directory support exists, create the workspace skill from explicit
-CLI fields:
+Create the workspace skill from explicit current CLI fields:
 
 ```bash
 multica skill create --name <name> --description <description> --content <path-or-text> --output json
@@ -64,9 +63,8 @@ Read the JSON response and keep the returned `id`. Do not claim the skill exists
 until the create command succeeds.
 
 If the content lives in a local `SKILL.md`, read the file first and pass its full
-content as the `--content` value. The current CLI does not yet have
-`--content-file` or `--bundle-dir`, so large content may require a wrapper script
-or shell-safe command construction.
+content as the `--content` value. The current CLI does not have `--content-file`,
+so large content may require a wrapper script or shell-safe command construction.
 
 ## Current update flow
 
@@ -113,28 +111,6 @@ assets/<name>.<ext>
 Do not store secrets in supporting files. Do not store one-off PR numbers, issue
 numbers, run timestamps, or temporary session state. If the fact will be stale in
 a week, it is not skill content.
-
-## Future bundle directory path
-
-When the CLI supports bundle directories, prefer the atomic local bundle flow:
-
-```bash
-multica skill create --bundle-dir <dir> --output json
-multica skill update <skill-id> --bundle-dir <dir> --output json
-```
-
-Expected bundle shape:
-
-```text
-<dir>/SKILL.md
-<dir>/references/...
-<dir>/templates/...
-<dir>/scripts/...
-<dir>/assets/...
-```
-
-Until `--bundle-dir` lands, use the current workaround: create/update the main
-content, then upsert supporting files one by one, then verify by reading it back.
 
 ## Quality gate
 
