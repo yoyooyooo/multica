@@ -130,23 +130,21 @@ type Handler struct {
 	// LarkRegistration owns the device-flow install lifecycle: begin
 	// a registration session against accounts.feishu.cn, poll, and
 	// on success write lark_installation + the installer's
-	// lark_user_binding in one DB transaction. Nil when either the
-	// at-rest key is unset or the real Lark HTTP APIClient is not
-	// wired (the stub cannot complete the post-poll GetBotInfo call).
+	// lark_user_binding in one DB transaction. Nil when the at-rest
+	// key is unset or the RegistrationService failed to construct at
+	// boot.
 	LarkRegistration *lark.RegistrationService
 	// LarkAPIClient is the live transport that backs SendInteractiveCard,
-	// PatchInteractiveCard, SendBindingPromptCard, GetBotInfo. It is
-	// `lark.NewStubAPIClient(...)` until the real Lark HTTP client is
-	// wired; the UI hides install entry points while IsConfigured()
-	// is false so users do not land in a flow that is guaranteed to
-	// fail at the bot-info step.
+	// PatchInteractiveCard, SendBindingPromptCard, GetBotInfo. The
+	// router wires the real Lark HTTP client whenever
+	// MULTICA_LARK_SECRET_KEY is set; tests that need a no-op
+	// behaviour can swap in `lark.NewStubAPIClient(...)` directly. The
+	// UI consults IsConfigured() to decide whether to surface install
+	// entry points.
 	LarkAPIClient lark.APIClient
 	// LarkHub owns the per-installation supervisor goroutines that
 	// hold the §4.4 WS lease and run the EventConnector. Nil only
-	// when the master at-rest key (MULTICA_LARK_SECRET_KEY) is unset
-	// — the inbound pipeline does NOT depend on the outbound HTTP
-	// APIClient, so the Hub still wires up under the stub APIClient
-	// (the dispatcher and renewer touch DB rows, not Lark wire I/O).
+	// when the master at-rest key (MULTICA_LARK_SECRET_KEY) is unset.
 	// The router constructs the Hub but does NOT call Run on it; the
 	// process owner (main.go) starts it under a long-running context
 	// and joins via WaitWithTimeout (bounded wait, fenced by

@@ -197,33 +197,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				h.LarkBindingTokens = lark.NewBindingTokenService(queries, pool)
 				slog.Info("lark integration enabled")
 
-				// APIClient selection: when MULTICA_LARK_HTTP_ENABLED is
-				// "true" the real Lark Open Platform HTTP client is wired
-				// (IM v1 send/patch + binding-prompt + bot info).
-				// Otherwise the stub stays in place and every outbound
-				// call surfaces ErrAPIClientNotConfigured — useful for
-				// deployments that want the inbound dispatcher / database
-				// surface online without committing to a Lark app yet.
+				// APIClient: wire the real Lark Open Platform HTTP client
+				// (IM v1 send/patch + binding-prompt + bot info). Setting
+				// MULTICA_LARK_SECRET_KEY is the operator's opt-in for
+				// the integration as a whole; we don't expose a separate
+				// "HTTP enabled" knob because the inbound dispatcher
+				// without outbound replies is not a useful production
+				// state, and CI / integration tests that want to avoid
+				// real Lark traffic can point MULTICA_LARK_HTTP_BASE_URL
+				// at a mock server.
 				//
 				// MULTICA_LARK_HTTP_BASE_URL overrides the default
 				// open.feishu.cn host (set to https://open.larksuite.com
 				// for the Lark international tenant, or to a mock for
 				// integration tests).
-				var larkClient lark.APIClient
-				if strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_ENABLED")), "true") {
-					larkClient = lark.NewHTTPAPIClient(lark.HTTPClientConfig{
-						BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
-						Logger:  slog.Default(),
-					})
-					slog.Info("lark http api client enabled")
-				} else {
-					larkClient = lark.NewStubAPIClient(slog.Default())
-				}
-				// Expose the APIClient to handlers so the install
-				// surface can consult IsConfigured — install_supported
-				// flips true only once the real HTTP client is wired
-				// (the stub cannot complete the post-poll GetBotInfo
-				// call that finalizes a device-flow install).
+				larkClient := lark.NewHTTPAPIClient(lark.HTTPClientConfig{
+					BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
+					Logger:  slog.Default(),
+				})
 				h.LarkAPIClient = larkClient
 				patcher := lark.NewPatcher(queries, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
@@ -247,26 +238,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				}
 
 				// WS Hub: lease + supervisor goroutines per installation.
-				// The factory we hand the Hub picks one of two
-				// connectors:
-				//
-				//   - NoopConnector (default): holds the lease + sweeps
-				//     supervisors against real DB rows without dialing
-				//     Lark. Used on staging boxes that need the lease /
-				//     reconnect lifecycle exercised before the live WS
-				//     protocol is enabled, and as the safe fallback when
-				//     the outbound HTTP APIClient is the stub (no real
-				//     bearer means no `connection_token` call).
-				//
-				//   - WSLongConnConnector (MULTICA_LARK_WS_ENABLED=true):
-				//     real Lark long-conn over gorilla/websocket. The
-				//     connector wraps every read with a ctx-cancel
-				//     watchdog so lease loss / shutdown breaks the
-				//     blocking ReadMessage in bounded time — the
-				//     invariant §4.4 leans on. Requires the HTTP client
-				//     to be enabled because the connection_token POST
-				//     piggybacks on its tenant_access_token cache.
-				connectorFactory, connectorLabel := buildLarkConnectorFactory(larkClient, installSvc)
+				// The WSLongConnConnector talks Lark's long-conn protocol
+				// over gorilla/websocket. The connector wraps every read
+				// with a ctx-cancel watchdog so lease loss / shutdown
+				// breaks the blocking ReadMessage in bounded time — the
+				// invariant §4.4 leans on. If the endpoint fetcher fails
+				// to initialize (bad MULTICA_LARK_CALLBACK_BASE_URL or
+				// similar config error), buildLarkConnectorFactory logs
+				// and falls back to the NoopConnector so the lease /
+				// supervisor lifecycle still runs against real DB rows —
+				// inbound messages will be silently dropped until the
+				// config is fixed, with the boot log labelling the mode
+				// "noop" so operators can spot it.
+				connectorFactory, connectorLabel := buildLarkConnectorFactory(installSvc)
 				h.LarkHub = lark.NewHub(queries, connectorFactory, dispatcher, lark.HubConfig{})
 
 				// OutcomeReplier wires the outbound side of the
@@ -305,29 +289,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// lark_user_binding in one DB transaction. The optional
 				// MULTICA_LARK_REGISTRATION_DOMAIN / _LARK_DOMAIN env
 				// vars override the protocol hosts for staging / dev.
-				if larkClient.IsConfigured() {
-					regCfg := lark.RegistrationConfig{
-						Domain:     strings.TrimSpace(os.Getenv("MULTICA_LARK_REGISTRATION_DOMAIN")),
-						LarkDomain: strings.TrimSpace(os.Getenv("MULTICA_LARK_REGISTRATION_LARK_DOMAIN")),
-					}
-					regClient := lark.NewRegistrationClient(regCfg)
-					regSvc, rerr := lark.NewRegistrationService(
-						lark.RegistrationServiceConfig{Logger: slog.Default()},
-						regClient,
-						larkClient,
-						queries,
-						pool,
-						installSvc,
-						h.LarkBindingTokens,
-					)
-					if rerr != nil {
-						slog.Error("lark: RegistrationService init failed; install disabled", "error", rerr)
-					} else {
-						h.LarkRegistration = regSvc
-						slog.Info("lark device-flow install enabled")
-					}
+				regCfg := lark.RegistrationConfig{
+					Domain:     strings.TrimSpace(os.Getenv("MULTICA_LARK_REGISTRATION_DOMAIN")),
+					LarkDomain: strings.TrimSpace(os.Getenv("MULTICA_LARK_REGISTRATION_LARK_DOMAIN")),
+				}
+				regClient := lark.NewRegistrationClient(regCfg)
+				regSvc, rerr := lark.NewRegistrationService(
+					lark.RegistrationServiceConfig{Logger: slog.Default()},
+					regClient,
+					larkClient,
+					queries,
+					pool,
+					installSvc,
+					h.LarkBindingTokens,
+				)
+				if rerr != nil {
+					slog.Error("lark: RegistrationService init failed; install disabled", "error", rerr)
 				} else {
-					slog.Info("lark device-flow install disabled (set MULTICA_LARK_HTTP_ENABLED=true to enable)")
+					h.LarkRegistration = regSvc
+					slog.Info("lark device-flow install enabled")
 				}
 			}
 		}
@@ -948,23 +928,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	return r, h
 }
 
-// buildLarkConnectorFactory picks between the staging-mode
-// NoopConnector and the real WS long-conn connector based on
-// MULTICA_LARK_WS_ENABLED. The real connector talks to
-// /callback/ws/endpoint directly with app_id/app_secret (no
-// tenant_access_token bearer needed for the bootstrap), so it can
-// run independently of MULTICA_LARK_HTTP_ENABLED — but outbound
-// reply cards (binding prompt, offline / archived notices) require
-// the HTTP APIClient. We still recommend enabling both together;
-// when only WS is on, the OutcomeReplier surfaces a warning and
-// downgrades to silent drops.
+// buildLarkConnectorFactory wires the real WS long-conn connector
+// that talks to /callback/ws/endpoint directly with app_id/app_secret.
+// The connector wraps every read with a ctx-cancel watchdog so lease
+// loss / shutdown breaks the blocking ReadMessage in bounded time —
+// the invariant §4.4 leans on.
 //
-// Returns the factory plus a short label for the boot log so
-// operators can see at a glance which mode they are in.
-func buildLarkConnectorFactory(client lark.APIClient, installSvc *lark.InstallationService) (lark.ConnectorFactory, string) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_LARK_WS_ENABLED")), "true") {
-		return lark.NoopConnectorFactory(slog.Default()), "noop"
-	}
+// If the endpoint fetcher fails to initialize (typically a malformed
+// MULTICA_LARK_CALLBACK_BASE_URL), we log and fall back to the
+// NoopConnector so the lease / supervisor lifecycle still exercises
+// against real DB rows. Inbound messages are silently dropped until
+// the config is fixed; the boot log labels the mode "noop" so the
+// degraded state is visible.
+//
+// Returns the factory plus a short label for the boot log: "ws" in
+// the healthy case, "noop" in the fallback case.
+func buildLarkConnectorFactory(installSvc *lark.InstallationService) (lark.ConnectorFactory, string) {
 	endpointFetcher, err := lark.NewHTTPConnectionTokenFetcher(lark.HTTPConnectionTokenConfig{
 		BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_CALLBACK_BASE_URL")),
 		Logger:  slog.Default(),
@@ -1000,7 +979,6 @@ func buildLarkConnectorFactory(client lark.APIClient, installSvc *lark.Installat
 		slog.Error("lark ws: connector init failed; falling back to noop", "error", err)
 		return lark.NoopConnectorFactory(slog.Default()), "noop"
 	}
-	_ = client // outbound APIClient flows in through OutcomeReplier wiring on the Hub
 	return func(_ db.LarkInstallation) (lark.EventConnector, error) {
 		return conn, nil
 	}, "ws-long-conn"
