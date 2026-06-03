@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/mention"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -30,6 +31,7 @@ type TaskService struct {
 	Hub       *realtime.Hub
 	Bus       *events.Bus
 	Analytics analytics.Client
+	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
@@ -134,10 +136,18 @@ func isTrivialDoneOutput(output string) bool {
 }
 
 func (s *TaskService) captureTaskQueued(ctx context.Context, task db.AgentTaskQueue) {
+	if s.Metrics != nil {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskEnqueued(source, runtimeMode)
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskQueued(s.taskAnalyticsContext(ctx, task)))
 }
 
 func (s *TaskService) captureTaskDispatched(ctx context.Context, task db.AgentTaskQueue) {
+	if s.Metrics != nil {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskDispatched(util.UUIDToString(task.ID), source, runtimeMode, taskQueueWaitSeconds(task))
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskDispatched(s.taskAnalyticsContext(ctx, task)))
 }
 
@@ -146,10 +156,18 @@ func (s *TaskService) AnalyticsContextForTask(ctx context.Context, task db.Agent
 }
 
 func (s *TaskService) captureTaskStarted(ctx context.Context, task db.AgentTaskQueue) {
+	if s.Metrics != nil {
+		source, runtimeMode, provider := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskStarted(source, runtimeMode, provider)
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskStarted(s.taskAnalyticsContext(ctx, task)))
 }
 
 func (s *TaskService) captureTaskCompleted(ctx context.Context, task db.AgentTaskQueue) {
+	if s.Metrics != nil {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskCompleted(
 		s.taskAnalyticsContext(ctx, task),
 		taskDurationMS(task),
@@ -158,6 +176,11 @@ func (s *TaskService) captureTaskCompleted(ctx context.Context, task db.AgentTas
 
 func (s *TaskService) captureTaskFailed(ctx context.Context, task db.AgentTaskQueue) {
 	failureReason := taskFailureReason(task)
+	if s.Metrics != nil {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
+		s.Metrics.RecordTaskFailed(source, runtimeMode, failureReason)
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskFailed(
 		s.taskAnalyticsContext(ctx, task),
 		taskDurationMS(task),
@@ -168,6 +191,10 @@ func (s *TaskService) captureTaskFailed(ctx context.Context, task db.AgentTaskQu
 }
 
 func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTaskQueue) {
+	if s.Metrics != nil {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
+	}
 	s.captureTaskEvent(ctx, analytics.AgentTaskCancelled(
 		s.taskAnalyticsContext(ctx, task),
 		taskDurationMS(task),
@@ -181,6 +208,34 @@ func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTas
 	if err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
 		slog.Warn("cancel task: failed to revoke task tokens",
 			"task_id", util.UUIDToString(task.ID), "error", err)
+	}
+}
+
+func (s *TaskService) CaptureTaskUsage(ctx context.Context, task db.AgentTaskQueue, provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64) {
+	if s.Metrics == nil {
+		return
+	}
+	source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+	s.Metrics.RecordLLMUsage(source, runtimeMode, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
+}
+
+func (s *TaskService) CaptureQueuedExpiredTasks(ctx context.Context, tasks []db.AgentTaskQueue) {
+	if s.Metrics == nil {
+		return
+	}
+	for _, task := range tasks {
+		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskQueuedExpired(source, runtimeMode)
+	}
+}
+
+func (s *TaskService) CaptureLeaseExpiredTasks(ctx context.Context, tasks []db.AgentTaskQueue) {
+	if s.Metrics == nil {
+		return
+	}
+	for _, task := range tasks {
+		source, _, _ := s.taskMetricsContext(ctx, task)
+		s.Metrics.RecordTaskLeaseExpired(source)
 	}
 }
 
@@ -244,6 +299,30 @@ func taskAnalyticsContextKey(task db.AgentTaskQueue) string {
 		util.UUIDToString(task.ChatSessionID),
 		util.UUIDToString(task.AutopilotRunID),
 	}, "|")
+}
+
+func (s *TaskService) taskMetricsContext(ctx context.Context, task db.AgentTaskQueue) (source, runtimeMode, provider string) {
+	tc := s.taskAnalyticsContext(ctx, task)
+	source = "other"
+	switch {
+	case task.ChatSessionID.Valid:
+		source = "chat"
+	case task.IssueID.Valid:
+		if tc.Source == analytics.SourceAutopilot {
+			source = "autopilot_issue"
+		} else {
+			source = "issue"
+		}
+	case task.AutopilotRunID.Valid:
+		source = "autopilot"
+	default:
+		if _, ok := s.parseQuickCreateContext(task); ok {
+			source = "quick_create"
+		} else if tc.Source != "" {
+			source = tc.Source
+		}
+	}
+	return source, tc.RuntimeMode, tc.Provider
 }
 
 func (s *TaskService) taskAnalyticsContext(ctx context.Context, task db.AgentTaskQueue) analytics.TaskContext {
@@ -349,6 +428,29 @@ func taskDurationMS(task db.AgentTaskQueue) int64 {
 		return 0
 	}
 	return ms
+}
+
+func taskQueueWaitSeconds(task db.AgentTaskQueue) float64 {
+	return durationSeconds(task.CreatedAt, task.DispatchedAt)
+}
+
+func taskRunSeconds(task db.AgentTaskQueue) float64 {
+	return durationSeconds(task.StartedAt, task.CompletedAt)
+}
+
+func taskTotalSeconds(task db.AgentTaskQueue) float64 {
+	return durationSeconds(task.CreatedAt, task.CompletedAt)
+}
+
+func durationSeconds(start, end pgtype.Timestamptz) float64 {
+	if !start.Valid || !end.Valid {
+		return -1
+	}
+	seconds := end.Time.Sub(start.Time).Seconds()
+	if seconds < 0 {
+		return 0
+	}
+	return seconds
 }
 
 func taskFailureReason(task db.AgentTaskQueue) string {

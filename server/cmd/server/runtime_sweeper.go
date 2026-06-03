@@ -253,6 +253,7 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 	}
 
 	slog.Info("task sweeper: failed stale tasks", "count", len(failedTasks))
+	taskSvc.CaptureLeaseExpiredTasks(ctx, failedTasks)
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
 }
 
@@ -276,6 +277,7 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 	}
 
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
+	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
 }
 

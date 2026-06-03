@@ -22,6 +22,7 @@ type RegistryOptions struct {
 type Registry struct {
 	Gatherer prometheus.Gatherer
 	HTTP     *HTTPMetrics
+	Business *BusinessMetrics
 }
 
 func NewRegistry(opts RegistryOptions) *Registry {
@@ -39,6 +40,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	httpMetrics := NewHTTPMetrics()
 	reg.MustRegister(httpMetrics.Collectors()...)
 
+	businessMetrics := NewBusinessMetrics()
+	reg.MustRegister(businessMetrics.Collectors()...)
+
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool))
 	}
@@ -52,6 +56,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	return &Registry{
 		Gatherer: reg,
 		HTTP:     httpMetrics,
+		Business: businessMetrics,
 	}
 }
 

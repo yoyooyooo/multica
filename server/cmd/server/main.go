@@ -259,6 +259,7 @@ func main() {
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
 	var httpMetrics *obsmetrics.HTTPMetrics
+	var businessMetrics *obsmetrics.BusinessMetrics
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
 			Pool:     pool,
@@ -268,6 +269,7 @@ func main() {
 			Commit:   commit,
 		})
 		httpMetrics = metricsRegistry.HTTP
+		businessMetrics = metricsRegistry.Business
 		metricsServer = obsmetrics.NewServer(metricsConfig.Addr, metricsRegistry.Gatherer)
 		if !obsmetrics.IsLoopbackAddr(metricsConfig.Addr) {
 			slog.Warn(
@@ -285,6 +287,7 @@ func main() {
 
 	r := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:        httpMetrics,
+		BusinessMetrics:    businessMetrics,
 		DaemonHub:          daemonHub,
 		DaemonWakeup:       daemonWakeup,
 		HeartbeatScheduler: heartbeatScheduler,
@@ -300,6 +303,7 @@ func main() {
 	autopilotCtx, autopilotCancel := context.WithCancel(context.Background())
 	taskSvc := service.NewTaskService(queries, pool, hub, bus, daemonWakeup)
 	taskSvc.Analytics = analyticsClient
+	taskSvc.Metrics = businessMetrics
 	autopilotSvc := service.NewAutopilotService(queries, pool, bus, taskSvc)
 	registerAutopilotListeners(bus, autopilotSvc)
 
