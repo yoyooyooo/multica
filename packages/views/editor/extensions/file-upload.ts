@@ -1,5 +1,5 @@
 import { Extension } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { createSafeId } from "@multica/core/utils";
 
@@ -41,21 +41,47 @@ function finalizeFileCard(editor: any, uploadId: string, href: string) {
   if (updated) editor.view.dispatch(tr);
 }
 
- 
-function removeImageBySrc(editor: any, src: string) {
-  if (!editor) return;
-  const { tr } = editor.state;
-  let deleted = false;
+export function findImagePosBySrc(editor: any, src: string): number | null {
+  if (!editor) return null;
+  let imagePos: number | null = null;
   editor.state.doc.descendants((node: any, pos: number) => {
-    if (deleted) return false;
+    if (imagePos !== null) return false;
     if (node.type.name === "image" && node.attrs.src === src) {
-      tr.delete(pos, pos + node.nodeSize);
-      deleted = true;
+      imagePos = pos;
       return false;
     }
     return undefined;
   });
-  if (deleted) editor.view.dispatch(tr);
+  return imagePos;
+}
+
+function removeImageBySrc(editor: any, src: string) {
+  const imagePos = findImagePosBySrc(editor, src);
+  if (imagePos === null) return;
+
+  const imageNode = editor.state.doc.nodeAt(imagePos);
+  if (!imageNode) return;
+
+  const tr = editor.state.tr.delete(imagePos, imagePos + imageNode.nodeSize);
+  editor.view.dispatch(tr);
+}
+
+function moveSelectionToParagraphAfterImage(editor: any, src: string) {
+  const imagePos = findImagePosBySrc(editor, src);
+  if (imagePos === null) return;
+
+  const imageNode = editor.state.doc.nodeAt(imagePos);
+  if (!imageNode) return;
+
+  const afterImagePos = imagePos + imageNode.nodeSize;
+  const $afterImage = editor.state.doc.resolve(afterImagePos);
+  if ($afterImage.nodeAfter?.type.name !== "paragraph") return;
+
+  const paragraphStart = afterImagePos + 1;
+  const tr = editor.state.tr
+    .setSelection(TextSelection.create(editor.state.doc, paragraphStart))
+    .scrollIntoView();
+  editor.view.dispatch(tr);
 }
 
 /**
@@ -78,28 +104,23 @@ export async function uploadAndInsertFile(
       editor.chain().focus().insertContentAt(pos, { type: "image", attrs: imgAttrs }).run();
     } else {
       editor.chain().focus().setImage(imgAttrs).run();
+      moveSelectionToParagraphAfterImage(editor, blobUrl);
     }
 
     try {
       const result = await handler(file);
       if (result) {
-        const { tr } = editor.state;
-        let found = false;
-        editor.state.doc.descendants((node: { type: { name: string }; attrs: { src: string } }, nodePos: number) => {
-          if (found) return false;
-          if (node.type.name === "image" && node.attrs.src === blobUrl) {
-            tr.setNodeMarkup(nodePos, undefined, {
-              ...node.attrs,
-              src: result.link,
-              alt: result.filename,
-              uploading: false,
-            });
-            found = true;
-            return false;
-          }
-          return undefined;
-        });
-        if (found) editor.view.dispatch(tr);
+        const imagePos = findImagePosBySrc(editor, blobUrl);
+        const imageNode = imagePos === null ? null : editor.state.doc.nodeAt(imagePos);
+        if (imagePos !== null && imageNode) {
+          const tr = editor.state.tr.setNodeMarkup(imagePos, undefined, {
+            ...imageNode.attrs,
+            src: result.link,
+            alt: result.filename,
+            uploading: false,
+          });
+          editor.view.dispatch(tr);
+        }
       } else {
         removeImageBySrc(editor, blobUrl);
       }
