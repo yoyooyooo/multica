@@ -270,9 +270,13 @@ func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
 	// accounts.larksuite.com). The frontend now exposes two CTAs ("Bind
 	// to Feishu" / "Bind to Lark") so the QR is rendered against the
 	// right cloud up front rather than relying on the mid-poll
-	// tenant-brand auto-switch from a Feishu-first begin. Empty /
-	// unknown values still resolve to Feishu inside the service
-	// (RegionOrDefault), keeping the pre-split callers working.
+	// tenant-brand auto-switch from a Feishu-first begin. We accept
+	// "feishu", "lark", and the empty string (for back-compat with
+	// callers that pre-date the split CTA, which RegionOrDefault inside
+	// the service maps to Feishu); any other value is a 400 — the
+	// service would normalize an unknown value to Feishu silently and
+	// that would mask a frontend regression where a typo'd region
+	// landed users on the wrong cloud without telling them.
 	regionParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("region")))
 	switch regionParam {
 	case "", "feishu", "lark":

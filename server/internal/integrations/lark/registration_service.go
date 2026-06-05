@@ -484,10 +484,18 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 			// behavior. Lark emits the brand hint exactly once on the
 			// transition poll and the credential-bearing response
 			// lands on the next call to the new domain.
+			//
+			// Both directions are honored (feishu→lark and lark→feishu)
+			// so the split-CTA UI's "wrong entry" path recovers
+			// regardless of which CTA the user picked. The new region
+			// rides on the same PollResult so we never have to
+			// re-derive it from the host string here — staging / mock
+			// accounts hosts then classify correctly without
+			// hostname-prefix matching.
 			domain = res.SwitchedDomain
-			region = RegionLark
-			s.cfg.Logger.Info("lark registration: switched to lark-international domain",
-				"session_id", sess.id, "domain", domain)
+			region = res.SwitchedRegion
+			s.cfg.Logger.Info("lark registration: switched cloud after tenant-brand mismatch",
+				"session_id", sess.id, "domain", domain, "region", string(region))
 			continue
 		case res.ClientID != "" && res.ClientSecret != "":
 			s.finishSuccess(ctx, sess, res, region)

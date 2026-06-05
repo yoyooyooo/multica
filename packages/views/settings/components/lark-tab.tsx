@@ -474,17 +474,25 @@ function LarkAgentBotConnectedBadge({
     >
       <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
         <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-        {t(($) => $.lark.agent_bot_connected_label)}
+        {installation.region === "lark"
+          ? t(($) => $.lark.agent_bot_connected_label_lark)
+          : t(($) => $.lark.agent_bot_connected_label_feishu)}
       </span>
       <a
         href={manageHref}
         target="_blank"
         rel="noopener noreferrer"
         className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
-        title={t(($) => $.lark.agent_bot_manage_tooltip)}
+        title={
+          installation.region === "lark"
+            ? t(($) => $.lark.agent_bot_manage_tooltip_lark)
+            : t(($) => $.lark.agent_bot_manage_tooltip_feishu)
+        }
       >
         <ExternalLink className="h-3 w-3" />
-        {t(($) => $.lark.agent_bot_manage_link)}
+        {installation.region === "lark"
+          ? t(($) => $.lark.agent_bot_manage_link_lark)
+          : t(($) => $.lark.agent_bot_manage_link_feishu)}
       </a>
       {/* Unbind affordance — kept visually quieter than the primary
           "Manage in Lark" link so it doesn't compete for attention,

@@ -309,17 +309,24 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     // PersonalAgent (see badge comment in lark-tab.tsx).
     expect(screen.queryByRole("button", { name: /Bind to Feishu/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Bind to Lark/i })).toBeNull();
-    expect(screen.getByText(/Connected to Lark/i)).toBeTruthy();
-    const link = screen.getByRole("link", { name: /Manage in Lark/i }) as HTMLAnchorElement;
+    // The fixture omits `region`, which the listings DTO defaults to
+    // Feishu (mainland) — so the badge text and Manage link must reflect
+    // Feishu, not the old hardcoded "Connected to Lark" / "Manage in
+    // Lark" labels. The Manage link's href is also the mainland host.
+    expect(screen.getByText(/Connected to Feishu/i)).toBeTruthy();
+    const link = screen.getByRole("link", { name: /Manage in Feishu/i }) as HTMLAnchorElement;
     expect(link.href).toBe("https://open.feishu.cn/app/cli_existing_app");
     expect(link.target).toBe("_blank");
     expect(link.rel).toContain("noopener");
   });
 
-  it("points the Manage link at open.larksuite.com for a Lark-international (region=lark) installation", () => {
+  it("renders region-aware badge text and Manage link for a Lark-international (region=lark) installation", () => {
     // Dual-region: a bot installed against the Lark international cloud
-    // must manage at open.larksuite.com, not the Feishu default. The
-    // region rides on the listings response, auto-detected at install.
+    // must show "Connected to Lark" + "Manage in Lark" copy, with the
+    // Manage link pointing at open.larksuite.com (not the Feishu
+    // default). Without region-aware copy a user who clicked
+    // "Bind to Feishu" and saw "Connected to Lark" would (rightly) be
+    // confused — the labels must match the cloud the bot lives on.
     installationsRef.current.installations = [
       {
         id: "inst-lark",
@@ -338,6 +345,7 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
       wrapper: I18nWrapper,
     });
+    expect(screen.getByText(/Connected to Lark/i)).toBeTruthy();
     const link = screen.getByRole("link", { name: /Manage in Lark/i }) as HTMLAnchorElement;
     expect(link.href).toBe("https://open.larksuite.com/app/cli_lark_app");
   });
@@ -393,9 +401,10 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     // since the existing-installation check runs first.
     expect(screen.queryByRole("button", { name: /Bind to Feishu/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Bind to Lark/i })).toBeNull();
-    expect(screen.getByText(/Connected to Lark/i)).toBeTruthy();
+    // Fixture omits region → defaults to Feishu in the badge copy.
+    expect(screen.getByText(/Connected to Feishu/i)).toBeTruthy();
     expect(
-      screen.getByRole("link", { name: /Manage in Lark/i }),
+      screen.getByRole("link", { name: /Manage in Feishu/i }),
     ).toBeTruthy();
   });
 
@@ -456,7 +465,8 @@ describe("LarkAgentBotConnectedBadge (Unbind / Disconnect)", () => {
     // we don't trip over /Disconnect/i copy that also appears in the
     // (closed) AlertDialog.
     expect(screen.getByTestId("lark-agent-bot-disconnect")).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Manage in Lark/i })).toBeTruthy();
+    // Fixture omits region → Feishu copy.
+    expect(screen.getByRole("link", { name: /Manage in Feishu/i })).toBeTruthy();
   });
 
   it("opens the confirm dialog and does NOT call the API until the user confirms", async () => {
