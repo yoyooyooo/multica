@@ -175,11 +175,12 @@ export function ValueBoardDemo() {
 
   return (
     // Scale the natural-size board down by the shared DEMO_ZOOM so it renders at
-    // the same scale as the hero demo. The visible box is sized to the scaled
-    // dimensions and centered; the inner box lays out at full size.
+    // the same scale as the hero demo. The visible box is a fixed size (the
+    // scaled dimensions); the inner box lays out at full size. The parent decides
+    // placement — in the values section it bleeds off the right page edge.
     <div
-      className="mx-auto overflow-hidden"
-      style={{ width: NATURAL_W * DEMO_ZOOM, height: NATURAL_H * DEMO_ZOOM, maxWidth: "100%" }}
+      className="overflow-hidden"
+      style={{ width: NATURAL_W * DEMO_ZOOM, height: NATURAL_H * DEMO_ZOOM }}
     >
       <div
         className="origin-top-left"

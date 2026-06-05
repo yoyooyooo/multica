@@ -181,73 +181,65 @@ function NewHomeHero() {
 }
 
 // The values section turns the hero's promise into concrete, watchable proof.
-// Each value pairs a short From→To claim with a focused, auto-playing micro-demo
-// built from the REAL product components. Value #1 ships first; #2–#4 follow.
+// Each value pairs a short claim (left) with a focused, auto-playing micro-demo
+// (right) built from the REAL product components. Value #1 ships first; #2–#4
+// follow.
+//
+// `overflow-x-clip` lets each demo bleed past the content column toward the
+// page edge (the reference layout) without introducing a horizontal scrollbar.
 function ValuesSection() {
   return (
-    <section id="features" className="border-t border-[#0a0d12]/8 bg-[#0a0d12]/[0.015] py-20 sm:py-24">
+    <section
+      id="features"
+      className="overflow-x-clip border-t border-[#0a0d12]/8 bg-[#0a0d12]/[0.015] py-20 sm:py-24"
+    >
       <div className="mx-auto max-w-[1200px] px-5 sm:px-6 lg:px-8">
         <h2 className="max-w-[20ch] text-[1.9rem] font-semibold leading-[1.08] tracking-[-0.025em] sm:text-[2.3rem]">
           From scattered agent runs to work you can actually manage.
         </h2>
 
-        <ValueBlock
+        <ValueRow
           eyebrow="Visibility"
           title="See every agent on one board"
-          from="Agent work scattered across terminals, chats, repos, and scripts."
-          to="Every task — queued, running, in review, done — on one board you can watch in real time."
+          description="Agent work used to scatter across terminals, chats, and scripts. Now every task — queued, running, in review, done — lives on one board you can watch in real time."
         >
           <ValueBoardDemo />
-        </ValueBlock>
+        </ValueRow>
       </div>
     </section>
   );
 }
 
-// Value layout: a compact text column (eyebrow + title + From→To) above a
-// full-width canvas, so the board demo gets the room to render at the real
-// product's size and read as the same board the hero shows.
-function ValueBlock({
+// Value layout: a compact text column on the left (vertically centered) and the
+// live demo on the right. The demo keeps its real, shared-zoom size and bleeds
+// off the right page edge instead of being squeezed into the column.
+function ValueRow({
   eyebrow,
   title,
-  from,
-  to,
+  description,
   children,
 }: {
   eyebrow: string;
   title: string;
-  from: string;
-  to: string;
+  description: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="mt-12 lg:mt-16">
-      <div className="max-w-[760px]">
+    <div className="mt-12 grid items-center gap-10 lg:mt-16 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)] lg:gap-12">
+      <div>
         <p className="text-[12.5px] font-semibold uppercase tracking-[0.08em] text-[#0a0d12]/40">
           {eyebrow}
         </p>
-        <h3 className="mt-2.5 text-[1.55rem] font-semibold leading-[1.12] tracking-[-0.02em]">
+        <h3 className="mt-2.5 text-[1.7rem] font-semibold leading-[1.1] tracking-[-0.02em]">
           {title}
         </h3>
-        <dl className="mt-4 flex flex-col gap-2.5 sm:flex-row sm:gap-8">
-          <div className="flex gap-3">
-            <dt className="mt-0.5 shrink-0 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#0a0d12]/35">
-              From
-            </dt>
-            <dd className="text-[14.5px] leading-6 text-[#0a0d12]/55">{from}</dd>
-          </div>
-          <div className="flex gap-3">
-            <dt className="mt-0.5 shrink-0 text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--brand)]">
-              To
-            </dt>
-            <dd className="text-[14.5px] font-medium leading-6 text-[#0a0d12]/80">{to}</dd>
-          </div>
-        </dl>
+        <p className="mt-3.5 text-[15px] leading-7 text-[#0a0d12]/55">{description}</p>
       </div>
 
-      {/* Full-width demo canvas. landing-demo scopes the brand override +
-          scrollbar hiding the product components expect. */}
-      <div className="landing-demo mt-7 overflow-hidden rounded-[14px] border border-[#0a0d12]/10 bg-white p-3 shadow-[0_1px_3px_rgba(10,13,18,0.04)] sm:p-4">
+      {/* Demo shrinks to its own width (w-max) and overflows the 1fr track to
+          the right; the section's overflow-x-clip trims the bleed. landing-demo
+          scopes the brand override + scrollbar hiding the product expects. */}
+      <div className="landing-demo w-max rounded-[14px] border border-[#0a0d12]/10 bg-white p-3 shadow-[0_1px_3px_rgba(10,13,18,0.04)] sm:p-4">
         {children}
       </div>
     </div>
