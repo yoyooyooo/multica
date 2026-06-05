@@ -632,7 +632,7 @@ func (c *httpAPIClient) ListChatMessages(ctx context.Context, creds Installation
 			Items []larkRESTMessageItem `json:"items"`
 		} `json:"data"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &resp); err != nil {
+	if err := c.doJSON(ctx, c.resolveBaseURL(creds), http.MethodGet, path, token, nil, &resp); err != nil {
 		return nil, fmt.Errorf("lark http client: list chat messages: %w", err)
 	}
 	if resp.Code != 0 {

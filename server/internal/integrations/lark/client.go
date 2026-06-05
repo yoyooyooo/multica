@@ -99,8 +99,9 @@ type APIClient interface {
 
 // ListMessagesParams selects a bounded, recent window of messages in a
 // single Lark chat for the group-context prefetch. Only the fields the
-// enricher needs today are exposed; start_time/end_time and page_token
-// are intentionally omitted until a caller needs them.
+// enricher needs today are exposed (ChatID, PageSize, EndTime);
+// start_time and page_token are intentionally omitted until a caller
+// needs them.
 type ListMessagesParams struct {
 	ChatID ChatID
 	// PageSize is how many of the most-recent messages to fetch. The
