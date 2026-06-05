@@ -251,6 +251,32 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     expect(link.rel).toContain("noopener");
   });
 
+  it("points the Manage link at open.larksuite.com for a Lark-international (region=lark) installation", () => {
+    // Dual-region: a bot installed against the Lark international cloud
+    // must manage at open.larksuite.com, not the Feishu default. The
+    // region rides on the listings response, auto-detected at install.
+    installationsRef.current.installations = [
+      {
+        id: "inst-lark",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        app_id: "cli_lark_app",
+        bot_open_id: "ou_lark_bot",
+        installer_user_id: "user-1",
+        status: "active",
+        region: "lark",
+        installed_at: "2026-06-03T00:00:00Z",
+        created_at: "2026-06-03T00:00:00Z",
+        updated_at: "2026-06-03T00:00:00Z",
+      },
+    ];
+    render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
+      wrapper: I18nWrapper,
+    });
+    const link = screen.getByRole("link", { name: /Manage in Lark/i }) as HTMLAnchorElement;
+    expect(link.href).toBe("https://open.larksuite.com/app/cli_lark_app");
+  });
+
   it("still shows the bind CTA when an installation exists for a DIFFERENT agent (per-agent scoping)", () => {
     installationsRef.current.installations = [
       {

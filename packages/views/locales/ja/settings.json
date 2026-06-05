@@ -233,6 +233,8 @@
     "empty_description_cta": "Lark に接続",
     "empty_description_suffix": "をクリックすると、対応するボットを設置できます。",
     "revoked_badge": "取り消し済み",
+    "region_feishu": "Feishu",
+    "region_lark": "Lark",
     "installed_at_label": "{{when}} に設置",
     "disconnect": "切断",
     "disconnecting": "切断しています…",

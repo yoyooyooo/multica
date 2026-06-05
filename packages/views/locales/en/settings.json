@@ -233,6 +233,8 @@
     "empty_description_cta": "Bind to Lark",
     "empty_description_suffix": "to install a Bot for it.",
     "revoked_badge": "revoked",
+    "region_feishu": "Feishu",
+    "region_lark": "Lark",
     "installed_at_label": "Installed {{when}}",
     "disconnect": "Disconnect",
     "disconnecting": "Disconnecting…",

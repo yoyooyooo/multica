@@ -232,6 +232,11 @@ function InstallationRow({
         <div className="space-y-1">
           <p className="text-sm font-medium">
             {agentName}
+            <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {installation.region === "lark"
+                ? t(($) => $.lark.region_lark)
+                : t(($) => $.lark.region_feishu)}
+            </span>
             {!isActive && (
               <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {t(($) => $.lark.revoked_badge)}
@@ -359,12 +364,17 @@ export function LarkAgentBindButton({
 // a new tab so the user can manage scopes / display name / additional
 // permissions without re-scanning the QR.
 //
-// The dev console URL host follows the same default as the backend's
-// LARK_BASE_URL (open.feishu.cn for mainland Lark). Operators on the
-// Lark international tenant currently see the wrong host; future-
-// proofing requires the backend to surface a per-installation
-// `dev_console_url` on the listings response. Tracked separately.
-const LARK_DEV_CONSOLE_HOST = "https://open.feishu.cn";
+// The dev-console host depends on which Lark cloud the bot lives on:
+// Feishu (mainland) bots are managed at open.feishu.cn, Lark
+// (international) bots at open.larksuite.com. The region is auto-detected
+// at install time and surfaced per installation on the listings
+// response; an older server that omits `region` defaults to Feishu
+// (API-compat — see CLAUDE.md).
+function larkDevConsoleHost(region?: string): string {
+  return region === "lark"
+    ? "https://open.larksuite.com"
+    : "https://open.feishu.cn";
+}
 
 function LarkAgentBotConnectedBadge({
   installation,
@@ -374,7 +384,7 @@ function LarkAgentBotConnectedBadge({
   className?: string;
 }) {
   const { t } = useT("settings");
-  const manageHref = `${LARK_DEV_CONSOLE_HOST}/app/${encodeURIComponent(installation.app_id)}`;
+  const manageHref = `${larkDevConsoleHost(installation.region)}/app/${encodeURIComponent(installation.app_id)}`;
   return (
     <div className={className} data-testid="lark-agent-bot-connected">
       <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">

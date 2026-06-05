@@ -233,6 +233,8 @@
     "empty_description_cta": "绑定到飞书",
     "empty_description_suffix": "即可为它安装 Bot。",
     "revoked_badge": "已撤销",
+    "region_feishu": "飞书",
+    "region_lark": "Lark",
     "installed_at_label": "安装于 {{when}}",
     "disconnect": "断开连接",
     "disconnecting": "正在断开…",
