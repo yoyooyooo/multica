@@ -66,7 +66,7 @@
     "no_skills_configured": "暂无配置的技能",
     "no_results": "没有匹配的技能",
     "commands": {
-      "note": "添加备注 — 不会触发已分配的 Agent"
+      "note": "添加备注 — 不触发任何 Agent"
     }
   },
   "code_block": {
