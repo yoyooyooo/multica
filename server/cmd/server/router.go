@@ -442,12 +442,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		realtime.HandleWebSocket(hub, mc, pr, slugResolver, w, r)
 	})
 
-	// Local file serving (when using local storage)
+	// Local file serving (when using local storage).
+	//
+	// The disclosure (security-findings-2026-06-02) explicitly flagged this
+	// route as a layer in the SVG-XSS chain: it was unauthenticated, served
+	// directory listings, and lacked nosniff/CSP. The primary fix (PR #3023)
+	// broke the inline-render step by forcing Content-Disposition: attachment
+	// for non-media types, but the layered defenses here stay open until we
+	// add them.
+	//
+	// We register the route INSIDE its own middleware chain rather than
+	// using the broader r.Group(...) auth block above because:
+	//   1. The other Auth-protected routes are JSON-API; on auth failure
+	//      they emit a JSON error body. /uploads/* is a binary fetch
+	//      surface and the http.StatusUnauthorized that middleware.Auth
+	//      returns is fine here too.
+	//   2. The route closure needs the LocalStorage handle to call
+	//      ServeFile, and that handle is only available in this scope.
 	if local, ok := store.(*storage.LocalStorage); ok {
-		r.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
-			file := strings.TrimPrefix(r.URL.Path, "/uploads/")
-			local.ServeFile(w, r, file)
-		})
+		r.With(middleware.Auth(queries, patCache, cloudPATVerifier)).
+			Get("/uploads/*", h.ServeLocalUpload(local))
 	}
 
 	// Auth (public) — per-IP rate limiting.

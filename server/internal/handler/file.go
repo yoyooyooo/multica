@@ -30,6 +30,67 @@ var extContentTypes = map[string]string{
 	".wasm": "application/wasm",
 }
 
+// uploadDeniedExtensions are file types the upload endpoint rejects outright.
+//
+// The defense is layered: the SVG-XSS chain documented in the
+// security-findings-2026-06-02 disclosure is already broken by the
+// Content-Disposition: attachment fix shipped in PR #3023 — every entry
+// here would be served as an attachment download anyway, never inline.
+// We still reject these at the upload edge because:
+//
+//   - HTML-family content has no legitimate use case as an issue
+//     attachment in this product (no rich-text export targets it),
+//     yet it is the highest-leverage primitive an attacker would
+//     reach for if a future regression weakens the disposition path.
+//   - Rejecting at upload time gives operators a clean, auditable
+//     "we don't accept this" signal in the request log instead of
+//     silently storing the bytes and relying on the serve path to
+//     stay safe forever.
+//
+// We intentionally do NOT reject .js / .svg here. Source-code
+// attachments preview as text/plain via /api/attachments/{id}/content
+// (see isTextPreviewable), and SVG logos / diagrams remain a common
+// legitimate upload — the existing SVG fix neutralizes them. Adding
+// either to this list would break those flows without adding meaningful
+// security on top of the disposition fix.
+var uploadDeniedExtensions = map[string]struct{}{
+	".html":  {},
+	".htm":   {},
+	".xhtml": {},
+	".shtml": {},
+	".xht":   {},
+	".phtml": {},
+}
+
+// uploadDeniedContentTypes mirrors uploadDeniedExtensions for the cases
+// where the extension is benign but the sniffed media type is not. Keeping
+// both gates means a renamed payload (logo.png that sniffs as text/html)
+// is still refused.
+var uploadDeniedContentTypes = map[string]struct{}{
+	"text/html":             {},
+	"application/xhtml+xml": {},
+}
+
+// isUploadDenied reports whether a multipart upload should be rejected based
+// on its filename extension or sniffed content type. Both gates are checked
+// because either alone is bypassable (rename a .html to .png and the
+// extension passes; ship literal HTML in a .png and the sniffer catches it).
+func isUploadDenied(filename, contentType string) bool {
+	ext := strings.ToLower(path.Ext(filename))
+	if _, denied := uploadDeniedExtensions[ext]; denied {
+		return true
+	}
+	// Strip parameters (e.g. "text/html; charset=utf-8") before lookup.
+	mediaType := strings.ToLower(strings.TrimSpace(contentType))
+	if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:i])
+	}
+	if _, denied := uploadDeniedContentTypes[mediaType]; denied {
+		return true
+	}
+	return false
+}
+
 const maxUploadSize = 100 << 20 // 100 MB
 
 const defaultAttachmentDownloadURLTTL = 30 * time.Minute
@@ -226,6 +287,18 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	// Override with extension-based type when the sniffer gets it wrong.
 	if ct, ok := extContentTypes[strings.ToLower(path.Ext(header.Filename))]; ok {
 		contentType = ct
+	}
+
+	// Reject HTML-family uploads at the edge. The existing
+	// Content-Disposition: attachment fix already prevents these from
+	// rendering as documents, but there's no legitimate use for an
+	// uploaded .html as an attachment in this product, so we refuse the
+	// bytes outright rather than store them and rely on the serve path
+	// staying perfectly correct forever. See uploadDeniedExtensions for
+	// the full rationale.
+	if isUploadDenied(header.Filename, contentType) {
+		writeError(w, http.StatusUnsupportedMediaType, "this file type is not allowed")
+		return
 	}
 	// Seek back so the full file is uploaded.
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
