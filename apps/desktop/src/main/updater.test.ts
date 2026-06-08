@@ -90,6 +90,22 @@ function makeWindowWithDestroyedWebContents() {
   };
 }
 
+function makeWindowWithThrowingSend(error: Error) {
+  const send = vi.fn(() => {
+    throw error;
+  });
+  return {
+    win: {
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send,
+      },
+    } as unknown as BrowserWindow,
+    send,
+  };
+}
+
 describe("setupAutoUpdater", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -129,5 +145,26 @@ describe("setupAutoUpdater", () => {
 
     expect(() => emitUpdater("download-progress", { percent: 42 })).not.toThrow();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("skips update progress when webContents.send loses a destroy race", () => {
+    const { win, send } = makeWindowWithThrowingSend(
+      new TypeError("Object has been destroyed"),
+    );
+    setupAutoUpdater(() => win);
+
+    expect(() => emitUpdater("download-progress", { percent: 42 })).not.toThrow();
+    expect(send).toHaveBeenCalledWith("updater:download-progress", {
+      percent: 42,
+    });
+  });
+
+  it("rethrows non-destroy errors from webContents.send", () => {
+    const { win } = makeWindowWithThrowingSend(new Error("boom"));
+    setupAutoUpdater(() => win);
+
+    expect(() => emitUpdater("download-progress", { percent: 42 })).toThrow(
+      "boom",
+    );
   });
 });
