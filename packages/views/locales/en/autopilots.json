@@ -6,6 +6,7 @@
     "table": {
       "name": "Name",
       "agent": "Agent",
+      "created_by": "Created by",
       "mode": "Mode",
       "status": "Status",
       "last_run": "Last run"

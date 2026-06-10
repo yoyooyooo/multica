@@ -6,6 +6,7 @@
     "table": {
       "name": "名称",
       "agent": "智能体",
+      "created_by": "创建者",
       "mode": "模式",
       "status": "状态",
       "last_run": "上次运行"

@@ -6,6 +6,7 @@
     "table": {
       "name": "名前",
       "agent": "エージェント",
+      "created_by": "作成者",
       "mode": "モード",
       "status": "ステータス",
       "last_run": "最終実行"
