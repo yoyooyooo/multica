@@ -32,7 +32,6 @@
 
 import {
   forwardRef,
-  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -125,6 +124,17 @@ interface ContentEditorProps {
    * available (NodeView buttons fall back to opening the raw URL).
    */
   attachments?: Attachment[];
+  /**
+   * Flush a pending debounced `onUpdate` when the editor unmounts instead of
+   * dropping it. Default false ON PURPOSE: most composers clear their draft
+   * and then unmount (comment edit cancel, create-issue / feedback submit),
+   * and a flush there would hand the discarded content right back to
+   * `onUpdate`, resurrecting the cleared draft. Opt in only where closing
+   * means "keep what the user last saw" — e.g. the issue-detail description
+   * editor, whose 1500ms debounce would otherwise drop a paste made just
+   * before the modal closes.
+   */
+  flushPendingOnUnmount?: boolean;
 }
 
 interface ContentEditorRef {
@@ -164,10 +174,16 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableSlashCommands = false,
       slashCommandMode = "skill",
       attachments,
+      flushPendingOnUnmount = false,
     },
     ref,
   ) {
     const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+    const flushPendingOnUnmountRef = useRef(flushPendingOnUnmount);
+    // Markdown serialized at `onUpdate` time, awaiting its debounce fire. The
+    // unmount flush emits this cached copy — it runs mid-teardown and can't
+    // assume the editor instance is still readable.
+    const pendingFlushRef = useRef<string | null>(null);
     const onUpdateRef = useRef(onUpdate);
     const onSubmitRef = useRef(onSubmit);
     const onBlurRef = useRef(onBlur);
@@ -250,18 +266,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onBlurRef.current = onBlur;
     onUploadFileRef.current = wrappedOnUploadFile;
     mentionContextItemsRef.current = mentionContextItems ?? [];
+    flushPendingOnUnmountRef.current = flushPendingOnUnmount;
 
     const queryClient = useQueryClient();
-
-    const emitCurrentMarkdown = useCallback((
-      ed: { getMarkdown: () => string; isDestroyed?: boolean } | null | undefined,
-    ) => {
-      if (!ed || ed.isDestroyed || !onUpdateRef.current) return;
-      const md = stripBlobUrls(ed.getMarkdown()).trimEnd();
-      if (md === lastEmittedRef.current) return;
-      lastEmittedRef.current = md;
-      onUpdateRef.current(md);
-    }, []);
 
     const initialContent = defaultValue ? preprocessMarkdown(defaultValue) : "";
     // Large markdown is parsed in chunks to dodge marked's O(n²) tokenizer (see
@@ -314,10 +321,17 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       }),
       onUpdate: ({ editor: ed }) => {
         if (!onUpdateRef.current) return;
+        if (flushPendingOnUnmountRef.current) {
+          pendingFlushRef.current = stripBlobUrls(ed.getMarkdown()).trimEnd();
+        }
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
           debounceRef.current = undefined;
-          emitCurrentMarkdown(ed);
+          pendingFlushRef.current = null;
+          const md = stripBlobUrls(ed.getMarkdown()).trimEnd();
+          if (md === lastEmittedRef.current) return;
+          lastEmittedRef.current = md;
+          onUpdateRef.current?.(md);
         }, debounceMs);
       },
       onBlur: () => {
@@ -345,17 +359,23 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       },
     });
 
-    // Flush pending debounced edits on unmount. Issue/detail editors use a long
-    // debounce, and closing the modal before it fires must not drop the just
-    // inserted markdown or the attachment_ids binding that happens in onUpdate.
+    // Cleanup on unmount. A pending debounced update is DROPPED by default,
+    // not flushed — see the `flushPendingOnUnmount` prop doc for why. When the
+    // owner opted in, emit the markdown cached at `onUpdate` time so a long
+    // debounce can't swallow the last edit when the surrounding modal closes.
     useEffect(() => {
       return () => {
         if (!debounceRef.current) return;
         clearTimeout(debounceRef.current);
         debounceRef.current = undefined;
-        emitCurrentMarkdown(editor);
+        if (!flushPendingOnUnmountRef.current) return;
+        const pending = pendingFlushRef.current;
+        pendingFlushRef.current = null;
+        if (pending === null || pending === lastEmittedRef.current) return;
+        lastEmittedRef.current = pending;
+        onUpdateRef.current?.(pending);
       };
-    }, [editor, emitCurrentMarkdown]);
+    }, []);
 
     // Sync external `defaultValue` changes into the editor.
     // Tiptap v3 `useEditor` reads `content` only at mount (ueberdosis/tiptap#5831);

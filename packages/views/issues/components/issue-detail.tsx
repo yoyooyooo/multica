@@ -1881,6 +1881,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               }}
               onUploadFile={handleDescriptionUpload}
               debounceMs={1500}
+              // Closing the issue modal must save what the user last saw —
+              // without the flush, a paste followed by a quick close loses
+              // the image markdown and its attachment_ids bind (MUL-3254).
+              flushPendingOnUnmount
               currentIssueId={id}
               attachments={descEditorAttachments}
             />

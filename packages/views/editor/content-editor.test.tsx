@@ -223,7 +223,7 @@ describe("ContentEditor", () => {
     expect(mockSetContent).not.toHaveBeenCalled();
   });
 
-  it("flushes a pending debounced update on unmount", () => {
+  it("flushes a pending debounced update on unmount when flushPendingOnUnmount is set", () => {
     vi.useFakeTimers();
     const onUpdate = vi.fn();
     editorState.markdown = "old content";
@@ -232,6 +232,7 @@ describe("ContentEditor", () => {
         defaultValue="old content"
         onUpdate={onUpdate}
         debounceMs={1500}
+        flushPendingOnUnmount
       />,
     );
 
@@ -242,6 +243,12 @@ describe("ContentEditor", () => {
 
     expect(onUpdate).not.toHaveBeenCalled();
 
+    // The flush must emit the copy cached at onUpdate time — by cleanup time
+    // Tiptap may already have torn the instance down, so reading the editor
+    // during unmount is not an option.
+    editorState.isDestroyed = true;
+    editorState.markdown = "";
+
     unmount();
 
     expect(onUpdate).toHaveBeenCalledTimes(1);
@@ -251,6 +258,60 @@ describe("ContentEditor", () => {
     act(() => {
       vi.advanceTimersByTime(1500);
     });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a pending debounced update on unmount by default", () => {
+    // Regression guard for draft resurrection: composers like comment edit
+    // cancel `clearDraft()` and then unmount this editor. A default unmount
+    // flush would re-emit the discarded markdown into onUpdate, which writes
+    // it straight back into the draft store.
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    editorState.markdown = "edit draft the user cancelled";
+    const { unmount } = render(
+      <ContentEditor
+        defaultValue=""
+        onUpdate={onUpdate}
+        debounceMs={300}
+      />,
+    );
+
+    act(() => {
+      latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+    });
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not re-emit on unmount when the debounce already fired", () => {
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    const { unmount } = render(
+      <ContentEditor
+        defaultValue=""
+        onUpdate={onUpdate}
+        debounceMs={1500}
+        flushPendingOnUnmount
+      />,
+    );
+
+    editorState.markdown = "typed content";
+    act(() => {
+      latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+      vi.advanceTimersByTime(1500);
+    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    unmount();
+
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 });
