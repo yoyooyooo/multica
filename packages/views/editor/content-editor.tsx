@@ -32,6 +32,7 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -252,6 +253,16 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
 
     const queryClient = useQueryClient();
 
+    const emitCurrentMarkdown = useCallback((
+      ed: { getMarkdown: () => string; isDestroyed?: boolean } | null | undefined,
+    ) => {
+      if (!ed || ed.isDestroyed || !onUpdateRef.current) return;
+      const md = stripBlobUrls(ed.getMarkdown()).trimEnd();
+      if (md === lastEmittedRef.current) return;
+      lastEmittedRef.current = md;
+      onUpdateRef.current(md);
+    }, []);
+
     const initialContent = defaultValue ? preprocessMarkdown(defaultValue) : "";
     // Large markdown is parsed in chunks to dodge marked's O(n²) tokenizer (see
     // parseMarkdownChunked). Small docs stay on the single-parse fast path.
@@ -305,10 +316,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         if (!onUpdateRef.current) return;
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
-          const md = stripBlobUrls(ed.getMarkdown()).trimEnd();
-          if (md === lastEmittedRef.current) return;
-          lastEmittedRef.current = md;
-          onUpdateRef.current?.(md);
+          debounceRef.current = undefined;
+          emitCurrentMarkdown(ed);
         }, debounceMs);
       },
       onBlur: () => {
@@ -336,12 +345,17 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       },
     });
 
-    // Cleanup debounce on unmount
+    // Flush pending debounced edits on unmount. Issue/detail editors use a long
+    // debounce, and closing the modal before it fires must not drop the just
+    // inserted markdown or the attachment_ids binding that happens in onUpdate.
     useEffect(() => {
       return () => {
-        if (debounceRef.current) clearTimeout(debounceRef.current);
+        if (!debounceRef.current) return;
+        clearTimeout(debounceRef.current);
+        debounceRef.current = undefined;
+        emitCurrentMarkdown(editor);
       };
-    }, []);
+    }, [editor, emitCurrentMarkdown]);
 
     // Sync external `defaultValue` changes into the editor.
     // Tiptap v3 `useEditor` reads `content` only at mount (ueberdosis/tiptap#5831);
