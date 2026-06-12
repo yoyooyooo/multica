@@ -66,8 +66,8 @@ import { useT } from "../../i18n";
 // be dead weight, and batch-deleting runtimes (a cascade-confirm heavy
 // operation) is deliberately not offered.
 const GRID_COLS =
-  "grid-cols-[0.75rem_minmax(120px,1fr)_var(--rtc-health)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_minmax(140px,1fr)_var(--rtc-health)_var(--rtc-owner)_var(--rtc-agents)_var(--rtc-cost)_var(--rtc-cli)_1.75rem_0.75rem]";
+  "grid-cols-[0.75rem_minmax(120px,1fr)_var(--rtc-health)_var(--rtc-kebab)_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_minmax(140px,1fr)_var(--rtc-health)_var(--rtc-owner)_var(--rtc-agents)_var(--rtc-cost)_var(--rtc-cli)_var(--rtc-kebab)_0.75rem]";
 
 const COLUMN_WIDTHS = {
   // Health folds the workload in as a suffix ("Healthy · 2 running") —
@@ -79,25 +79,34 @@ const COLUMN_WIDTHS = {
   cli: 112,
 } as const;
 
-// Fixed tracks (edges 12+12, name min 140, kebab 28) plus the 8 gap-x-3
-// gaps between the wide template's 9 tracks (zero-width tracks still
-// carry gaps).
-const FIXED_TRACKS_WIDTH = 192 + 8 * 12;
+// Fixed tracks (edges 12+12, name min 140) plus the 8 gap-x-3 gaps
+// between the wide template's 9 tracks (zero-width tracks still carry
+// gaps).
+const FIXED_TRACKS_WIDTH = 164 + 8 * 12;
 
-function columnTrackVars(showOwner: boolean): React.CSSProperties {
+// The kebab track is conditional like the owner column: on a healthy
+// local machine EVERY row's only action (delete) is hidden by the
+// self-healing rule, and an unconditionally reserved 28px action track
+// would hang a permanent dead zone off the last column.
+function columnTrackVars(
+  showOwner: boolean,
+  showActions: boolean,
+): React.CSSProperties {
   const minWidth =
     FIXED_TRACKS_WIDTH +
     COLUMN_WIDTHS.health +
     (showOwner ? COLUMN_WIDTHS.owner : 0) +
     COLUMN_WIDTHS.agents +
     COLUMN_WIDTHS.cost +
-    COLUMN_WIDTHS.cli;
+    COLUMN_WIDTHS.cli +
+    (showActions ? 28 : 0);
   return {
     "--rtc-health": `${COLUMN_WIDTHS.health}px`,
     "--rtc-owner": showOwner ? `${COLUMN_WIDTHS.owner}px` : "0px",
     "--rtc-agents": `${COLUMN_WIDTHS.agents}px`,
     "--rtc-cost": `${COLUMN_WIDTHS.cost}px`,
     "--rtc-cli": `${COLUMN_WIDTHS.cli}px`,
+    "--rtc-kebab": showActions ? "1.75rem" : "0px",
     "--rtc-minw": `${minWidth}px`,
   } as React.CSSProperties;
 }
@@ -509,11 +518,17 @@ export function RuntimeList({
     }));
   }, [runtimes, memberById, workloadIndex, isAdmin, user]);
 
+  // Mirrors RuntimeRowMenu's render guard: the kebab track only earns its
+  // width when at least one row will actually show the menu.
+  const showActions = rows.some(
+    (row) => row.canDelete && !isSelfHealingRuntime(row.runtime),
+  );
+
   return (
     <div className="overflow-x-auto @container">
       <ListGrid
         className={`${GRID_COLS} @2xl:min-w-[var(--rtc-minw)]`}
-        style={columnTrackVars(showOwner)}
+        style={columnTrackVars(showOwner, showActions)}
       >
         <ListGridHeader>
           <ListGridHeaderCell>
