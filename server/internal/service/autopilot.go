@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service/contextguard"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -305,6 +306,38 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "creator cannot access private squad leader")}
 	}
 
+	// MUL-4059: resolve the per-task inactivity cap so autopilot tasks
+	// get the same protection as issue / mention tasks. Long-running
+	// autopilots can opt in by setting their agent's runtime_config
+	// .task_max_inactivity_secs to a higher value; the chain
+	// (agent → workspace → server default) is identical to the other
+	// enqueue paths.
+	var maxInactivity pgtype.Int4
+	if s.TaskSvc != nil {
+		maxInactivity = pgtype.Int4{
+			Int32: int32(s.TaskSvc.resolvedMaxInactivitySecs(ctx, 0, agent, ap.WorkspaceID)),
+			Valid: true,
+		}
+	}
+
+	// MUL-4059: no-context guard for autopilot run_only tasks.
+	// Autopilot tasks have no issue_id, so the guard collapses to
+	// the (A) workspace-repos check. If the workspace has no repos,
+	// we surface the verdict as an admission skip rather than
+	// enqueueing a task the daemon would immediately fail. The
+	// failure observer logs the reason so the operator can see what
+	// to add.
+	if s.TaskSvc != nil {
+		_, reason, _ := s.TaskSvc.guardDecision(ctx, ap.WorkspaceID, pgtype.UUID{})
+		if reason.Policy != contextguard.PolicyOff && !reason.OK {
+			slog.Warn("autopilot dispatch: no-context guard rejecting run_only task",
+				"autopilot_id", util.UUIDToString(ap.ID),
+				"agent_id", util.UUIDToString(agent.ID),
+				"hint", reason.Hint)
+			return &errDispatchSkipped{reason: formatAdmissionReason(ap, "no workspace context for agent")}
+		}
+	}
+
 	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		AgentID:        agent.ID,
 		RuntimeID:      agent.RuntimeID,
@@ -317,6 +350,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 			String: truncateForSummary(ap.Title, triggerSummaryMaxLen),
 			Valid:  ap.Title != "",
 		},
+		MaxInactivitySecs: maxInactivity,
 	})
 	if err != nil {
 		return fmt.Errorf("create autopilot task: %w", err)

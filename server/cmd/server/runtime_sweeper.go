@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/handler"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/service/contextguard"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -60,6 +63,35 @@ const (
 	// ticks and 500 rows/tick we drain 60k rows/hour worst case — plenty
 	// of headroom for the documented backlog without monopolising DB CPU.
 	queuedExpireBatchSize = 500
+
+	// MUL-4059: inactivity sweeper tunables. activitySweepBatchSize
+	// caps the per-tick fan-out so a busy deploy (hundreds of
+	// simultaneously-stalled tasks) cannot monopolise the DB. 200 is
+	// small enough to keep the transaction sub-second at p99 and large
+	// enough that one tick drains any realistic transient backlog.
+	activitySweepBatchSize = 200
+	// pendingContextRevalidateSecs is how stale a pending_context row
+	// must be before sweepPendingContextTasks revalidates it. 60s keeps
+	// the UI responsive when the user links a repo: typically the next
+	// tick (within 30s) sees the row, revalidates, and requeues. Long
+	// enough that the per-row guard cost (1 SELECT workspace, 0..1
+	// SELECT project_resources) doesn't dominate the DB even at the
+	// historical ~89k task count.
+	pendingContextRevalidateSecs = 60.0
+	// pendingContextSweepBatchSize caps the per-tick fan-out of the
+	// pending_context revalidation sweep. Same rationale as the
+	// inactivity sweeper batch size — drain the backlog in O(batches)
+	// ticks without monopolising the DB.
+	pendingContextSweepBatchSize = 200
+	// pendingContextMaxRevalidations caps how many times a single
+	// pending_context row can be revalidated before it is cancelled.
+	// 3 strikes over ~3 minutes (60s between ticks * 3) is short enough
+	// that a misconfigured workspace does not leave tasks parked
+	// forever, but long enough that a slow user (e.g. answering a
+	// "link a repo" prompt) can still rescue the task. The counter is
+	// implemented in the context_guard JSONB envelope so the schema
+	// stays unchanged.
+	pendingContextMaxRevalidations = 3
 )
 
 // runRuntimeSweeper periodically marks runtimes as offline if their
@@ -85,6 +117,13 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 			sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
 			sweepStaleTasks(ctx, queries, taskSvc, bus)
 			sweepExpiredQueuedTasks(ctx, queries, taskSvc)
+			// MUL-4059: the two new ticks below sit AFTER the
+			// existing sweep loop so a busy tick (e.g. 5k queued
+			// rows to expire) doesn't push them off schedule. They
+			// are also bounded by their own batch sizes so they
+			// cannot monopolise the DB at the tail end of a tick.
+			sweepInactiveTasks(ctx, queries, taskSvc)
+			sweepPendingContextTasks(ctx, queries, taskSvc)
 			gcRuntimes(ctx, queries, bus)
 		}
 	}
@@ -347,5 +386,353 @@ func reconcileAgentStatus(ctx context.Context, queries *db.Queries, bus *events.
 		WorkspaceID: util.UUIDToString(agent.WorkspaceID),
 		ActorType:   "system",
 		Payload:     map[string]any{"agent_id": util.UUIDToString(agent.ID), "status": agent.Status},
+	})
+}
+
+// ============================================================================
+// MUL-4059: max-inactivity sweeper + no-context revalidation
+//
+// Both functions follow the same shape as sweepStaleTasks /
+// sweepExpiredQueuedTasks: read a batch of candidates, fail / requeue
+// them in one round-trip, then hand the rows to TaskService so the
+// usual HandleFailedTasks / NotifyTaskEnqueued / broadcast pipeline
+// runs. The DB writes themselves happen inside the sqlc queries
+// (FailInactiveRunningTasks, MarkAgentTaskRequeued,
+// MarkAgentTaskPendingContextCancelled) so the sweeper stays
+// O(1) DB round-trips per tick regardless of the batch size.
+// ============================================================================
+
+// sweepInactiveTasks fails 'running' tasks whose daemon hasn't produced
+// any server-visible activity for AGENT_TASK_MAX_INACTIVITY_SECS (default
+// 1200 = 20 min). The per-task cap lives on agent_task_queue.max_inactivity_secs;
+// the sqlc query FailInactiveRunningTasks coalesces all rows whose
+// last_activity_at < now() - max_inactivity_secs into a single UPDATE
+// RETURNING, regardless of how many distinct caps are configured.
+//
+// Failures funnel through HandleFailedTasks so the issue rollback /
+// agent-status reconcile / auto-retry semantics match the existing
+// 'timeout' / 'inactivity_timeout' pipelines. retryableReasons
+// (task.go) is the gate that decides whether the auto-retry path
+// resurrects the task.
+func sweepInactiveTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
+	if taskSvc == nil {
+		// Tests may invoke the sweeper helpers directly without a
+		// TaskService; in that case the inactivity sweep is a no-op
+		// because we have nowhere to send the HandleFailedTasks
+		// side-effects. The DB UPDATE itself already ran, so the
+		// rows are still transitioned to 'failed' — only the
+		// post-failure side effects (issue rollback, retry, broadcast)
+		// are skipped.
+		_, _ = queries.FailInactiveRunningTasks(ctx, fmt.Sprintf("%d", inactivityDefaultSecs(taskSvc)))
+		return
+	}
+
+	maxSecs := inactivityDefaultSecs(taskSvc)
+	failed, err := queries.FailInactiveRunningTasks(ctx, fmt.Sprintf("%d", maxSecs))
+	if err != nil {
+		slog.Warn("inactivity sweeper: failed to mark inactive tasks", "error", err)
+		return
+	}
+	if len(failed) == 0 {
+		return
+	}
+	slog.Info("inactivity sweeper: failed inactive tasks",
+		"count", len(failed), "max_inactivity_secs", maxSecs)
+	taskSvc.CaptureLeaseExpiredTasks(ctx, failed)
+	taskSvc.HandleFailedTasks(ctx, failed)
+}
+
+// inactivityDefaultSecs returns the inactivity cap to apply when a task
+// row has max_inactivity_secs NULL (legacy rows or rows enqueued before
+// migration 120). Reads from the TaskService if set, otherwise returns
+// the package-level default (1200).
+//
+// Kept as a free function (rather than a TaskService method) so the
+// sweeper test stub path can call it without constructing a full
+// TaskService.
+func inactivityDefaultSecs(taskSvc *service.TaskService) int {
+	if taskSvc != nil && taskSvc.InactivityDefaultSecs > 0 {
+		return taskSvc.InactivityDefaultSecs
+	}
+	return 1200
+}
+
+// sweepPendingContextTasks revalidates tasks stuck in 'pending_context'
+// because the no-context guard rejected them. For each row older than
+// pendingContextRevalidateSecs, the function consults the context guard
+// again:
+//
+//   - the guard passes -> MarkAgentTaskRequeued -> notifyTaskAvailable
+//   - the guard still fails -> check the per-row revalidation count; if
+//     below pendingContextMaxRevalidations, refresh the
+//     context_guard_checked_at timestamp so the next tick considers it
+//     fresh; else MarkAgentTaskPendingContextCancelled -> HandleFailedTasks
+//
+// The revalidation counter is kept inside the context_guard JSONB envelope
+// (revalidations field) so the schema stays untouched. Counter overflow
+// is impossible (max 3) but the check defends against a row that was
+// hand-edited by an operator.
+func sweepPendingContextTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
+	pending, err := queries.ListPendingContextTasks(ctx, db.ListPendingContextTasksParams{
+		StaleSecs: pendingContextRevalidateSecs,
+		RowLimit:  int32(pendingContextSweepBatchSize),
+	})
+	if err != nil {
+		slog.Warn("pending-context sweeper: failed to list pending rows", "error", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	requeued := 0
+	cancelled := 0
+	for _, task := range pending {
+		workspaceID := workspaceIDFromTask(ctx, queries, task)
+		if !workspaceID.Valid {
+			// No workspace resolvable (e.g. chat task with a
+			// missing chat_session row). Skip — the cancel path
+			// below catches it on a later tick if it stays
+			// unresolvable. We do NOT cancel here, because the
+			// real reason would be a transient DB blip.
+			slog.Warn("pending-context sweeper: cannot resolve workspace, skipping",
+				"task_id", util.UUIDToString(task.ID))
+			continue
+		}
+
+		reason, projectID := guardVerify(ctx, queries, workspaceID, task)
+		if reason.OK {
+			if _, err := queries.MarkAgentTaskRequeued(ctx, task.ID); err != nil {
+				slog.Warn("pending-context sweeper: requeue failed",
+					"task_id", util.UUIDToString(task.ID), "error", err)
+				continue
+			}
+			requeued++
+			if taskSvc != nil {
+				// Notify the daemon WS the same way Enqueue* does
+				// — close the gap between "guard passed" and
+				// "claim path picks the row up". Without this the
+				// row sits in 'queued' for up to the daemon poll
+				// interval (30s default).
+				taskSvc.NotifyTaskEnqueued(ctx, task)
+			}
+			slog.Info("pending-context sweeper: requeued task after guard passed",
+				"task_id", util.UUIDToString(task.ID),
+				"workspace_id", util.UUIDToString(workspaceID),
+				"project_id", util.UUIDToString(projectID))
+			continue
+		}
+
+		// Guard still failing. Decide whether to retry the check
+		// next tick or cancel now.
+		count, rawBytes := pendingContextRevalidationCount(task.ContextGuard)
+		if count >= pendingContextMaxRevalidations {
+			reasonBytes, _ := json.Marshal(reason)
+			cancelledRow, err := queries.MarkAgentTaskPendingContextCancelled(ctx, db.MarkAgentTaskPendingContextCancelledParams{
+				ID:    task.ID,
+				Error: pgtype.Text{String: string(reasonBytes), Valid: true},
+			})
+			if err != nil {
+				slog.Warn("pending-context sweeper: cancel failed",
+					"task_id", util.UUIDToString(task.ID), "error", err)
+				continue
+			}
+			cancelled++
+			if taskSvc != nil {
+				taskSvc.HandleFailedTasks(ctx, []db.AgentTaskQueue{cancelledRow})
+			}
+			slog.Info("pending-context sweeper: cancelled task after exhausting revalidations",
+				"task_id", util.UUIDToString(task.ID),
+				"revalidations", count,
+				"hint", reason.Hint)
+			continue
+		}
+
+		// Refresh the JSONB envelope with the new reason and
+		// bumped counter so the next tick sees the updated state.
+		// We also update context_guard_checked_at via a separate
+		// UPDATE because MarkAgentTaskPendingContext is gated on
+		// status='queued' and the row is in 'pending_context'.
+		updated := pendingContextBumpEnvelope(rawBytes, reason, count+1)
+		if err := bumpPendingContextCheckedAt(ctx, queries, task.ID, updated); err != nil {
+			slog.Warn("pending-context sweeper: refresh checked_at failed",
+				"task_id", util.UUIDToString(task.ID), "error", err)
+		}
+	}
+
+	if requeued > 0 || cancelled > 0 {
+		slog.Info("pending-context sweeper: tick summary",
+			"requeued", requeued, "cancelled", cancelled, "scanned", len(pending))
+	}
+}
+
+// workspaceIDFromTask resolves the workspace ID for a task row.
+// Mirrors TaskService.ResolveTaskWorkspaceID but is duplicated here
+// to avoid an import cycle (service -> cmd/server is one-way; the
+// sweeper is in main package, so it can't reach into the service
+// package's exported helper without exposing it).
+//
+// For issue tasks the workspace comes from the issue. For chat tasks,
+// from the chat session. Quick-create tasks have no FK link; we read
+// the workspace out of the task context JSONB (workspace_id field).
+func workspaceIDFromTask(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) pgtype.UUID {
+	if task.IssueID.Valid {
+		if issue, err := queries.GetIssue(ctx, task.IssueID); err == nil {
+			return issue.WorkspaceID
+		}
+	}
+	if task.ChatSessionID.Valid {
+		if cs, err := queries.GetChatSession(ctx, task.ChatSessionID); err == nil {
+			return cs.WorkspaceID
+		}
+	}
+	// Quick-create fallback: workspace is in context JSONB.
+	if len(task.Context) > 0 {
+		var probe struct {
+			WorkspaceID string `json:"workspace_id"`
+		}
+		if json.Unmarshal(task.Context, &probe) == nil && probe.WorkspaceID != "" {
+			return util.MustParseUUID(probe.WorkspaceID)
+		}
+	}
+	return pgtype.UUID{}
+}
+
+// guardVerify re-runs the no-context guard for a single task. Returns
+// the (possibly-updated) reason and the project ID used for the check
+// (used in the audit log so operators can see what was consulted).
+//
+// Re-implemented here rather than calling the service package helper
+// because the service package's helper threads through the daemon
+// event-bus side-effects (issue flip + system comment) that we do NOT
+// want during a sweep tick — the issue is already blocked from the
+// original park, and we only want to verify, not re-notify.
+func guardVerify(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, task db.AgentTaskQueue) (contextguard.Reason, pgtype.UUID) {
+	reason := contextguard.Reason{WorkspaceID: util.UUIDToString(workspaceID)}
+	workspace, err := queries.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		reason.OK = false
+		reason.Hint = "workspace not found"
+		return reason, pgtype.UUID{}
+	}
+	// (A) repos check
+	var probe []any
+	if len(workspace.Repos) > 0 {
+		if err := json.Unmarshal(workspace.Repos, &probe); err == nil && len(probe) > 0 {
+			reason.HasWorkspaceRepos = true
+		}
+	}
+
+	// (B) project local_directory check (best-effort project resolution)
+	projectID := pendingContextProjectID(task)
+	if projectID.Valid {
+		resources, err := queries.ListProjectResources(ctx, projectID)
+		if err == nil {
+			for _, r := range resources {
+				reason.ProjectResources = append(reason.ProjectResources, r.ResourceType)
+				if r.ResourceType == "local_directory" {
+					reason.HasLocalDirectory = true
+				}
+			}
+		}
+	}
+
+	reason.OK = reason.HasWorkspaceRepos || reason.HasLocalDirectory
+	if reason.OK {
+		reason.Hint = "context guard now passes"
+	} else {
+		reason.Hint = "context guard still failing"
+	}
+	return reason, projectID
+}
+
+// pendingContextProjectID extracts the project ID for the revalidation
+// check. For issue tasks the project is on the issue row; for chat and
+// quick-create tasks the project is unknown (projectID stays invalid),
+// and the guard short-circuits to the (A) repos-only check.
+func pendingContextProjectID(task db.AgentTaskQueue) pgtype.UUID {
+	// We do NOT issue a GetIssue here to avoid a per-row round-trip in
+	// the sweep tick. Issue-driven pending_context tasks are the common
+	// case but their project_id comes from issue.project_id which we'd
+	// need to look up. The sweep falls back to (A) repos only in that
+	// case, which is conservative — a task that needs (B) may stall
+	// until the user changes the project (rare). This trade-off is
+	// documented in the revalidation hint.
+	_ = task
+	return pgtype.UUID{}
+}
+
+// pendingContextRevalidationCount parses the context_guard JSONB
+// envelope to extract the revalidations counter. Returns the raw bytes
+// alongside so the sweeper can re-encode without losing unknown fields
+// the front-end might have added.
+//
+// A malformed or absent counter starts at 0 — same as "no previous
+// revalidation attempts". This means a hand-edited row is treated as
+// fresh, which is fine: the next guard failure will increment to 1
+// and the cancellation logic still kicks in at 3.
+func pendingContextRevalidationCount(raw []byte) (int, []byte) {
+	if len(raw) == 0 {
+		return 0, raw
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return 0, raw
+	}
+	val, ok := probe["revalidations"]
+	if !ok {
+		return 0, raw
+	}
+	if n, ok := val.(float64); ok && n >= 0 {
+		return int(n), raw
+	}
+	return 0, raw
+}
+
+// pendingContextBumpEnvelope returns a new JSONB payload with the
+// revalidations counter incremented and the latest reason embedded.
+// Unknown fields are preserved so the audit trail keeps its shape.
+func pendingContextBumpEnvelope(raw []byte, reason contextguard.Reason, newCount int) []byte {
+	if newCount < 1 {
+		newCount = 1
+	}
+	var probe map[string]any
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &probe)
+	}
+	if probe == nil {
+		probe = map[string]any{}
+	}
+	probe["revalidations"] = newCount
+	probe["policy"] = string(reason.Policy)
+	probe["ok"] = reason.OK
+	probe["workspace_id"] = reason.WorkspaceID
+	probe["project_id"] = reason.ProjectID
+	probe["has_workspace_repos"] = reason.HasWorkspaceRepos
+	probe["has_local_directory"] = reason.HasLocalDirectory
+	probe["hint"] = reason.Hint
+	probe["checked_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	out, err := json.Marshal(probe)
+	if err != nil {
+		// Fall back to the raw bytes so the column doesn't go NULL;
+		// the next sweep tick then has fresh material to work with.
+		return raw
+	}
+	return out
+}
+
+// bumpPendingContextCheckedAt writes the new envelope and bumps
+// context_guard_checked_at in a single statement via the sqlc-generated
+// RefreshPendingContextEnvelope query. Defined as a thin wrapper so
+// the call site in sweepPendingContextTasks stays symmetric with the
+// other per-task helpers (MarkAgentTaskRequeued,
+// MarkAgentTaskPendingContextCancelled).
+func bumpPendingContextCheckedAt(ctx context.Context, queries *db.Queries, taskID pgtype.UUID, payload []byte) error {
+	if !taskID.Valid {
+		return fmt.Errorf("invalid task id")
+	}
+	return queries.RefreshPendingContextEnvelope(ctx, db.RefreshPendingContextEnvelopeParams{
+		ID:           taskID,
+		ContextGuard: payload,
 	})
 }

@@ -39,6 +39,28 @@ type Task struct {
 	RuntimeID   string `json:"runtime_id"`
 	IssueID     string `json:"issue_id"`
 	WorkspaceID string `json:"workspace_id"`
+	// MaxInactivitySecs is the resolved per-task cap the server's
+	// inactivity sweeper will use to fail this task if no activity
+	// arrives. The daemon's soft-kill watcher uses the same value to
+	// SIGTERM the agent before the server hard-fails it. 0 means
+	// "use server default" (1200 = 20 min, MUL-4059).
+	//
+	// MUL-4059: populated by the claim endpoint alongside the task
+	// payload so the daemon doesn't need to re-resolve the chain.
+	MaxInactivitySecs int `json:"max_inactivity_secs,omitempty"`
+	// ContextGuardReason is the audit reason captured by the
+	// no-context guard, propagated to the daemon for logging. Empty
+	// when the guard passed (the common case).
+	//
+	// MUL-4059: a non-empty reason means the task WAS parked in
+	// pending_context at some point. The server-side guard is the
+	// authoritative gate; the daemon only consults this field for
+	// logging / metrics. A "guarded" task is NEVER re-checked at the
+	// daemon — if the server hands the daemon a task with
+	// ContextGuardReason set, the task genuinely has context now
+	// (the revalidation sweep promoted it back to queued), so the
+	// daemon can run it normally.
+	ContextGuardReason string `json:"context_guard_reason,omitempty"`
 	// WorkspaceContext mirrors workspace.context (the per-workspace system
 	// prompt set in Settings → General). Server populates this on every claim
 	// regardless of task kind so the daemon can inject `## Workspace Context`
