@@ -209,8 +209,8 @@ function ProgressRing({ project }: { project: Project }) {
   );
 }
 
-// Interactive cell wrapper: the inline pickers live in a non-navigating row,
-// so they need no stopPropagation, but keep edits from bubbling oddly.
+// Compact rows own whole-row navigation; callers stop propagation around this
+// menu so action clicks do not bubble into the rowLink handler.
 function ProjectRowActions({
   project,
   pinned,
