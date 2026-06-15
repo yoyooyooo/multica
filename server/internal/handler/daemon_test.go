@@ -2253,6 +2253,87 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 	}
 }
 
+func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyRepliedBeforeRetry(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
+	`, testWorkspaceID).Scan(&agentID, &runtimeID); err != nil {
+		t.Fatalf("setup: get agent: %v", err)
+	}
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
+		VALUES ($1, 'comment retry dedup fixture', 'in_progress', 'none', $2, 'member', 81202, 0)
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("setup: create issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	var triggerCommentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		VALUES ($1, $2, 'member', $3, 'please finish this', 'comment')
+		RETURNING id
+	`, issueID, testWorkspaceID, testUserID).Scan(&triggerCommentID); err != nil {
+		t.Fatalf("setup: create trigger comment: %v", err)
+	}
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)
+		VALUES ($1, $2, 'agent', $3, 'already handled', 'comment', $4)
+	`, issueID, testWorkspaceID, agentID, triggerCommentID); err != nil {
+		t.Fatalf("setup: create prior agent reply: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, trigger_comment_id,
+			status, priority, started_at
+		)
+		VALUES (
+			$1, $2, $3, $4, 'running', 0,
+			(SELECT created_at + interval '1 second' FROM comment WHERE id = $4)
+		)
+		RETURNING id
+	`, agentID, runtimeID, issueID, triggerCommentID).Scan(&taskID); err != nil {
+		t.Fatalf("setup: create retry comment-triggered task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
+		map[string]any{"output": "I found the earlier reply and will not duplicate it."},
+		testWorkspaceID, "legit-daemon")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("taskId", taskID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	testHandler.CompleteTask(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+	`, issueID, agentID).Scan(&count); err != nil {
+		t.Fatalf("count agent comments: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 existing agent comment after retry completion, got %d", count)
+	}
+}
+
 func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

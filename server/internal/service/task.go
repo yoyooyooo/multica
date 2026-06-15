@@ -1268,6 +1268,12 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			AuthorID: task.AgentID,
 			Since:    task.StartedAt,
 		})
+		if !agentCommented && task.TriggerCommentID.Valid {
+			agentCommented, _ = s.Queries.HasAgentRepliedInThread(ctx, db.HasAgentRepliedInThreadParams{
+				ParentID: task.TriggerCommentID,
+				AgentID:  task.AgentID,
+			})
+		}
 		if !suppressNoActionComment && !agentCommented {
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
