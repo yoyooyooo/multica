@@ -303,7 +303,7 @@
     "trigger_starts_when_online": "It is offline now and will start once online.",
     "trigger_click_to_skip": "Click to skip triggering this time.",
     "trigger_click_to_manage": "Click to manage who gets triggered this time.",
-    "trigger_click_to_restore": "Won't be triggered this time. Click to restore.",
+    "trigger_click_to_restore": "Won't start this time. Click to restore.",
     "trigger_preview_title": "This comment will trigger",
     "trigger_chip_aria": "{{name}} trigger: {{state}}",
     "resolve": {

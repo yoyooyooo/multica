@@ -302,7 +302,7 @@
     "trigger_starts_when_online": "현재 오프라인이며 온라인이 되면 시작합니다.",
     "trigger_click_to_skip": "클릭하면 이번에는 트리거되지 않습니다.",
     "trigger_click_to_manage": "클릭하여 이번 트리거 대상을 관리합니다.",
-    "trigger_click_to_restore": "이번에는 트리거되지 않습니다. 클릭하면 복원됩니다.",
+    "trigger_click_to_restore": "이번에는 시작하지 않습니다. 클릭하면 복원됩니다.",
     "trigger_preview_title": "이 댓글로 트리거되는 대상",
     "trigger_chip_aria": "{{name}} 트리거: {{state}}",
     "resolve": {

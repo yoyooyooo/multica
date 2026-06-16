@@ -294,7 +294,7 @@
     "trigger_starts_when_online": "現在オフラインのため、オンラインになり次第開始します。",
     "trigger_click_to_skip": "クリックすると今回はトリガーされません。",
     "trigger_click_to_manage": "クリックして今回のトリガー対象を管理します。",
-    "trigger_click_to_restore": "今回はトリガーされません。クリックで元に戻せます。",
+    "trigger_click_to_restore": "今回は開始しません。クリックで元に戻せます。",
     "trigger_preview_title": "このコメントでトリガーされる対象",
     "trigger_chip_aria": "{{name}} のトリガー: {{state}}",
     "resolve": {
