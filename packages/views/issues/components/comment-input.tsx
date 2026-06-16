@@ -155,7 +155,6 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
           agents={triggerPreview.agents}
           suppressedAgentIds={suppressedAgentIds}
           onToggle={toggleSuppressedAgent}
-          context="comment"
         />
       </div>
       <div className="absolute bottom-1 right-1.5 flex items-center gap-1">

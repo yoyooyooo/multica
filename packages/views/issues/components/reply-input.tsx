@@ -4,6 +4,7 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { ArrowUp, Loader2 } from "lucide-react";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay } from "../../editor";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
+import { Button } from "@multica/ui/components/ui/button";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { api } from "@multica/core/api";
@@ -189,7 +190,6 @@ function ReplyInput({
             agents={triggerPreview.agents}
             suppressedAgentIds={suppressedAgentIds}
             onToggle={toggleSuppressedAgent}
-            context="reply"
           />
         </div>
         <div className="absolute bottom-0 right-0 flex items-center gap-1">
@@ -198,23 +198,19 @@ function ReplyInput({
             multiple
             onSelect={(file) => editorRef.current?.uploadFile(file)}
           />
-          <button
+          <Button
             type="button"
+            variant={isEmpty ? "ghost" : "default"}
+            size="icon-xs"
             disabled={isEmpty || submitting}
             onClick={handleSubmit}
-            className={cn(
-              "inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-50",
-              isEmpty
-                ? "text-muted-foreground hover:bg-accent hover:text-foreground"
-                : "bg-primary text-primary-foreground hover:bg-primary/90",
-            )}
           >
             {submitting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <ArrowUp className="h-3.5 w-3.5" />
             )}
-          </button>
+          </Button>
         </div>
         {isDragOver && <FileDropOverlay />}
       </div>

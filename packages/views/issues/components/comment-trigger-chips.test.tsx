@@ -45,25 +45,11 @@ describe("CommentTriggerChips", () => {
     );
 
     const chip = screen.getByRole("button");
-    expect(chip).toHaveTextContent("Comment");
     expect(chip).toHaveTextContent("Starts working when sent");
     expect(chip).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(chip);
     expect(onToggle).toHaveBeenCalledWith("agent-1");
-  });
-
-  it("labels reply trigger chips by composer context", () => {
-    renderWithI18n(
-      <CommentTriggerChips
-        agents={[walt]}
-        suppressedAgentIds={new Set()}
-        onToggle={vi.fn()}
-        context="reply"
-      />,
-    );
-
-    expect(screen.getByRole("button")).toHaveTextContent("Reply");
   });
 
   it("dims a suppressed single agent into the skip state", () => {
@@ -123,13 +109,12 @@ describe("CommentTriggerChips", () => {
         agents={[walt, bob]}
         suppressedAgentIds={new Set()}
         onToggle={onToggle}
-        context="reply"
       />,
     );
 
     fireEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByText("This reply will trigger")).toBeInTheDocument();
+    expect(screen.getByText("This comment will trigger")).toBeInTheDocument();
     const row = screen.getByRole("button", { name: /Bob/ });
     expect(row).toHaveTextContent("Bob");
     fireEvent.click(row);
