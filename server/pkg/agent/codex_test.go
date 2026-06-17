@@ -1406,6 +1406,42 @@ func TestCodexExecuteFirstTurnNoProgressSurfacesDiagnostics(t *testing.T) {
 	}
 }
 
+func TestCodexExecuteFailsWhenProcessExitsDuringActiveTurn(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-crash"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-crash","turn":{"id":"turn-crash"}}}'`+"\n"+
+		`echo 'fatal: app-server crashed after turn/start' >&2`+"\n"+
+		`exit 2`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "codex process exited") {
+		t.Fatalf("expected process-exit error, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "fatal: app-server crashed after turn/start") {
+		t.Fatalf("expected stderr tail in error, got %q", result.Error)
+	}
+	if strings.Contains(result.Error, "timeout") {
+		t.Fatalf("process exit should fail fast instead of timeout, got %q", result.Error)
+	}
+}
+
 func TestCodexExecuteFirstTurnRetryErrorDoesNotSatisfyProgress(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

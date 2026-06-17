@@ -747,20 +747,24 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 
 		waitingForTurn := true
 		var timeoutDiagnostic codexTimeoutDiagnostic
+		var processExitErr error
+		finishTurn := func(aborted bool) {
+			waitingForTurn = false
+			switch {
+			case aborted:
+				finalStatus = "aborted"
+				finalError = "turn was aborted"
+			default:
+				if errMsg := c.getTurnError(); errMsg != "" {
+					finalStatus = "failed"
+					finalError = errMsg
+				}
+			}
+		}
 		for waitingForTurn {
 			select {
 			case aborted := <-turnDone:
-				waitingForTurn = false
-				switch {
-				case aborted:
-					finalStatus = "aborted"
-					finalError = "turn was aborted"
-				default:
-					if errMsg := c.getTurnError(); errMsg != "" {
-						finalStatus = "failed"
-						finalError = errMsg
-					}
-				}
+				finishTurn(aborted)
 			case activity := <-semanticActivityCh:
 				lastSemanticActivity = time.Now()
 				lastSemanticActivityDescription = activity
@@ -819,6 +823,19 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 					finalStatus = "aborted"
 					finalError = "execution cancelled"
 				}
+			case <-c.processDone:
+				select {
+				case aborted := <-turnDone:
+					finishTurn(aborted)
+				default:
+					waitingForTurn = false
+					finalStatus = "failed"
+					processExitErr = c.getProcessErr()
+					if processExitErr == nil {
+						processExitErr = errCodexProcessExited
+					}
+					finalError = processExitErr.Error()
+				}
 			}
 		}
 
@@ -845,6 +862,9 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 		drainAndWait()
 
+		if processExitErr != nil {
+			finalError = withAgentStderr(processExitErr.Error(), "codex", stderrBuf.Tail())
+		}
 		if timeoutDiagnostic.Kind != codexTimeoutNone {
 			timeoutDiagnostic.CodexVersion = detectCodexVersionForDiagnostics(context.Background(), execPath, cmd.Env, b.cfg.Logger)
 			finalError = buildCodexTimeoutDiagnosticError(timeoutDiagnostic, stderrBuf.Tail())
@@ -895,11 +915,12 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 
 // startOrResumeThread picks between Codex's thread/resume and thread/start
 // based on opts.ResumeSessionID. When a prior thread ID is provided it first
-// tries thread/resume; any error (unknown thread, schema mismatch, transport
-// failure) is logged and the method falls back to thread/start so the task
-// still executes. The returned threadID is what subsequent turn/start calls
-// must reference, and resumed indicates whether the prior thread was picked
-// up (only useful for logging).
+// tries thread/resume; recoverable protocol errors (unknown thread, schema
+// mismatch) fall back to thread/start so the task still executes, while
+// transport/process failures fail fast because the app-server can no longer
+// answer a fresh start request. The returned threadID is what subsequent
+// turn/start calls must reference, and resumed indicates whether the prior
+// thread was picked up (only useful for logging).
 func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions, logger *slog.Logger) (string, bool, error) {
 	if priorThreadID := opts.ResumeSessionID; priorThreadID != "" {
 		// thread/resume reuses the thread's persisted model and reasoning
@@ -1339,6 +1360,12 @@ func (c *codexClient) markProcessExited(err error) {
 		pr.ch <- rpcResult{err: err}
 		delete(c.pending, id)
 	}
+}
+
+func (c *codexClient) getProcessErr() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.processErr
 }
 
 func isCodexTransportError(err error) bool {
