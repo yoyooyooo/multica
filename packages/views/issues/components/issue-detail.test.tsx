@@ -806,6 +806,28 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  it("does not show retry for child-done system comments", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      ...mockTimeline,
+      {
+        type: "comment",
+        id: "comment-child-done",
+        actor_type: "system",
+        actor_id: "00000000-0000-0000-0000-000000000000",
+        content: "Sub-issue MUL-123 is done.",
+        parent_id: null,
+        created_at: "2026-01-18T00:00:00Z",
+        updated_at: "2026-01-18T00:00:00Z",
+        comment_type: "system",
+      },
+    ]);
+
+    renderIssueDetail();
+
+    await screen.findByText("Sub-issue MUL-123 is done.");
+    expect(screen.queryByRole("button", { name: "Retry task" })).not.toBeInTheDocument();
+  });
+
   it("collapses non-trailing activity blocks and expands the last one by default", async () => {
     // Timeline shape:
     //   [activities: status_changed, priority_changed] ← block A (older)
