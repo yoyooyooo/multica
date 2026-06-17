@@ -38,6 +38,8 @@ import { ProjectIcon } from "../../projects/components/project-icon";
 const EMPTY_ISSUES: Issue[] = [];
 const EMPTY_PROJECTS: Project[] = [];
 const EMPTY_AGENTS: Agent[] = [];
+const ACTIVITY_ITEM_LIMIT = 200;
+const PROJECT_WRAP_LIMIT = 24;
 
 type IconComponent = ComponentType<{ className?: string }>;
 type ActivityKind = "issue" | "project" | "agent";
@@ -198,7 +200,7 @@ export function ActivityPage() {
         const haystack = `${item.title} ${item.context ?? ""} ${item.action}`.toLowerCase();
         return haystack.includes(normalizedQuery);
       })
-      .slice(0, 32);
+      .slice(0, ACTIVITY_ITEM_LIMIT);
   }, [activityItems, projectFilter, query]);
 
   const activityGroups = useMemo(() => {
@@ -262,7 +264,7 @@ export function ActivityPage() {
     return Array.from(rows.values())
       .filter((row) => row.project || row.issues.length > 0)
       .toSorted((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())
-      .slice(0, 8);
+      .slice(0, PROJECT_WRAP_LIMIT);
   }, [issues, projectById, projects]);
 
   const activityLoading =
