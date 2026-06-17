@@ -10,7 +10,12 @@ import {
   Search,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { cn } from "@multica/ui/lib/utils";
+import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@multica/ui/components/ui/native-select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   Tabs,
@@ -93,17 +98,6 @@ function dayLabel(timestamp: string, todayLabel: string, yesterdayLabel: string)
     day: "numeric",
     year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
   });
-}
-
-function activityTone(kind: ActivityKind): string {
-  switch (kind) {
-    case "issue":
-      return "bg-brand/10 text-brand ring-brand/20";
-    case "project":
-      return "bg-success/10 text-success ring-success/20";
-    case "agent":
-      return "bg-muted text-muted-foreground ring-border";
-  }
 }
 
 function issueDisplayTitle(issue: Issue): string {
@@ -277,37 +271,34 @@ export function ActivityPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader>
-        <div className="flex min-w-0 items-center gap-2">
-          <Activity className="size-4 text-muted-foreground" />
-          <h1 className="truncate font-heading text-sm font-semibold">
-            {t(($) => $.title)}
-          </h1>
-        </div>
-      </PageHeader>
-
-      <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex w-full max-w-5xl flex-col px-5 py-8 md:px-8 md:py-12">
-          <div>
-            <h2 className="font-heading text-4xl font-semibold leading-none tracking-normal text-foreground md:text-6xl">
-              {t(($) => $.activity.title)}
-            </h2>
-            <p className="mt-3 max-w-2xl text-base text-muted-foreground">
-              {t(($) => $.subtitle)}
-            </p>
+      <Tabs defaultValue="activity" className="min-h-0 flex-1 gap-0">
+        <PageHeader className="h-auto min-h-12 flex-wrap justify-between gap-y-1.5 px-5 py-1.5 sm:py-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <Activity className="size-4 shrink-0 text-muted-foreground" />
+            <h1 className="truncate text-sm font-medium">{t(($) => $.title)}</h1>
           </div>
+          <ActivityToolbar
+            projects={projects}
+            projectFilter={projectFilter}
+            onProjectFilterChange={setProjectFilter}
+            query={query}
+            onQueryChange={setQuery}
+            t={t}
+          />
+        </PageHeader>
 
-          <Tabs defaultValue="activity" className="mt-6 gap-0">
-            <ActivityToolbar
-              projects={projects}
-              projectFilter={projectFilter}
-              onProjectFilterChange={setProjectFilter}
-              query={query}
-              onQueryChange={setQuery}
-              t={t}
-            />
+        <div className="min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-6">
+            <div>
+              <h2 className="font-heading text-xl font-semibold tracking-normal text-foreground">
+                {t(($) => $.activity.title)}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                {t(($) => $.subtitle)}
+              </p>
+            </div>
 
-            <TabsContent value="activity" className="mt-10">
+            <TabsContent value="activity" className="mt-0">
               <ActivityTimeline
                 groups={activityGroups}
                 loading={activityLoading}
@@ -317,7 +308,7 @@ export function ActivityPage() {
               />
             </TabsContent>
 
-            <TabsContent value="wrapup" className="mt-10">
+            <TabsContent value="wrapup" className="mt-0">
               <ProjectWrapList
                 rows={projectWrap}
                 loading={projectsQuery.isLoading || issuesQuery.isLoading}
@@ -326,9 +317,9 @@ export function ActivityPage() {
                 t={t}
               />
             </TabsContent>
-          </Tabs>
+          </div>
         </div>
-      </div>
+      </Tabs>
     </div>
   );
 }
@@ -349,49 +340,52 @@ function ActivityToolbar({
   t: ActivityT;
 }) {
   return (
-    <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center">
-      <TabsList className="h-9 w-fit rounded-lg border bg-background p-0.5 shadow-xs">
-        <TabsTrigger value="activity" className="h-8 rounded-md px-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <TabsList>
+        <TabsTrigger value="activity" className="px-2.5">
           {t(($) => $.tabs.activity)}
         </TabsTrigger>
-        <TabsTrigger value="wrapup" className="h-8 rounded-md px-3">
+        <TabsTrigger value="wrapup" className="px-2.5">
           {t(($) => $.tabs.wrapup)}
         </TabsTrigger>
       </TabsList>
 
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="rounded-lg border bg-muted/50 px-3 py-2 text-muted-foreground">
-          {t(($) => $.filters.showing)}
-        </span>
-        <select
-          value={projectFilter}
-          onChange={(event) => onProjectFilterChange(event.target.value)}
-          className="h-9 max-w-56 rounded-lg border bg-background px-3 text-sm font-medium outline-none transition-colors hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          <option value="all">{t(($) => $.filters.all_projects)}</option>
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.title}
-            </option>
-          ))}
-        </select>
-        <span className="text-muted-foreground">{t(($) => $.filters.by)}</span>
-        <button
-          type="button"
-          className="h-9 rounded-lg border bg-background px-3 text-sm font-medium"
-        >
-          {t(($) => $.filters.everyone)}
-        </button>
-        <label className="relative flex h-9 min-w-52 items-center">
-          <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
-          <input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={t(($) => $.filters.filter_placeholder)}
-            className="h-full w-full rounded-lg border bg-background pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
-          />
-        </label>
-      </div>
+      <NativeSelect
+        size="sm"
+        value={projectFilter}
+        onChange={(event) => onProjectFilterChange(event.target.value)}
+        className="w-44"
+      >
+        <NativeSelectOption value="all">
+          {t(($) => $.filters.all_projects)}
+        </NativeSelectOption>
+        {projects.map((project) => (
+          <NativeSelectOption key={project.id} value={project.id}>
+            {project.title}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
+
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-disabled="true"
+        tabIndex={-1}
+        className="pointer-events-none text-muted-foreground"
+      >
+        {t(($) => $.filters.everyone)}
+      </Button>
+
+      <label className="relative w-52">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder={t(($) => $.filters.filter_placeholder)}
+          className="h-7 pl-8 text-sm"
+        />
+      </label>
     </div>
   );
 }
@@ -421,16 +415,16 @@ function ActivityTimeline({
   }
 
   return (
-    <div className="space-y-10">
+    <div className="overflow-hidden rounded-lg border bg-card">
       {groups.map((group) => (
-        <section key={group.key} className="space-y-5">
+        <section key={group.key} className="border-b last:border-b-0">
           <DayDivider
             label={group.label}
             sideText={t(($) => $.activity.active_agents, {
               count: activeAgentCount,
             })}
           />
-          <div className="space-y-4">
+          <div className="divide-y">
             {group.items.map((item) => (
               <ActivityRow key={item.id} item={item} timeAgo={timeAgo} t={t} />
             ))}
@@ -443,12 +437,11 @@ function ActivityTimeline({
 
 function DayDivider({ label, sideText }: { label: string; sideText: string }) {
   return (
-    <div className="grid items-center gap-4 md:grid-cols-[auto_minmax(80px,1fr)_auto]">
-      <div className="w-fit rounded-md bg-foreground px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-background">
+    <div className="flex items-center justify-between gap-3 bg-muted/30 px-3 py-2">
+      <div className="text-xs font-medium uppercase text-muted-foreground">
         {label}
       </div>
-      <div className="hidden h-px bg-border md:block" />
-      <div className="text-sm text-muted-foreground">{sideText}</div>
+      <div className="text-xs text-muted-foreground">{sideText}</div>
     </div>
   );
 }
@@ -464,30 +457,29 @@ function ActivityRow({
 }) {
   const Icon = item.icon;
   return (
-    <div className="grid grid-cols-[4.75rem_2rem_minmax(0,1fr)] gap-3 md:grid-cols-[5.5rem_2rem_minmax(0,1fr)]">
-      <time className="pt-1 text-right text-sm text-muted-foreground">
+    <div className="grid grid-cols-[4.5rem_2rem_minmax(0,1fr)] gap-3 px-3 py-3 transition-colors hover:bg-muted/35">
+      <time className="pt-0.5 text-right text-xs tabular-nums text-muted-foreground">
         {timeAgo(item.timestamp)}
       </time>
       <div className="relative flex justify-center">
-        <div className="absolute bottom-[-1.25rem] top-8 w-px bg-border" />
-        <div className={cn("relative z-10 flex size-7 items-center justify-center rounded-full ring-1", activityTone(item.kind))}>
+        <div className="flex size-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
           {item.node ?? <Icon className="size-3.5" />}
         </div>
       </div>
-      <div className="min-w-0 pb-1">
-        <div className="text-base leading-snug text-foreground">
-          <span className="font-semibold">{item.action}</span>{" "}
+      <div className="min-w-0">
+        <div className="text-sm leading-snug text-foreground">
+          <span className="font-medium">{item.action}</span>{" "}
           <AppLink
             href={item.href}
-            className="font-semibold text-brand hover:underline"
+            className="font-medium text-foreground underline-offset-2 hover:text-brand hover:underline"
           >
             {item.title}
           </AppLink>
           {item.context && (
-            <span className="text-muted-foreground"> - {item.context}</span>
+            <span className="text-muted-foreground"> · {item.context}</span>
           )}
         </div>
-        <div className="mt-1 text-sm text-muted-foreground">
+        <div className="mt-1 text-xs text-muted-foreground">
           {t(($) => $.activity.kind[item.kind])}
         </div>
       </div>
@@ -520,26 +512,32 @@ function ProjectWrapList({
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <DayDivider
-          label={t(($) => $.wrapup.date_label)}
-          sideText={t(($) => $.wrapup.project_count, { count: rows.length })}
-        />
-        <h3 className="mt-8 font-heading text-3xl font-semibold leading-tight">
-          {t(($) => $.wrapup.section_title)}
-        </h3>
+    <div className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase text-muted-foreground">
+            {t(($) => $.wrapup.date_label)}
+          </div>
+          <h3 className="mt-1 text-sm font-semibold leading-tight">
+            {t(($) => $.wrapup.section_title)}
+          </h3>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {t(($) => $.wrapup.project_count, { count: rows.length })}
+        </div>
       </div>
-      <div className="space-y-7">
-        {rows.map((row) => (
-          <ProjectWrapRowItem
-            key={row.id}
-            row={row}
-            timeAgo={timeAgo}
-            paths={paths}
-            t={t}
-          />
-        ))}
+      <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="divide-y">
+          {rows.map((row) => (
+            <ProjectWrapRowItem
+              key={row.id}
+              row={row}
+              timeAgo={timeAgo}
+              paths={paths}
+              t={t}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -566,9 +564,9 @@ function ProjectWrapRowItem({
   const href = row.project ? paths.projectDetail(row.project.id) : paths.issues();
 
   return (
-    <section className="grid gap-3 md:grid-cols-[2rem_minmax(0,1fr)]">
-      <div className="hidden pt-1 md:flex md:justify-center">
-        <div className="flex size-7 items-center justify-center rounded-full bg-muted text-muted-foreground">
+    <section className="grid gap-3 px-3 py-4 transition-colors hover:bg-muted/35 md:grid-cols-[2rem_minmax(0,1fr)]">
+      <div className="hidden md:flex md:justify-center">
+        <div className="flex size-7 items-center justify-center rounded-md border bg-background text-muted-foreground">
           {row.project ? (
             <ProjectIcon project={row.project} size="sm" />
           ) : (
@@ -577,16 +575,16 @@ function ProjectWrapRowItem({
         </div>
       </div>
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <AppLink
             href={href}
-            className="inline-flex min-h-8 max-w-full items-center rounded-md bg-foreground px-3 py-1 text-base font-semibold leading-tight text-background hover:opacity-90"
+            className="inline-flex max-w-full items-center text-sm font-medium leading-tight text-foreground underline-offset-2 hover:text-brand hover:underline"
           >
             <span className="truncate">{title}</span>
           </AppLink>
-          <span className="text-sm text-muted-foreground">{timeAgo(row.latestAt)}</span>
+          <span className="text-xs text-muted-foreground">{timeAgo(row.latestAt)}</span>
         </div>
-        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-muted-foreground">
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>{t(($) => $.wrapup.open_issues, { count: openCount })}</span>
           <span>{t(($) => $.wrapup.done_issues, { count: row.doneCount })}</span>
           {row.resourceCount > 0 && (
@@ -594,14 +592,14 @@ function ProjectWrapRowItem({
           )}
         </div>
         {recentIssues.length > 0 && (
-          <div className="mt-4 space-y-2">
+          <div className="mt-3 space-y-1.5">
             {recentIssues.map((issue) => (
               <AppLink
                 key={issue.id}
                 href={paths.issueDetail(issue.id)}
-                className="grid grid-cols-[1.75rem_minmax(0,1fr)] items-start gap-2 text-base leading-snug text-foreground hover:text-brand"
+                className="grid grid-cols-[1.5rem_minmax(0,1fr)] items-start gap-2 text-sm leading-snug text-foreground hover:text-brand"
               >
-                <StatusIcon status={issue.status} className="mt-1 size-4 shrink-0" />
+                <StatusIcon status={issue.status} className="mt-0.5 size-3.5 shrink-0" />
                 <span className="min-w-0 truncate">{issueDisplayTitle(issue)}</span>
               </AppLink>
             ))}
@@ -622,9 +620,9 @@ function EmptyState({
   body: string;
 }) {
   return (
-    <div className="flex min-h-48 flex-col items-center justify-center border-y px-4 py-10 text-center">
+    <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border bg-card px-4 py-10 text-center">
       <Icon className="size-5 text-muted-foreground" />
-      <div className="mt-3 text-base font-semibold">{title}</div>
+      <div className="mt-3 text-sm font-semibold">{title}</div>
       <div className="mt-1 max-w-sm text-sm text-muted-foreground">{body}</div>
     </div>
   );
@@ -632,13 +630,13 @@ function EmptyState({
 
 function ListSkeleton() {
   return (
-    <div className="space-y-4">
+    <div className="overflow-hidden rounded-lg border bg-card">
       {Array.from({ length: 5 }).map((_, index) => (
-        <div key={index} className="grid grid-cols-[5.5rem_2rem_minmax(0,1fr)] gap-3">
-          <Skeleton className="mt-1 h-4 w-14 justify-self-end" />
+        <div key={index} className="grid grid-cols-[4.5rem_2rem_minmax(0,1fr)] gap-3 border-b px-3 py-3 last:border-b-0">
+          <Skeleton className="mt-0.5 h-4 w-12 justify-self-end" />
           <Skeleton className="size-7 rounded-full" />
           <div className="min-w-0 space-y-2">
-            <Skeleton className="h-5 w-3/5" />
+            <Skeleton className="h-4 w-3/5" />
             <Skeleton className="h-4 w-2/5" />
           </div>
         </div>
