@@ -337,6 +337,31 @@ func TestInstructionPrecedenceOnlyAppliesToAssignmentWorkflow(t *testing.T) {
 	}
 }
 
+func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
+	t.Parallel()
+
+	out := buildMetaSkillContent("claude", TaskContextForEnv{ChatSessionID: "chat-1"})
+
+	for _, want := range []string{
+		"This is a chat task",
+		"delivered directly to the chat window",
+		"unless the user explicitly asks you to write a comment to a specific issue",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("chat brief missing chat output guidance %q\n---\n%s", want, out)
+		}
+	}
+
+	for _, banned := range []string{
+		"Final results MUST be delivered via `multica issue comment add`",
+		"The user does NOT see your terminal output",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("chat brief must not inherit issue-comment output warning %q\n---\n%s", banned, out)
+		}
+	}
+}
+
 // The sub-issue creation rule must reach top-level parents that have no
 // `parent_issue_id` of their own — that is where the `todo` vs `backlog`
 // decision matters most. The section must not gate on this issue being
