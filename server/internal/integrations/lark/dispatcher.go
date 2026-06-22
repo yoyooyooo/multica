@@ -201,6 +201,13 @@ type DispatcherQueries interface {
 	// emitting just the issue number — so callers handle the error
 	// inline rather than aborting the whole dispatch.
 	GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error)
+
+	// IsWorkspaceMember re-checks current membership in the inbound
+	// identity step. With the lark_user_binding -> member foreign key
+	// removed (MUL-3515 §4), a binding row no longer proves the bound
+	// user is still a workspace member, so the dispatcher verifies it
+	// explicitly instead of trusting the row's existence.
+	IsWorkspaceMember(ctx context.Context, workspaceID, userID pgtype.UUID) (bool, error)
 }
 
 // Dispatcher is the single per-message entry point on the inbound
@@ -424,9 +431,11 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 		return d.drop(ctx, msg, inst.ID, DropReasonNotAddressedInGroup), finalizeMark, nil
 	}
 
-	// 4. Identity check. A row in lark_user_binding means the open_id
-	//    maps to a current workspace member (the composite FK to
-	//    member cascades the binding away on membership revocation).
+	// 4. Identity check. A row in lark_user_binding maps the open_id to
+	//    a Multica user. Its mere existence USED to prove current
+	//    workspace membership (a composite FK to member cascaded the
+	//    binding away on revocation); MUL-3515 §4 removed that FK, so
+	//    step 4b re-checks membership explicitly below.
 	binding, err := d.Queries.GetLarkUserBindingByOpenID(ctx, db.GetLarkUserBindingByOpenIDParams{
 		InstallationID: inst.ID,
 		LarkOpenID:     string(msg.SenderOpenID),
@@ -449,6 +458,22 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 			}, finalizeMark, nil
 		}
 		return DispatchResult{}, finalizeRelease, fmt.Errorf("load user binding: %w", err)
+	}
+
+	// 4b. Re-check workspace membership. With the binding->member FK gone
+	//     (MUL-3515 §4), a stale binding can outlive the user's
+	//     membership, so the row from step 4 is necessary but no longer
+	//     sufficient. A former member's leftover binding must not leak
+	//     content into a chat_session (§4.3); we drop + audit it the same
+	//     way as the group-mention filter (durable audit row →
+	//     finalizeMark), with the non_workspace_member reason that used
+	//     to be unreachable while the FK guaranteed it could not happen.
+	isMember, err := d.Queries.IsWorkspaceMember(ctx, inst.WorkspaceID, binding.MulticaUserID)
+	if err != nil {
+		return DispatchResult{}, finalizeRelease, fmt.Errorf("check workspace membership: %w", err)
+	}
+	if !isMember {
+		return d.drop(ctx, msg, inst.ID, DropReasonNonWorkspaceMember), finalizeMark, nil
 	}
 
 	// 5. Resolve the chat_session. For group chats, the session

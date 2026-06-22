@@ -38,7 +38,7 @@ import (
 // already overwrites both identifiers via UpsertLarkInstallation.
 func BackfillBotUnionIDs(
 	ctx context.Context,
-	queries *db.Queries,
+	queries *ChannelStore,
 	api APIClient,
 	creds CredentialsDecrypter,
 	log *slog.Logger,

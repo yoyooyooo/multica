@@ -66,15 +66,17 @@ type TxStarter interface {
 //     failure (rolled-back tx → no chat_message → next replay
 //     re-processes).
 type chatSessionService struct {
-	queries   *db.Queries
+	queries   *ChannelStore
 	txStarter TxStarter
 }
 
 // NewChatSessionService constructs a ChatSessionService backed by the
 // supplied queries and tx starter. The tx starter is required;
 // without it, AppendUserMessage cannot run dedup + insert atomically.
+// queries is wrapped in a ChannelStore so the lark_* calls resolve to
+// channel_* rows (MUL-3515).
 func NewChatSessionService(queries *db.Queries, tx TxStarter) ChatSessionService {
-	return &chatSessionService{queries: queries, txStarter: tx}
+	return &chatSessionService{queries: NewChannelStore(queries), txStarter: tx}
 }
 
 // EnsureChatSession returns the chat_session.id bound to the given

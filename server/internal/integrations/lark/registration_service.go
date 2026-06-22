@@ -106,7 +106,7 @@ type RegistrationService struct {
 	cfg         RegistrationServiceConfig
 	client      *RegistrationClient
 	api         APIClient
-	queries     *db.Queries
+	queries     *ChannelStore
 	tx          TxStarter
 	installs    *InstallationService
 	binder      InstallerBinder
@@ -167,7 +167,7 @@ func NewRegistrationService(
 		cfg:         cfg.withDefaults(),
 		client:      client,
 		api:         api,
-		queries:     queries,
+		queries:     NewChannelStore(queries),
 		tx:          tx,
 		installs:    installs,
 		binder:      binder,

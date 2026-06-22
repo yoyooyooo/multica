@@ -34,7 +34,7 @@ type InstallationParams struct {
 // with plaintext credentials — the only path to writing
 // lark_installation goes through here.
 type InstallationService struct {
-	queries *db.Queries
+	queries *ChannelStore
 	box     *secretbox.Box
 }
 
@@ -47,7 +47,7 @@ func NewInstallationService(queries *db.Queries, box *secretbox.Box) (*Installat
 	if box == nil {
 		return nil, errors.New("lark: InstallationService requires a non-nil secretbox.Box")
 	}
-	return &InstallationService{queries: queries, box: box}, nil
+	return &InstallationService{queries: NewChannelStore(queries), box: box}, nil
 }
 
 // Upsert creates a new installation or refreshes an existing one in
