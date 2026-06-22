@@ -8,7 +8,12 @@ import type { ReactNode } from "react";
 
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
-import { useLoadMoreByAssigneeGroup, useLoadMoreByStatus, useResolveComment } from "./mutations";
+import {
+  useLoadMoreByAssigneeGroup,
+  useLoadMoreByStatus,
+  useResolveComment,
+  useUpdateIssue,
+} from "./mutations";
 import {
   issueKeys,
   type IssueSortParam,
@@ -311,6 +316,118 @@ describe("useLoadMoreByAssigneeGroup", () => {
       "issue-1",
       "issue-2",
     ]);
+  });
+});
+
+describe("useUpdateIssue — optimistic move keeps every bucketed board in sync", () => {
+  const sort: IssueSortParam = { sort_by: "position", sort_direction: undefined };
+  const myScope = "assigned";
+  const myFilter = { assignee_id: "user-1" };
+  const wsKey = issueKeys.listSorted(WS_ID, sort);
+  // My-Issues AND the Project board both ride this myList cache; a move that
+  // only patched the workspace cache snaps back on those boards.
+  const myKey = issueKeys.myListSorted(WS_ID, myScope, myFilter, sort);
+
+  let qc: QueryClient;
+  let updateIssue: ReturnType<typeof vi.fn<(id: string, data: unknown) => Promise<Issue>>>;
+
+  function makeBucketed(): ListIssuesCache {
+    return {
+      byStatus: {
+        todo: { issues: [makeIssue(1)], total: 1 },
+        in_progress: { issues: [], total: 0 },
+      },
+    };
+  }
+
+  function bucketIds(
+    key: readonly unknown[],
+    status: "todo" | "in_progress",
+  ): string[] {
+    const c = qc.getQueryData<ListIssuesCache>(key);
+    return (c?.byStatus[status]?.issues ?? []).map((i) => i.id);
+  }
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    updateIssue = vi.fn();
+    setApiInstance({ updateIssue } as unknown as ApiClient);
+    qc.setQueryData<ListIssuesCache>(wsKey, makeBucketed());
+    qc.setQueryData<ListIssuesCache>(myKey, makeBucketed());
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("optimistically moves the card in both the workspace and myList caches", async () => {
+    let resolve!: (issue: Issue) => void;
+    updateIssue.mockReturnValue(
+      new Promise<Issue>((r) => {
+        resolve = r;
+      }),
+    );
+
+    const { result } = renderHook(() => useUpdateIssue(), {
+      wrapper: createWrapper(qc),
+    });
+
+    act(() => {
+      result.current.mutate({ id: "issue-1", status: "in_progress", position: 5 });
+    });
+
+    // Optimistic state — the regression: myList must move too, not just ws.
+    for (const key of [wsKey, myKey]) {
+      expect(bucketIds(key, "todo")).toEqual([]);
+      expect(bucketIds(key, "in_progress")).toEqual(["issue-1"]);
+    }
+
+    await act(async () => {
+      resolve(makeIssue(1, { status: "in_progress", position: 5 }));
+    });
+
+    // Authoritative settle keeps the card in place in both caches.
+    for (const key of [wsKey, myKey]) {
+      expect(bucketIds(key, "in_progress")).toEqual(["issue-1"]);
+    }
+  });
+
+  it("rolls both caches back when the request fails", async () => {
+    updateIssue.mockRejectedValue(new Error("boom"));
+
+    const { result } = renderHook(() => useUpdateIssue(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({ id: "issue-1", status: "in_progress", position: 5 })
+        .catch(() => {});
+    });
+
+    for (const key of [wsKey, myKey]) {
+      expect(bucketIds(key, "todo")).toEqual(["issue-1"]);
+      expect(bucketIds(key, "in_progress")).toEqual([]);
+    }
+  });
+
+  it("does not invalidate the board list on settle (no refetch flicker)", async () => {
+    updateIssue.mockResolvedValue(makeIssue(1, { status: "in_progress", position: 5 }));
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    const { result } = renderHook(() => useUpdateIssue(), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ id: "issue-1", status: "in_progress", position: 5 });
+    });
+
+    const invalidatedKeys = invalidateSpy.mock.calls.map((c) => c[0]?.queryKey);
+    // The board list + myList are reconciled surgically, never refetched.
+    expect(invalidatedKeys).not.toContainEqual(issueKeys.list(WS_ID));
+    expect(invalidatedKeys).not.toContainEqual(issueKeys.myAll(WS_ID));
   });
 });
 

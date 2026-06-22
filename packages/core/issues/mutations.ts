@@ -211,6 +211,21 @@ export function useCreateIssue() {
 export function useUpdateIssue() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
+  // Every bucketed board cache an optimistic move must keep in sync: the
+  // workspace board (issueKeys.list*) AND the My-Issues / Project board
+  // (issueKeys.myList* under `my`), which share the ListIssuesCache shape.
+  // Filtering by `byStatus` skips the grouped (assignee) and flat
+  // (gantt/detail/children) caches that also live under those prefixes. The
+  // board reconciles local columns from its own feeding cache on settle, so a
+  // move that only patched the workspace cache would snap back on My-Issues /
+  // Project boards.
+  const readBucketedLists = () =>
+    [
+      ...qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) }),
+      ...qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.myAll(wsId) }),
+    ].filter(
+      (entry): entry is [QueryKey, ListIssuesCache] => !!entry[1]?.byStatus,
+    );
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string } & UpdateIssueRequest) =>
       api.updateIssue(id, data),
@@ -220,7 +235,8 @@ export function useUpdateIssue() {
       // yield to the event loop, letting @dnd-kit reset its visual state
       // before the optimistic update lands.
       qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
-      const prevLists = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
+      qc.cancelQueries({ queryKey: issueKeys.myAll(wsId) });
+      const prevLists = readBucketedLists();
       const firstListData = prevLists[0]?.[1];
       const prevDetail = qc.getQueryData<Issue>(issueKeys.detail(wsId, id));
 
@@ -288,15 +304,11 @@ export function useUpdateIssue() {
       // card re-landed. updateIssue returns the full issue and a position update
       // touches only that row, so a surgical patch is the authoritative
       // reconcile and is a visual no-op when the optimistic value matched.
-      const lists = qc.getQueriesData<ListIssuesCache>({
-        queryKey: issueKeys.list(wsId),
-      });
-      for (const [key, cached] of lists) {
-        if (cached)
-          qc.setQueryData<ListIssuesCache>(
-            key,
-            patchIssueInBuckets(cached, serverIssue.id, serverIssue),
-          );
+      for (const [key, cached] of readBucketedLists()) {
+        qc.setQueryData<ListIssuesCache>(
+          key,
+          patchIssueInBuckets(cached, serverIssue.id, serverIssue),
+        );
       }
       qc.setQueryData<Issue>(issueKeys.detail(wsId, serverIssue.id), (old) =>
         old ? { ...old, ...serverIssue } : old,
