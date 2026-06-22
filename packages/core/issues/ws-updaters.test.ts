@@ -286,14 +286,40 @@ describe("onIssueUpdated — position move is surgical, not a list refetch", () 
     expect(qc.getQueryState(issueKeys.list(WS_ID))?.isInvalidated).toBe(false);
   });
 
-  it("still invalidates the filtered myAll lists (membership can change there)", () => {
+  it("surgically patches the filtered myAll lists on a non-membership change (no refetch)", () => {
     qc.setQueryData<ListIssuesCache>(issueKeys.list(WS_ID), makeListCache(issueA, issueB));
-    qc.setQueryData<ListIssuesCache>(issueKeys.myAll(WS_ID), makeListCache(issueA));
+    qc.setQueryData<ListIssuesCache>(issueKeys.myAll(WS_ID), makeListCache(issueA, issueB));
 
+    // Pure position move: membership cannot change, so myAll is patched in place.
     onIssueUpdated(qc, WS_ID, { ...issueA, position: 20 });
 
+    const my = qc.getQueryData<ListIssuesCache>(issueKeys.myAll(WS_ID));
+    expect(my?.byStatus.todo?.issues.map((i) => i.id)).toEqual(["issue-2", "issue-1"]);
+    // Reconciled in place — no full-list refetch on My Issues (that was the
+    // remaining drag flicker on filtered boards).
+    expect(qc.getQueryState(issueKeys.myAll(WS_ID))?.isInvalidated).toBe(false);
+  });
+
+  it("invalidates myAll when the assignee changes (membership may shift)", () => {
+    qc.setQueryData<ListIssuesCache>(issueKeys.myAll(WS_ID), makeListCache(issueA));
+
+    onIssueUpdated(
+      qc,
+      WS_ID,
+      { ...issueA, assignee_type: "member", assignee_id: "user-2" },
+      { assigneeChanged: true },
+    );
+
     expectInvalidated(qc, issueKeys.myAll(WS_ID));
-    expect(qc.getQueryState(issueKeys.list(WS_ID))?.isInvalidated).toBe(false);
+  });
+
+  it("invalidates myAll when the project changes (Project board membership)", () => {
+    qc.setQueryData<ListIssuesCache>(issueKeys.myAll(WS_ID), makeListCache(issueA));
+
+    // issueA.project_id is null; moving it into a project shifts Project-board membership.
+    onIssueUpdated(qc, WS_ID, { ...issueA, project_id: "project-9" });
+
+    expectInvalidated(qc, issueKeys.myAll(WS_ID));
   });
 });
 
