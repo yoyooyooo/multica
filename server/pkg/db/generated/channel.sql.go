@@ -289,7 +289,11 @@ INSERT INTO channel_user_binding (
     $1, $2, $3, $4, $5, $6
 )
 ON CONFLICT (installation_id, channel_user_id) DO UPDATE SET
-    config   = channel_user_binding.config || EXCLUDED.config,
+    -- jsonb_strip_nulls(EXCLUDED.config) preserves the old lark semantics
+    -- ` + "`" + `union_id = COALESCE(EXCLUDED.union_id, lark_user_binding.union_id)` + "`" + `:
+    -- a re-bind that carries ` + "`" + `{"union_id": null}` + "`" + ` (or omits the key) must NOT
+    -- erase a union_id we already captured. Only non-null incoming keys win.
+    config   = channel_user_binding.config || jsonb_strip_nulls(EXCLUDED.config),
     bound_at = now()
 WHERE channel_user_binding.multica_user_id = EXCLUDED.multica_user_id
 RETURNING id, workspace_id, multica_user_id, installation_id, channel_type, channel_user_id, config, bound_at
@@ -449,20 +453,25 @@ func (q *Queries) GetChannelInstallation(ctx context.Context, id pgtype.UUID) (C
 
 const getChannelInstallationByAppID = `-- name: GetChannelInstallationByAppID :one
 SELECT id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at FROM channel_installation
-WHERE channel_type = $1 AND config ->> 'app_id' = $2
+WHERE channel_type = $1
+  AND config ->> 'app_id' = $2::text
 `
 
 type GetChannelInstallationByAppIDParams struct {
 	ChannelType string `json:"channel_type"`
-	Config      []byte `json:"config"`
+	AppID       string `json:"app_id"`
 }
 
 // Inbound routing. The platform event carries only the channel's app
 // identifier (Feishu app_id); the dispatcher's installation resolver routes
 // on (channel_type, config->>'app_id'). Backed by the functional unique
 // index idx_channel_installation_type_appid.
+//
+// Both params are named + explicitly typed: `config ->> 'app_id'` makes sqlc
+// attribute a bare `$2` to the JSONB `config` column (it would emit
+// `Config []byte`), so we pin the app_id arg to ::text to get AppID string.
 func (q *Queries) GetChannelInstallationByAppID(ctx context.Context, arg GetChannelInstallationByAppIDParams) (ChannelInstallation, error) {
-	row := q.db.QueryRow(ctx, getChannelInstallationByAppID, arg.ChannelType, arg.Config)
+	row := q.db.QueryRow(ctx, getChannelInstallationByAppID, arg.ChannelType, arg.AppID)
 	var i ChannelInstallation
 	err := row.Scan(
 		&i.ID,
@@ -905,7 +914,7 @@ INSERT INTO channel_installation (
 ) VALUES (
     $1, $2, $3, $4, $5
 )
-ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+ON CONFLICT (workspace_id, agent_id, channel_type) DO UPDATE SET
     channel_type      = EXCLUDED.channel_type,
     config            = EXCLUDED.config,
     installer_user_id = EXCLUDED.installer_user_id,
@@ -940,9 +949,12 @@ type UpsertChannelInstallationParams struct {
 // =====================
 // Install / re-install path. `config` is the opaque per-channel JSONB the
 // Go layer assembles (for feishu: app_id, app_secret_encrypted, tenant_key,
-// bot_open_id, bot_union_id, region). Re-installing the same agent replaces
-// the whole config and forces status back to 'active'. The WS lease is
-// intentionally NOT reset here — the inbound hub owns lease lifecycle.
+// bot_open_id, bot_union_id, region). Re-installing the same agent on the
+// same channel_type replaces the whole config and forces status back to
+// 'active'. The conflict key is (workspace_id, agent_id, channel_type) so an
+// agent may hold one installation per channel_type (feishu + slack + ...)
+// without one install clobbering another. The WS lease is intentionally NOT
+// reset here — the inbound hub owns lease lifecycle.
 func (q *Queries) UpsertChannelInstallation(ctx context.Context, arg UpsertChannelInstallationParams) (ChannelInstallation, error) {
 	row := q.db.QueryRow(ctx, upsertChannelInstallation,
 		arg.WorkspaceID,

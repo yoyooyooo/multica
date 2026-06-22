@@ -45,7 +45,15 @@ CREATE TABLE channel_installation (
     installed_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (workspace_id, agent_id)
+    -- One installation per (agent, channel_type): an agent may connect more
+    -- than one IM at once (feishu + slack + ...), but only one of each kind.
+    -- The old lark_installation had UNIQUE(workspace_id, agent_id) because
+    -- feishu was the only channel; with a channel_type discriminator the
+    -- natural generalization adds it to the key. In the current feishu-only
+    -- world this is behaviorally identical (one row per agent). If the
+    -- product later wants "one agent, at most one IM regardless of type",
+    -- that is an application-layer rule (MUL-3515 §4), not a DB constraint.
+    UNIQUE (workspace_id, agent_id, channel_type)
 );
 
 CREATE INDEX idx_channel_installation_workspace ON channel_installation(workspace_id);
