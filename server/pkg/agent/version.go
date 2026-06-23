@@ -33,7 +33,7 @@ const MinQuickCreateCLIVersion = "0.2.21"
 // note is simply dropped. The frontend reads HandoffSupported to gray out the
 // note box and warn the user, so they aren't surprised by a silently ignored
 // note. Bump this to the release that actually ships the daemon rendering.
-const MinHandoffCLIVersion = "0.3.27"
+const MinHandoffCLIVersion = "0.3.28"
 
 // HandoffSupported reports whether a daemon reporting cliVersion is new enough
 // to render handoff notes. Reuses the CheckMinCLIVersion parsing (including the
