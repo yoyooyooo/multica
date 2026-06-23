@@ -357,6 +357,19 @@ func main() {
 	// Lark do not pay any goroutine cost. Lifecycle is bound to
 	// sweepCtx so the Hub winds down alongside the other long-running
 	// workers, AFTER the HTTP server has drained.
+	// Cutover control (MUL-3515): MULTICA_LARK_HUB_DISABLED parks the Lark
+	// inbound hub WITHOUT taking down the rest of the API — the process still
+	// serves HTTP normally, it just never claims a WS lease or opens a Feishu
+	// connection. This is the switch the lark_*->channel_* rollout uses to keep
+	// the NEW hub dormant while old pods (still running their hub on lark_*)
+	// drain, so the two never double-process the same bot. Nil-ing LarkHub here
+	// reuses the same "Lark not configured" path, so the shutdown join below
+	// also skips it. The operator flips this off after migration 124 + old-pod
+	// drain to bring the new hub up on channel_*. See migration 124's ROLLOUT note.
+	if h.LarkHub != nil && os.Getenv("MULTICA_LARK_HUB_DISABLED") == "true" {
+		slog.Warn("Lark inbound hub disabled via MULTICA_LARK_HUB_DISABLED; API serves normally but no Feishu WebSocket is opened")
+		h.LarkHub = nil
+	}
 	if h.LarkHub != nil {
 		go h.LarkHub.Run(sweepCtx)
 	}
