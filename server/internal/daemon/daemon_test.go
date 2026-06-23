@@ -348,22 +348,32 @@ func TestAgentPromptLength(t *testing.T) {
 func TestCountRuntimeBriefSectionChars(t *testing.T) {
 	t.Parallel()
 
-	otherPrefix := "<!-- BEGIN MULTICA-RUNTIME -->\n# Multica Agent Runtime\n\n"
-	identity := "## Agent Identity\n**You are: GPT-Boy**\n## 用户自定义标题\n### PR Review\n中文身份\n"
+	header := "<!-- BEGIN MULTICA-RUNTIME -->\n# Multica Agent Runtime\n\n"
+	misc := "## Background Task Safety\nbackground body\n## Requesting User\nrequesting user body\n## Workspace Context\nworkspace body\n## Project Context\nproject body\n## Instruction Precedence\nprecedence body\n"
+	identity := "## Agent Identity\n\n**You are: GPT-Boy** (ID: `agent-1`)\n\n"
+	identityBody := "## 用户自定义标题\n### PR Review\n中文身份\n"
+	taskInitiator := "## Task Initiator\ninitiator body\n"
 	core := "## Available Commands\nintro\n### Core\ncore command\n### Squad maintenance\nsquad command\n"
 	commentFormatting := "## Comment Formatting\nformat body\n"
+	repositories := "## Repositories\nrepo body\n"
 	metadata := "## Issue Metadata\nmetadata body\n"
 	workflow := "### Workflow\nworkflow body\n"
+	subIssue := "## Sub-issue Creation\nsub issue body\n"
 	skills := "## Skills\n- skill\n"
 	mentions := "## Mentions\nmentions intro\n### When NOT to use a mention link\nno loop\n### When a mention IS appropriate\nescalate\n"
+	attachments := "## Attachments\nattach body\n"
+	alwaysUseCLI := "## Important: Always Use the `multica` CLI\ncli body\n"
 	output := "## Output\noutput body\n"
-	otherSuffix := "## Attachments\nattach body\n"
 
-	brief := otherPrefix + identity + core + commentFormatting + metadata + workflow + skills + mentions + output + otherSuffix
+	brief := header + misc + identity + identityBody + taskInitiator + core + commentFormatting +
+		repositories + metadata + workflow + subIssue + skills + mentions + attachments + alwaysUseCLI + output
 	got := countRuntimeBriefSectionChars(brief)
 
 	if got.Identity != utf8.RuneCountInString(identity) {
 		t.Fatalf("identity chars = %d, want %d", got.Identity, utf8.RuneCountInString(identity))
+	}
+	if got.IdentityBody != utf8.RuneCountInString(identityBody) {
+		t.Fatalf("identity body chars = %d, want %d", got.IdentityBody, utf8.RuneCountInString(identityBody))
 	}
 	if got.Core != utf8.RuneCountInString(core) {
 		t.Fatalf("core chars = %d, want %d", got.Core, utf8.RuneCountInString(core))
@@ -386,7 +396,29 @@ func TestCountRuntimeBriefSectionChars(t *testing.T) {
 	if got.Output != utf8.RuneCountInString(output) {
 		t.Fatalf("output chars = %d, want %d", got.Output, utf8.RuneCountInString(output))
 	}
-	wantOther := utf8.RuneCountInString(otherPrefix + otherSuffix)
+	if got.Header != utf8.RuneCountInString(header) {
+		t.Fatalf("header chars = %d, want %d", got.Header, utf8.RuneCountInString(header))
+	}
+	if got.TaskInitiator != utf8.RuneCountInString(taskInitiator) {
+		t.Fatalf("task initiator chars = %d, want %d", got.TaskInitiator, utf8.RuneCountInString(taskInitiator))
+	}
+	if got.Repositories != utf8.RuneCountInString(repositories) {
+		t.Fatalf("repositories chars = %d, want %d", got.Repositories, utf8.RuneCountInString(repositories))
+	}
+	if got.SubIssue != utf8.RuneCountInString(subIssue) {
+		t.Fatalf("sub issue chars = %d, want %d", got.SubIssue, utf8.RuneCountInString(subIssue))
+	}
+	if got.Attachments != utf8.RuneCountInString(attachments) {
+		t.Fatalf("attachments chars = %d, want %d", got.Attachments, utf8.RuneCountInString(attachments))
+	}
+	if got.AlwaysUseCLI != utf8.RuneCountInString(alwaysUseCLI) {
+		t.Fatalf("always use cli chars = %d, want %d", got.AlwaysUseCLI, utf8.RuneCountInString(alwaysUseCLI))
+	}
+	if got.Misc != utf8.RuneCountInString(misc) {
+		t.Fatalf("misc chars = %d, want %d", got.Misc, utf8.RuneCountInString(misc))
+	}
+	wantOther := utf8.RuneCountInString(header + misc + identityBody + taskInitiator +
+		repositories + subIssue + attachments + alwaysUseCLI)
 	if got.Other != wantOther {
 		t.Fatalf("other chars = %d, want %d", got.Other, wantOther)
 	}

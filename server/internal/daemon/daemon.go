@@ -3096,14 +3096,25 @@ type runtimeBriefSectionChars struct {
 	Output            int
 	Skills            int
 	Other             int
+	Header            int
+	IdentityBody      int
+	TaskInitiator     int
+	Repositories      int
+	SubIssue          int
+	Attachments       int
+	AlwaysUseCLI      int
+	Misc              int
 }
 
 func countRuntimeBriefSectionChars(brief string) runtimeBriefSectionChars {
 	var counts runtimeBriefSectionChars
-	category := "other"
+	category := "header"
 	for _, line := range strings.SplitAfter(brief, "\n") {
-		if next, ok := runtimeBriefHeadingCategory(strings.TrimSpace(line)); ok {
+		heading := strings.TrimSpace(line)
+		if next, ok := runtimeBriefHeadingCategory(heading); ok {
 			category = next
+		} else if category == "identity" && !runtimeBriefIdentityHeaderLine(heading) {
+			category = "identity_body"
 		}
 		chars := utf8.RuneCountInString(line)
 		switch category {
@@ -3123,11 +3134,37 @@ func countRuntimeBriefSectionChars(brief string) runtimeBriefSectionChars {
 			counts.Output += chars
 		case "skills":
 			counts.Skills += chars
+		case "header":
+			counts.Header += chars
+			counts.Other += chars
+		case "identity_body":
+			counts.IdentityBody += chars
+			counts.Other += chars
+		case "task_initiator":
+			counts.TaskInitiator += chars
+			counts.Other += chars
+		case "repositories":
+			counts.Repositories += chars
+			counts.Other += chars
+		case "sub_issue":
+			counts.SubIssue += chars
+			counts.Other += chars
+		case "attachments":
+			counts.Attachments += chars
+			counts.Other += chars
+		case "always_use_cli":
+			counts.AlwaysUseCLI += chars
+			counts.Other += chars
 		default:
+			counts.Misc += chars
 			counts.Other += chars
 		}
 	}
 	return counts
+}
+
+func runtimeBriefIdentityHeaderLine(line string) bool {
+	return line == "" || strings.HasPrefix(line, "**You are:")
 }
 
 func runtimeBriefHeadingCategory(heading string) (category string, ok bool) {
@@ -3148,17 +3185,22 @@ func runtimeBriefHeadingCategory(heading string) (category string, ok bool) {
 		return "output", true
 	case "## Skills":
 		return "skills", true
+	case "## Task Initiator":
+		return "task_initiator", true
+	case "## Repositories":
+		return "repositories", true
+	case "## Sub-issue Creation":
+		return "sub_issue", true
+	case "## Attachments":
+		return "attachments", true
+	case "## Important: Always Use the `multica` CLI":
+		return "always_use_cli", true
 	case "## Background Task Safety",
 		"## Requesting User",
-		"## Task Initiator",
 		"## Workspace Context",
-		"## Repositories",
 		"## Project Context",
-		"## Instruction Precedence",
-		"## Sub-issue Creation",
-		"## Attachments",
-		"## Important: Always Use the `multica` CLI":
-		return "other", true
+		"## Instruction Precedence":
+		return "misc", true
 	default:
 		return "", false
 	}
@@ -3646,6 +3688,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"runtime_brief_output_chars", briefSections.Output,
 		"runtime_brief_skills_chars", briefSections.Skills,
 		"runtime_brief_other_chars", briefSections.Other,
+		"runtime_brief_header_chars", briefSections.Header,
+		"runtime_brief_identity_body_chars", briefSections.IdentityBody,
+		"runtime_brief_task_initiator_chars", briefSections.TaskInitiator,
+		"runtime_brief_repositories_chars", briefSections.Repositories,
+		"runtime_brief_sub_issue_chars", briefSections.SubIssue,
+		"runtime_brief_attachments_chars", briefSections.Attachments,
+		"runtime_brief_always_use_cli_chars", briefSections.AlwaysUseCLI,
+		"runtime_brief_misc_chars", briefSections.Misc,
 		"inline_system_prompt", execOpts.SystemPrompt != "",
 		"system_prompt_bytes", len(execOpts.SystemPrompt),
 		"system_prompt_chars", utf8.RuneCountInString(execOpts.SystemPrompt),
