@@ -192,4 +192,3 @@ ALTER TABLE ONLY lark_user_binding
 
 ALTER TABLE ONLY lark_user_binding
     ADD CONSTRAINT lark_user_binding_member_fk FOREIGN KEY (workspace_id, multica_user_id) REFERENCES member(workspace_id, user_id) ON DELETE CASCADE;
-
