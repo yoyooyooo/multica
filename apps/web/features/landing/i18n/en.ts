@@ -294,6 +294,31 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.29",
+        date: "2026-06-24",
+        title: "More Reliable Autopilots, Feishu Workflows, and Runtime Rollouts",
+        changes: [],
+        features: [
+          "Feishu conversations now run on a shared integration foundation, making message handling more consistent and preparing Multica for more chat channels",
+          "Feature rollout controls now cover app behavior and daemon behavior, so teams can stage sensitive changes with clearer guardrails",
+          "Agents can now read long Issue discussions with resolved threads folded down to the useful conclusion",
+          "Feishu users can start a fresh conversation with the `/new` command, and Lark WebSocket connections can use a configured proxy",
+        ],
+        improvements: [
+          "Scheduled autopilots are more dependable: missed schedules, retries, and repeated runners now converge on the intended single run",
+          "Agent runtime briefings can be made slimmer behind a rollout switch, reducing noise while preserving the full fallback path",
+          "Runtime provider docs now reflect the current provider list, including Qoder and CodeBuddy guidance and clearer Antigravity notes",
+          "Project repository settings now carry the intended checkout ref through local agent work",
+        ],
+        fixes: [
+          "Sub-Issues now stay in stable creation order inside a parent Issue",
+          "Attachment previews open correctly inside same-origin Issue previews",
+          "The @mention picker now commits the highlighted person or Issue even when search results reorder",
+          "Cancelled chat drafts stay deleted after you navigate away and return",
+          "Autopilot cold starts, Issue header agent status, and Antigravity provider errors now report more accurately",
+        ],
+      },
+      {
         version: "0.3.28",
         date: "2026-06-23",
         title: "Staged Sub-Issues and Qoder Runtime Support",
