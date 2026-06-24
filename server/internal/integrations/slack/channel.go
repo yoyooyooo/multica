@@ -84,7 +84,17 @@ func (c *slackChannel) Connect(ctx context.Context) error {
 				}
 				return errors.New("slack: socket mode event stream closed")
 			}
-			c.handleSocketEvent(ctx, sm, evt)
+			if err := c.handleSocketEvent(ctx, sm, evt); err != nil {
+				// A handler error is an infrastructure failure (InboundHandler
+				// contract): surface it so the Supervisor tears the connection
+				// down and reconnects under backoff, instead of silently
+				// dropping every subsequent event. ctx cancellation is a
+				// graceful stop, not a failure.
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
 		}
 	}
 }
@@ -120,36 +130,36 @@ func (c *slackChannel) Send(ctx context.Context, out channel.OutboundMessage) (c
 	return channel.SendResult{MessageID: lastTS}, nil
 }
 
-// Capabilities declares what the Slack adapter supports. Declaration only — the
-// engine performs no degradation. Slack threads (thread_ts), Block Kit cards,
-// file attachments and message edits (chat.update) are all available; the
-// minimal Send path here uses text + threads.
+// Capabilities declares what the Slack adapter supports TODAY. Declaration
+// only — the engine performs no degradation, and callers pick a rendering from
+// these bits, so declaring a capability the Send path cannot fulfil would
+// mislead them. The minimal Send delivers text into a chat or thread, so only
+// CapText | CapThreadReply are declared. Block Kit (CapRichCard), file
+// attachments (CapAttachment) and chat.update edits (CapMessageEdit) are
+// deferred until those paths are actually wired.
 func (c *slackChannel) Capabilities() channel.Capability {
-	return channel.CapText |
-		channel.CapRichCard |
-		channel.CapThreadReply |
-		channel.CapAttachment |
-		channel.CapMessageEdit
+	return channel.CapText | channel.CapThreadReply
 }
 
 // ---- inbound ----
 
-func (c *slackChannel) handleSocketEvent(ctx context.Context, sm *socketmode.Client, evt socketmode.Event) {
+func (c *slackChannel) handleSocketEvent(ctx context.Context, sm *socketmode.Client, evt socketmode.Event) error {
 	switch evt.Type {
 	case socketmode.EventTypeEventsAPI:
 		eventsAPI, ok := evt.Data.(slackevents.EventsAPIEvent)
 		if !ok {
-			return
+			return nil
 		}
 		// ACK first: Slack expires un-ACKed envelopes in ~3s, far below the
-		// handler's DB work. Delivery is detached from the ACK, exactly as the
-		// InboundHandler contract prescribes.
+		// handler's DB work. The ACK is independent of the handler outcome —
+		// a handler error is surfaced to the Supervisor (reconnect/backoff),
+		// not retried through the un-ACK path.
 		if evt.Request != nil {
 			if err := sm.Ack(*evt.Request); err != nil {
 				c.logger.WarnContext(ctx, "slack: ack failed", "error", err)
 			}
 		}
-		c.dispatchEventsAPI(ctx, eventsAPI)
+		return c.dispatchEventsAPI(ctx, eventsAPI)
 	case socketmode.EventTypeConnecting, socketmode.EventTypeConnected, socketmode.EventTypeHello:
 		c.logger.DebugContext(ctx, "slack: socket mode", "event", evt.Type)
 	case socketmode.EventTypeIncomingError, socketmode.EventTypeErrorBadMessage:
@@ -161,9 +171,10 @@ func (c *slackChannel) handleSocketEvent(ctx context.Context, sm *socketmode.Cli
 			_ = sm.Ack(*evt.Request)
 		}
 	}
+	return nil
 }
 
-func (c *slackChannel) dispatchEventsAPI(ctx context.Context, e slackevents.EventsAPIEvent) {
+func (c *slackChannel) dispatchEventsAPI(ctx context.Context, e slackevents.EventsAPIEvent) error {
 	var (
 		msg channel.InboundMessage
 		ok  bool
@@ -174,20 +185,31 @@ func (c *slackChannel) dispatchEventsAPI(ctx context.Context, e slackevents.Even
 	case *slackevents.MessageEvent:
 		msg, ok = c.inboundFromMessage(e, inner)
 	default:
-		return
+		return nil
 	}
 	if !ok {
-		return
+		return nil
 	}
-	if err := c.handler(ctx, msg); err != nil {
-		c.logger.WarnContext(ctx, "slack: inbound handler error", "error", err, "message_id", msg.MessageID)
-	}
+	// A non-nil handler error is an infrastructure failure; propagate it so the
+	// Supervisor reconnects (InboundHandler contract). A legitimate product
+	// drop (dedup hit / unbound sender / group filter) returns nil — not an
+	// error — so it does not tear the connection down.
+	return c.handler(ctx, msg)
 }
 
 // inboundFromMessage normalizes a Slack message event. It returns ok=false for
 // events that must not reach the core: the bot's own messages and other bots'
 // messages (loop guard), and edits/deletes/joins and similar subtyped system
 // messages (only brand-new user messages are ingested).
+//
+// Group addressing policy (v1, deliberate): a group message is addressed to the
+// bot only when it carries an explicit <@bot> mention. Mention-free follow-ups
+// inside a thread the bot is already engaged in are NOT auto-addressed here:
+// "reply to a bot message" is session state, so it belongs in the session-aware
+// shared service / resolver layer (which can detect an existing bound session
+// for the thread and survive reconnects) rather than in per-connection adapter
+// memory. Until that lands, channel/thread continuation requires re-mentioning
+// the bot. P2P (DM) ingests every message, unchanged.
 func (c *slackChannel) inboundFromMessage(e slackevents.EventsAPIEvent, m *slackevents.MessageEvent) (channel.InboundMessage, bool) {
 	if m.BotID != "" || m.SubType == "bot_message" {
 		return channel.InboundMessage{}, false
@@ -310,13 +332,16 @@ func (c *slackChannel) mentionsBot(text string) bool {
 // ---- helpers ----
 
 // slackChatType maps a Slack channel id / channel_type to the normalized
-// ChatType. Direct-message conversations (channel ids starting with "D", or
-// channel_type "im"/"mpim") are p2p; everything else is a group.
+// ChatType. Only a 1:1 direct message ("im", or a "D…" channel id) is p2p;
+// everything else — public/private channels AND multi-party DMs ("mpim", which
+// are multi-person conversations) — is a group. A group routes through the
+// engine's "must address the bot" filter, so plain chatter in a multi-party DM
+// is not mistaken for a prompt to the bot.
 func slackChatType(channelID, channelType string) channel.ChatType {
 	switch channelType {
-	case "im", "mpim":
+	case "im":
 		return channel.ChatTypeP2P
-	case "channel", "group", "private_channel":
+	case "mpim", "channel", "group", "private_channel":
 		return channel.ChatTypeGroup
 	}
 	if strings.HasPrefix(channelID, "D") {

@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -183,6 +184,76 @@ func TestCapabilitiesAndType(t *testing.T) {
 	caps := c.Capabilities()
 	if !caps.Has(channel.CapText) || !caps.Has(channel.CapThreadReply) {
 		t.Errorf("capabilities = %s, want text + thread_reply", caps)
+	}
+	// Capabilities the Send path cannot fulfil yet must NOT be declared.
+	for _, cap := range []channel.Capability{channel.CapRichCard, channel.CapAttachment, channel.CapMessageEdit} {
+		if caps.Has(cap) {
+			t.Errorf("capability %s must not be declared until implemented", cap)
+		}
+	}
+}
+
+func TestSlackChatType(t *testing.T) {
+	cases := []struct {
+		channelID, channelType string
+		want                   channel.ChatType
+	}{
+		{"D123", "im", channel.ChatTypeP2P},
+		{"G123", "mpim", channel.ChatTypeGroup}, // multi-party DM is a group
+		{"C123", "channel", channel.ChatTypeGroup},
+		{"C123", "private_channel", channel.ChatTypeGroup},
+		{"D999", "", channel.ChatTypeP2P}, // fallback by id prefix
+		{"C999", "", channel.ChatTypeGroup},
+	}
+	for _, tc := range cases {
+		if got := slackChatType(tc.channelID, tc.channelType); got != tc.want {
+			t.Errorf("slackChatType(%q,%q) = %q, want %q", tc.channelID, tc.channelType, got, tc.want)
+		}
+	}
+}
+
+func TestMpimRequiresMention(t *testing.T) {
+	c := testChannel("UBOT")
+	// A multi-party DM is a group: plain chatter must NOT be addressed to bot.
+	msg, ok := c.inboundFromMessage(eventsAPI(nil), &slackevents.MessageEvent{
+		User: "UALICE", Text: "team lunch?", Channel: "G123", ChannelType: "mpim", TimeStamp: "1.1",
+	})
+	if !ok {
+		t.Fatal("mpim message should still be ingested (engine group filter decides)")
+	}
+	if msg.Source.ChatType != channel.ChatTypeGroup {
+		t.Errorf("mpim ChatType = %q, want group", msg.Source.ChatType)
+	}
+	if msg.AddressedToBot {
+		t.Error("plain mpim chatter must not be addressed to bot")
+	}
+}
+
+func TestDispatchEventsAPI_PropagatesHandlerError(t *testing.T) {
+	wantErr := errors.New("db down")
+	calls := 0
+	c := newSlackChannel(credentials{TeamID: "T1", BotUserID: "UBOT"}, nil, func(_ context.Context, _ channel.InboundMessage) error {
+		calls++
+		return wantErr
+	}, nil)
+
+	e := eventsAPI(&slackevents.MessageEvent{User: "UALICE", Text: "hi", Channel: "D1", ChannelType: "im", TimeStamp: "1.1"})
+	if err := c.dispatchEventsAPI(context.Background(), e); !errors.Is(err, wantErr) {
+		t.Errorf("dispatchEventsAPI error = %v, want %v (infra error must propagate to Connect→Supervisor)", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("handler called %d times, want 1", calls)
+	}
+
+	// A non-ingestable event (the bot's own message) must not reach the handler
+	// and must not error.
+	calls = 0
+	skip := eventsAPI(&slackevents.MessageEvent{User: "UBOT", Text: "echo", Channel: "D1", ChannelType: "im", TimeStamp: "1.2"})
+	if err := c.dispatchEventsAPI(context.Background(), skip); err != nil {
+		t.Errorf("skipped event should not error: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("handler called %d times for skipped event, want 0", calls)
 	}
 }
 
