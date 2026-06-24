@@ -1020,6 +1020,18 @@ func (d *Daemon) appendProfileRuntimes(ctx context.Context, workspaceID string, 
 				"workspace_id", workspaceID, "profile_id", profile.ID, "display_name", profile.DisplayName)
 			continue
 		}
+		if !agent.IsSupportedType(profile.ProtocolFamily) {
+			reason := "unsupported protocol_family: " + profile.ProtocolFamily
+			d.logger.Warn("skip custom runtime profile: unsupported protocol_family",
+				"workspace_id", workspaceID, "profile_id", profile.ID,
+				"display_name", profile.DisplayName, "protocol_family", profile.ProtocolFamily)
+			*failedProfiles = append(*failedProfiles, map[string]string{
+				"profile_id":   profile.ID,
+				"command_name": profile.CommandName,
+				"reason":       reason,
+			})
+			continue
+		}
 		// Resolve the executable to launch for this profile. A per-machine
 		// path override (MUL-3284, `multica runtime profile set-path`) wins
 		// over the PATH lookup when it is set AND points at a real
