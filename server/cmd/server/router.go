@@ -26,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -395,6 +396,32 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	} else {
 		slog.Info("lark integration disabled (MULTICA_LARK_SECRET_KEY not set)")
 	}
+
+	// Slack integration (MUL-3516). Gated by MULTICA_SLACK_SECRET_KEY — the key
+	// that decrypts the bot/app tokens stored on the channel_installation row.
+	// When unset the whole block is skipped, so existing deployments are
+	// unaffected; an operator opts in by setting the key and creating a
+	// channel_type='slack' installation (config: app_id=team_id, bot_user_id,
+	// bot_token_encrypted, app_token_encrypted). Registering the Factory
+	// (Socket Mode connect/send) + ResolverSet (inbound pipeline) + the outbound
+	// subscriber (agent reply -> Slack) is all it takes — no engine or core edit,
+	// and Feishu is untouched. The Slack ResolverSet/Outbound share the same
+	// engine.ChatSession, channel_* tables, IssueService and TaskService as
+	// Feishu, so /issue, dedup, and run-triggering behave identically.
+	if slackKey, err := secretbox.LoadKey("MULTICA_SLACK_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(slackKey)
+		if err != nil {
+			slog.Error("slack: secretbox.New failed; slack integration disabled", "error", err)
+		} else {
+			slack.RegisterSlack(channelRegistry, slack.SlackChannelDeps{Decrypt: box.Open, Logger: slog.Default()})
+			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool))
+			slack.NewOutbound(queries, box.Open, slog.Default()).Register(bus)
+			slog.Info("slack integration enabled")
+		}
+	} else {
+		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
+	}
+
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
 	}
