@@ -40,13 +40,13 @@ func mustUUID(t *testing.T, s string) pgtype.UUID {
 }
 
 type fakeInstallQueries struct {
-	upsertParams db.UpsertChannelInstallationParams
+	upsertParams db.UpsertChannelInstallationByAppIDParams
 	bindParams   db.CreateChannelUserBindingParams
 	bindCalled   bool
 	rowID        pgtype.UUID
 }
 
-func (f *fakeInstallQueries) UpsertChannelInstallation(_ context.Context, arg db.UpsertChannelInstallationParams) (db.ChannelInstallation, error) {
+func (f *fakeInstallQueries) UpsertChannelInstallationByAppID(_ context.Context, arg db.UpsertChannelInstallationByAppIDParams) (db.ChannelInstallation, error) {
 	f.upsertParams = arg
 	return db.ChannelInstallation{
 		ID:              f.rowID,

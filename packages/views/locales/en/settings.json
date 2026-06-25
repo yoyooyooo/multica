@@ -302,7 +302,7 @@
   },
   "slack": {
     "section_title": "Slack",
-    "page_description": "Connect each Multica Agent to a Slack bot. A workspace admin installs it with one click via OAuth; members can then DM the bot, @mention it in channels, and type /issue to spin up a new Multica issue.",
+    "page_description": "Connect each Multica Agent to a Slack bot. A workspace admin installs it with one click via OAuth; members can then DM the bot or @mention it in a channel, and start a message with /issue (e.g. \"@bot /issue Fix the login bug\") to spin up a new Multica issue.",
     "not_enabled_title": "Slack integration not enabled",
     "not_enabled_description_prefix": "Set",
     "not_enabled_description_suffix": "on the server to enable Slack bot installations.",

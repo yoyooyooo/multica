@@ -302,7 +302,7 @@
   },
   "slack": {
     "section_title": "Slack",
-    "page_description": "把每个 Multica Agent 连接到一个 Slack 机器人。工作区管理员通过 OAuth 一键安装；成员之后即可私聊机器人、在频道中 @ 它，并输入 /issue 创建新的 Multica issue。",
+    "page_description": "把每个 Multica Agent 连接到一个 Slack 机器人。工作区管理员通过 OAuth 一键安装；成员之后即可私聊机器人，或在频道中 @ 它，并以 /issue 开头发消息（例如「@机器人 /issue 修复登录问题」）来创建新的 Multica issue。",
     "not_enabled_title": "Slack 集成未启用",
     "not_enabled_description_prefix": "在服务器上设置",
     "not_enabled_description_suffix": "以启用 Slack 机器人安装。",

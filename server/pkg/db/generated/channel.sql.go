@@ -1085,3 +1085,66 @@ func (q *Queries) UpsertChannelInstallation(ctx context.Context, arg UpsertChann
 	)
 	return i, err
 }
+
+const upsertChannelInstallationByAppID = `-- name: UpsertChannelInstallationByAppID :one
+INSERT INTO channel_installation (
+    workspace_id, agent_id, channel_type, config, installer_user_id
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT (channel_type, (config ->> 'app_id')) DO UPDATE SET
+    workspace_id      = EXCLUDED.workspace_id,
+    agent_id          = EXCLUDED.agent_id,
+    config            = EXCLUDED.config,
+    installer_user_id = EXCLUDED.installer_user_id,
+    status            = 'active',
+    installed_at      = now(),
+    updated_at        = now()
+RETURNING id, workspace_id, agent_id, channel_type, config, status, ws_lease_token, ws_lease_expires_at, installer_user_id, installed_at, created_at, updated_at
+`
+
+type UpsertChannelInstallationByAppIDParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	ChannelType     string      `json:"channel_type"`
+	Config          []byte      `json:"config"`
+	InstallerUserID pgtype.UUID `json:"installer_user_id"`
+}
+
+// Team-keyed install / re-install for channels whose natural identity is the
+// platform workspace, not the (agent) pairing. Slack: one Slack workspace
+// (team_id, stored as config->>'app_id') maps to exactly one installation, so
+// re-connecting it — even to represent a DIFFERENT agent — UPDATES the existing
+// row (moving agent_id) instead of colliding with the (channel_type, app_id)
+// unique index. Contrast UpsertChannelInstallation, whose conflict key is
+// (workspace_id, agent_id, channel_type): right for Feishu (one app per agent),
+// wrong for Slack (a second agent connecting the same team would hit the
+// (channel_type, app_id) index). NOTE: a re-connect that would move the team to
+// an agent that already holds a different Slack install still trips the
+// (workspace_id, agent_id, channel_type) unique constraint — that genuine
+// conflict surfaces as an error the OAuth callback turns into a redirect.
+func (q *Queries) UpsertChannelInstallationByAppID(ctx context.Context, arg UpsertChannelInstallationByAppIDParams) (ChannelInstallation, error) {
+	row := q.db.QueryRow(ctx, upsertChannelInstallationByAppID,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.ChannelType,
+		arg.Config,
+		arg.InstallerUserID,
+	)
+	var i ChannelInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.ChannelType,
+		&i.Config,
+		&i.Status,
+		&i.WsLeaseToken,
+		&i.WsLeaseExpiresAt,
+		&i.InstallerUserID,
+		&i.InstalledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

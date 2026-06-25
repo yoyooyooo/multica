@@ -76,7 +76,7 @@ func (c OAuthConfig) supported() bool {
 // installQueries is the slice of generated queries InstallService needs.
 // *db.Queries satisfies it.
 type installQueries interface {
-	UpsertChannelInstallation(ctx context.Context, arg db.UpsertChannelInstallationParams) (db.ChannelInstallation, error)
+	UpsertChannelInstallationByAppID(ctx context.Context, arg db.UpsertChannelInstallationByAppIDParams) (db.ChannelInstallation, error)
 	CreateChannelUserBinding(ctx context.Context, arg db.CreateChannelUserBindingParams) (db.ChannelUserBinding, error)
 	ListChannelInstallationsByWorkspace(ctx context.Context, arg db.ListChannelInstallationsByWorkspaceParams) ([]db.ChannelInstallation, error)
 	GetChannelInstallationInWorkspace(ctx context.Context, arg db.GetChannelInstallationInWorkspaceParams) (db.ChannelInstallation, error)
@@ -217,7 +217,11 @@ func (s *InstallService) Complete(ctx context.Context, code, rawState string) (C
 	if err != nil {
 		return CompletedInstall{}, fmt.Errorf("encode slack installation config: %w", err)
 	}
-	inst, err := s.q.UpsertChannelInstallation(ctx, db.UpsertChannelInstallationParams{
+	// Team-keyed upsert: a Slack workspace (team_id) is one installation. Re-
+	// connecting the same team — including to represent a different agent —
+	// updates the existing row rather than colliding with the (channel_type,
+	// app_id) unique index (Niko review must-fix #3).
+	inst, err := s.q.UpsertChannelInstallationByAppID(ctx, db.UpsertChannelInstallationByAppIDParams{
 		WorkspaceID:     wsID,
 		AgentID:         agentID,
 		ChannelType:     string(TypeSlack),

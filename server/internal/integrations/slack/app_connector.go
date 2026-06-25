@@ -162,8 +162,24 @@ func (c *AppConnector) connectOnce(ctx context.Context) error {
 	api := slack.New("", slack.OptionAppLevelToken(c.appToken))
 	sm := socketmode.New(api)
 
-	runErr := make(chan error, 1)
-	go func() { runErr <- sm.RunContext(ctx) }()
+	// Each connection runs under its OWN cancellable context, not the parent
+	// ctx directly. Every exit path (handler error, event-stream close, ctx
+	// cancellation) cancels runCtx and waits for the run goroutine to observe it
+	// and exit — so a transient handler error tears the live connection down
+	// before Run reconnects. Without this, the old Socket Mode goroutine would
+	// keep running on the long-lived ctx, leaking the connection/goroutine and
+	// consuming events into an unread channel while a second connection opens.
+	runCtx, runCancel := context.WithCancel(ctx)
+	runErr := make(chan error, 1) // buffered: the goroutine sends once and exits even if nobody reads
+	done := make(chan struct{})
+	go func() {
+		runErr <- sm.RunContext(runCtx)
+		close(done)
+	}()
+	defer func() {
+		runCancel()
+		<-done
+	}()
 
 	for {
 		select {
@@ -216,8 +232,16 @@ func (c *AppConnector) handleSocketEvent(ctx context.Context, sm *socketmode.Cli
 	case socketmode.EventTypeIncomingError, socketmode.EventTypeErrorBadMessage:
 		c.logger.WarnContext(ctx, "slack: socket mode error", "event", evt.Type)
 	default:
-		// Interactive / slash-command / other events are out of scope; ACK so
-		// Slack does not retry, then ignore.
+		// Interactive / slash-command / other envelopes are intentionally
+		// ignored (ACK so Slack does not retry). In particular, /issue is NOT a
+		// registered Slack slash command — the hosted app requests no `commands`
+		// scope, so Slack never routes a slash-command envelope here. Issue
+		// creation runs through the normal message path instead: `@bot /issue
+		// <title>` in a channel (the mention is stripped, leaving "/issue …") or
+		// `/issue <title>` in a DM with the bot, which the engine's
+		// ParseIssueCommand picks up. Adding native slash-command support
+		// (scope + registration + response_url handling) is a possible later
+		// enhancement, not required for the message-driven /issue flow.
 		if evt.Request != nil {
 			_ = sm.Ack(*evt.Request)
 		}
