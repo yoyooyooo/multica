@@ -186,7 +186,11 @@ type Handler struct {
 	// bot token (MUL-3666). Nil unless MULTICA_SLACK_SECRET_KEY is set;
 	// InstallSupported() additionally requires the OAuth client credentials.
 	SlackInstall *slack.InstallService
-	cfg          Config
+	// SlackBindingTokens mints/redeems the user-binding tokens behind the
+	// "link your Slack account" prompt (MUL-3666). Nil unless Slack is
+	// configured (MULTICA_SLACK_SECRET_KEY set).
+	SlackBindingTokens *slack.BindingTokenService
+	cfg                Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

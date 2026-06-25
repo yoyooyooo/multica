@@ -25,11 +25,12 @@ import (
 const originSlackChat = "slack_chat"
 
 // NewSlackResolverSet assembles the Slack ResolverSet over the generated
-// queries + a tx starter (for the shared session service). Replier/Typing are
-// left nil for now: the outbound binding-prompt / notice path is a later step
-// (the inbound pipeline — route, identity, dedup, session, /issue, run trigger
-// — is fully functional without them).
-func NewSlackResolverSet(q *db.Queries, tx engine.TxStarter) engine.ResolverSet {
+// queries + a tx starter (for the shared session service). The replier delivers
+// the outbound binding-prompt / status / issue-created notices; pass a nil
+// engine.OutboundReplier to disable them (the inbound pipeline — route,
+// identity, dedup, session, /issue, run trigger — is fully functional without
+// it). Typing is left nil. (MUL-3666 wired the replier; stage 3 had it nil.)
+func NewSlackResolverSet(q *db.Queries, tx engine.TxStarter, replier engine.OutboundReplier) engine.ResolverSet {
 	return engine.ResolverSet{
 		Installation: &installationResolver{q: q},
 		Identity:     &identityResolver{q: q},
@@ -40,6 +41,7 @@ func NewSlackResolverSet(q *db.Queries, tx engine.TxStarter) engine.ResolverSet 
 			Fallback: "Slack chat",
 		})},
 		Audit:      &auditor{q: q},
+		Replier:    replier,
 		OriginType: originSlackChat,
 	}
 }

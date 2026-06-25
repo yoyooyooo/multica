@@ -113,6 +113,7 @@ import type {
   RedeemLarkBindingTokenResponse,
   ListSlackInstallationsResponse,
   BeginSlackInstallResponse,
+  RedeemSlackBindingTokenResponse,
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
@@ -2264,6 +2265,13 @@ export class ApiClient {
   async deleteSlackInstallation(workspaceId: string, installationId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/slack/installations/${installationId}`, {
       method: "DELETE",
+    });
+  }
+
+  async redeemSlackBindingToken(token: string): Promise<RedeemSlackBindingTokenResponse> {
+    return this.fetch(`/api/slack/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
     });
   }
 }

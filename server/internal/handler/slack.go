@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -219,6 +220,71 @@ func (h *Handler) RevokeSlackInstallation(w http.ResponseWriter, r *http.Request
 		"id": uuidToString(instUUID),
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// RedeemSlackBindingTokenRequest carries the raw token the user clicked through
+// from the bot's "link your account" prompt.
+type RedeemSlackBindingTokenRequest struct {
+	Token string `json:"token"`
+}
+
+// RedeemSlackBindingTokenResponse echoes the bound workspace/installation/user
+// so the frontend can confirm without a second fetch.
+type RedeemSlackBindingTokenResponse struct {
+	WorkspaceID    string `json:"workspace_id"`
+	InstallationID string `json:"installation_id"`
+	SlackUserID    string `json:"slack_user_id"`
+}
+
+// RedeemSlackBindingToken (POST /api/slack/binding/redeem) binds the Slack user
+// id carried by the token to the logged-in Multica user. The redeemer's identity
+// comes from the session, not the token, so a stolen token cannot bind a Slack
+// id to an attacker's account. Failure modes map to distinct status codes:
+//   - 410 Gone:      token unknown / consumed / expired
+//   - 409 Conflict:  this Slack id is already bound to a different user
+//   - 403 Forbidden: redeemer is not a workspace member
+func (h *Handler) RedeemSlackBindingToken(w http.ResponseWriter, r *http.Request) {
+	if h.SlackBindingTokens == nil {
+		writeError(w, http.StatusServiceUnavailable, "slack integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var req RedeemSlackBindingTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+
+	redeemed, err := h.SlackBindingTokens.RedeemAndBind(r.Context(), req.Token, userUUID)
+	if err != nil {
+		switch {
+		case errors.Is(err, slack.ErrBindingTokenInvalid):
+			writeError(w, http.StatusGone, "binding token invalid or expired")
+		case errors.Is(err, slack.ErrBindingAlreadyAssigned):
+			writeError(w, http.StatusConflict, "this Slack account is already bound to a different Multica user")
+		case errors.Is(err, slack.ErrBindingNotWorkspaceMember):
+			writeError(w, http.StatusForbidden, "binding refused (are you a workspace member?)")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to redeem token")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, RedeemSlackBindingTokenResponse{
+		WorkspaceID:    uuidToString(redeemed.WorkspaceID),
+		InstallationID: uuidToString(redeemed.InstallationID),
+		SlackUserID:    redeemed.SlackUserID,
+	})
 }
 
 // slackSettingsRedirect builds the Settings → Integrations URL the OAuth

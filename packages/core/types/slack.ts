@@ -39,3 +39,11 @@ export interface ListSlackInstallationsResponse {
 export interface BeginSlackInstallResponse {
   url: string;
 }
+
+/** Post-redemption echo: the Slack user id the token carried is now bound to
+ * the logged-in Multica user in this workspace/installation. */
+export interface RedeemSlackBindingTokenResponse {
+  workspace_id: string;
+  installation_id: string;
+  slack_user_id: string;
+}

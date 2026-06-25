@@ -93,11 +93,20 @@ func TestSlackThreadIsolation(t *testing.T) {
 }
 
 func TestNewSlackResolverSet(t *testing.T) {
-	set := NewSlackResolverSet(nil, nil)
+	set := NewSlackResolverSet(nil, nil, nil)
 	if set.Installation == nil || set.Identity == nil || set.Dedup == nil || set.Session == nil || set.Audit == nil {
 		t.Error("resolver set must populate all required resolvers")
 	}
 	if set.OriginType != "slack_chat" {
 		t.Errorf("OriginType = %q, want slack_chat", set.OriginType)
+	}
+	if set.Replier != nil {
+		t.Error("a nil replier arg must leave Replier nil (not a typed-nil interface)")
+	}
+
+	// A real replier threads through.
+	set = NewSlackResolverSet(nil, nil, NewOutboundReplier(OutboundReplierConfig{}))
+	if set.Replier == nil {
+		t.Error("a non-nil replier must populate ResolverSet.Replier")
 	}
 }

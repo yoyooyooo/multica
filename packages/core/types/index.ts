@@ -123,6 +123,7 @@ export type {
   SlackInstallation,
   ListSlackInstallationsResponse,
   BeginSlackInstallResponse,
+  RedeemSlackBindingTokenResponse,
 } from "./slack";
 export type {
   Autopilot,

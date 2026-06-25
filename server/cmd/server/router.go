@@ -423,7 +423,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		if err != nil {
 			slog.Error("slack: secretbox.New failed; slack integration disabled", "error", err)
 		} else {
-			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool))
+			// Outbound replier (MUL-3666): delivers NeedsBinding prompt /
+			// AgentOffline / AgentArchived / issue-created notices. The binding
+			// token service mints the single-use token embedded in the prompt's
+			// redeem link; the redeem endpoint (registered below, public) binds
+			// the Slack user to their Multica account.
+			slackBindingSvc := slack.NewBindingTokenService(queries, pool)
+			h.SlackBindingTokens = slackBindingSvc
+			slackReplier := slack.NewOutboundReplier(slack.OutboundReplierConfig{
+				Binding:   slackBindingSvc,
+				Decrypt:   box.Open,
+				PublicURL: signupConfig.PublicURL,
+				Logger:    slog.Default(),
+			})
+			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool, slackReplier))
 			slack.NewOutbound(queries, box.Open, slog.Default()).Register(bus)
 			slog.Info("slack integration enabled")
 
@@ -785,6 +798,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// the token only proves "this open_id requested binding," and
 		// is combined with the logged-in user to create the mapping.
 		r.Post("/api/lark/binding/redeem", h.RedeemLarkBindingToken)
+		// Slack binding-token redemption. Same rationale as Lark: NOT
+		// workspace-scoped because the redeemer hits this before they have any
+		// workspace context — the redemption itself mints their binding row. The
+		// logged-in user (from the session) is bound to the Slack id the token
+		// carries.
+		r.Post("/api/slack/binding/redeem", h.RedeemSlackBindingToken)
 
 		// User-scoped invitation routes (no workspace context required)
 		r.Get("/api/invitations", h.ListMyInvitations)
