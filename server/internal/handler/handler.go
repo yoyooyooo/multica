@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/featureflagdispatch"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -171,7 +172,16 @@ type Handler struct {
 	// delivering events, to flush debounced run triggers and join in-flight
 	// reply goroutines. Built unconditionally (even without Lark).
 	ChannelRouter *engine.Router
-	cfg           Config
+	// SlackConnector is the single deployment-level Socket Mode connection that
+	// receives inbound Slack events for every installed workspace and routes
+	// them by team_id (MUL-3666, B2). Unlike the per-installation channels the
+	// ChannelSupervisor drives, this is ONE connection for the whole app, so it
+	// is started directly by main.go (go SlackConnector.Run(ctx)) rather than
+	// through the Supervisor. Nil unless MULTICA_SLACK_APP_TOKEN is set. It owns
+	// no per-installation lease, so shutdown just cancels its context — no join
+	// needed for correctness.
+	SlackConnector *slack.AppConnector
+	cfg            Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

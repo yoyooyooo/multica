@@ -197,12 +197,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Slack-only deployment has no Lark key). Platform adapters register a
 	// Factory + ResolverSet into it below; the Supervisor enumerates active
 	// installations across ALL channel types and routes each to its
-	// registered platform's Factory. With no platform registered the store
-	// still lists any active installation rows, but Registry.Build returns
-	// ErrUnknownType for them, so the supervisor logs and backs off without
-	// opening a connection (the normal state is simply that no rows exist
-	// for an unregistered platform). The Router is the single shared inbound
-	// handler injected into every Channel.
+	// registered platform's Factory. Installations whose channel_type has no
+	// registered Factory are skipped by the Supervisor — either no platform is
+	// configured, or (Slack/B2) the platform drives ONE deployment-level
+	// connection of its own outside the per-installation supervisor. The Router
+	// is the single shared inbound handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
 	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default()})
 	// Debounce the per-session run trigger so a burst of messages collapses
@@ -397,26 +396,48 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("lark integration disabled (MULTICA_LARK_SECRET_KEY not set)")
 	}
 
-	// Slack integration (MUL-3516). Gated by MULTICA_SLACK_SECRET_KEY — the key
-	// that decrypts the bot/app tokens stored on the channel_installation row.
-	// When unset the whole block is skipped, so existing deployments are
-	// unaffected; an operator opts in by setting the key and creating a
-	// channel_type='slack' installation (config: app_id=team_id, bot_user_id,
-	// bot_token_encrypted, app_token_encrypted). Registering the Factory
-	// (Socket Mode connect/send) + ResolverSet (inbound pipeline) + the outbound
-	// subscriber (agent reply -> Slack) is all it takes — no engine or core edit,
-	// and Feishu is untouched. The Slack ResolverSet/Outbound share the same
-	// engine.ChatSession, channel_* tables, IssueService and TaskService as
-	// Feishu, so /issue, dedup, and run-triggering behave identically.
+	// Slack integration. Multi-tenant B2 model (MUL-3666): Multica hosts ONE
+	// Slack app, workspaces self-install via OAuth, and inbound runs on a single
+	// deployment-level Socket Mode connection routed by team_id — replacing the
+	// stage-3 per-installation connection model (MUL-3516).
+	//
+	// Two deployment-level env vars gate the two halves:
+	//   - MULTICA_SLACK_SECRET_KEY decrypts the per-installation bot token
+	//     (xoxb-) stored on the channel_installation row. It gates the inbound
+	//     ResolverSet + the outbound reply subscriber, so without it there is no
+	//     Slack at all.
+	//   - MULTICA_SLACK_APP_TOKEN is the app-level token (xapp-) authorizing the
+	//     single Socket Mode connection. It cannot be obtained via OAuth, so it
+	//     is a one-time operator config. Without it, inbound is disabled (the
+	//     ResolverSet + outbound are still wired so an existing install's replies
+	//     keep flowing, but no new events are received).
+	//
+	// The ResolverSet/Outbound share the same engine.ChatSession, channel_*
+	// tables, IssueService and TaskService as Feishu, so /issue, dedup, and
+	// run-triggering behave identically. Feishu is untouched. The Slack Factory
+	// is intentionally NOT registered into channelRegistry: the Supervisor skips
+	// channel types with no Factory (each Slack install carries only outbound
+	// creds + routing, not its own connection).
 	if slackKey, err := secretbox.LoadKey("MULTICA_SLACK_SECRET_KEY"); err == nil {
 		box, err := secretbox.New(slackKey)
 		if err != nil {
 			slog.Error("slack: secretbox.New failed; slack integration disabled", "error", err)
 		} else {
-			slack.RegisterSlack(channelRegistry, slack.SlackChannelDeps{Decrypt: box.Open, Logger: slog.Default()})
 			channelRouter.Register(slack.TypeSlack, slack.NewSlackResolverSet(queries, pool))
 			slack.NewOutbound(queries, box.Open, slog.Default()).Register(bus)
 			slog.Info("slack integration enabled")
+
+			if appToken := strings.TrimSpace(os.Getenv("MULTICA_SLACK_APP_TOKEN")); appToken != "" {
+				h.SlackConnector = slack.NewAppConnector(slack.AppConnectorConfig{
+					AppToken: appToken,
+					Handler:  channelRouter.Handle,
+					BotUsers: slack.NewInstallationBotUserLookup(queries),
+					Logger:   slog.Default(),
+				})
+				slog.Info("slack inbound enabled (app-level socket mode connection)")
+			} else {
+				slog.Info("slack inbound disabled (MULTICA_SLACK_APP_TOKEN not set); outbound + routing still wired")
+			}
 		}
 	} else {
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")

@@ -1,13 +1,15 @@
-// Package slack is the Slack implementation of channel.Channel — the second
-// adapter driven by the channel-agnostic engine (MUL-3516), proving the
-// MUL-3506 thesis that adding an IM is "implement Channel + register" with no
-// engine, core, or channel_* schema change. It mirrors the Feishu reference
-// adapter (server/internal/integrations/lark/feishu_channel.go): Connect runs
-// the platform receive loop (here Slack Socket Mode, an outbound WebSocket
-// long-conn that needs no public inbound URL) and hands every decoded event to
-// the engine's shared inbound handler as a normalized channel.InboundMessage;
-// Send posts a text reply via chat.postMessage. The design references the
-// proven Slack adapter in Nous Research's Hermes Agent.
+// Package slack is the Slack integration for the channel-agnostic engine. It
+// began (MUL-3516) as a per-installation channel.Channel adapter and was
+// reshaped (MUL-3666) into the multi-tenant B2 model: Multica hosts ONE Slack
+// app, workspace admins self-install via OAuth, and a single deployment-level
+// Socket Mode connection (AppConnector) receives events for every installed
+// workspace and routes each inbound event to its installation by team_id. Each
+// channel_installation carries only that workspace's bot token (xoxb-, for
+// outbound) plus routing metadata — not its own connection. The inbound
+// translation (Events API payload -> channel.InboundMessage) lives in
+// inbound.go; the outbound reply path (chat.postMessage with Markdown->mrkdwn
+// conversion + threading) lives in channel.go. The design references the proven
+// Slack adapter in Nous Research's Hermes Agent.
 package slack
 
 import (
@@ -28,19 +30,20 @@ import (
 // events with NO new query and NO schema change. team_id is also kept as its
 // own field for readability; the two carry the same value.
 //
-// Tokens are stored as base64-encoded secretbox ciphertext (never plaintext),
-// mirroring Feishu's app_secret_encrypted. The bot token (xoxb-…) authorizes
-// Web API calls (chat.postMessage); the app-level token (xapp-…) authorizes the
-// Socket Mode connection.
+// The bot token (xoxb-…, obtained per workspace via OAuth) authorizes Web API
+// calls (chat.postMessage) and is stored as base64-encoded secretbox ciphertext
+// (never plaintext), mirroring Feishu's app_secret_encrypted. There is NO
+// per-installation app-level token: under the B2 model the Socket Mode
+// connection uses ONE deployment-level app token (xapp-, from env), since
+// app-level tokens cannot be obtained through OAuth.
 type installConfig struct {
 	AppID             string `json:"app_id"`
 	TeamID            string `json:"team_id,omitempty"`
 	BotUserID         string `json:"bot_user_id,omitempty"`
 	BotTokenEncrypted string `json:"bot_token_encrypted"`
-	AppTokenEncrypted string `json:"app_token_encrypted"`
 }
 
-// credentials is the decoded, decrypted form the adapter runs on. The
+// credentials is the decoded, decrypted form the outbound sender runs on. The
 // installation IDENTITY (workspace / agent / installer) is deliberately absent:
 // it is resolved per message by the Router's InstallationResolver, exactly as
 // the Feishu adapter does.
@@ -48,7 +51,6 @@ type credentials struct {
 	TeamID    string
 	BotUserID string
 	BotToken  string
-	AppToken  string
 }
 
 // Decrypter turns stored ciphertext into plaintext. The wiring injects a
@@ -70,10 +72,6 @@ func decodeCredentials(raw json.RawMessage, decrypt Decrypter) (credentials, err
 	if err != nil {
 		return credentials{}, fmt.Errorf("decrypt bot token: %w", err)
 	}
-	appToken, err := decryptToken(cfg.AppTokenEncrypted, decrypt)
-	if err != nil {
-		return credentials{}, fmt.Errorf("decrypt app token: %w", err)
-	}
 	teamID := cfg.TeamID
 	if teamID == "" {
 		teamID = cfg.AppID
@@ -82,8 +80,21 @@ func decodeCredentials(raw json.RawMessage, decrypt Decrypter) (credentials, err
 		TeamID:    teamID,
 		BotUserID: cfg.BotUserID,
 		BotToken:  botToken,
-		AppToken:  appToken,
 	}, nil
+}
+
+// botUserIDFromConfig reads just the bot_user_id from a stored installation
+// config blob, without touching the encrypted tokens. The AppConnector uses it
+// to resolve the @-mention identity for an inbound event's team.
+func botUserIDFromConfig(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var cfg installConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", fmt.Errorf("decode slack installation config: %w", err)
+	}
+	return cfg.BotUserID, nil
 }
 
 // decryptToken base64-decodes the stored ciphertext (tolerating the MIME
