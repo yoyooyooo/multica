@@ -362,6 +362,28 @@ func (q *Queries) DeleteChannelChatSessionBindingBySession(ctx context.Context, 
 	return err
 }
 
+const deleteChannelChatSessionBindingsByInstallation = `-- name: DeleteChannelChatSessionBindingsByInstallation :exec
+DELETE FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_type = $2
+`
+
+type DeleteChannelChatSessionBindingsByInstallationParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelType    string      `json:"channel_type"`
+}
+
+// Retire every chat-session binding for an installation. Used when an
+// installation is re-pointed to a different agent (Slack re-connect): each
+// existing chat_session is permanently tied to the agent it was created under,
+// so reusing it would keep routing the conversation to the OLD agent. Dropping
+// the bindings forces the next inbound message to create a fresh session under
+// the new agent. The chat_session rows are preserved for history; only the
+// channel binding is removed.
+func (q *Queries) DeleteChannelChatSessionBindingsByInstallation(ctx context.Context, arg DeleteChannelChatSessionBindingsByInstallationParams) error {
+	_, err := q.db.Exec(ctx, deleteChannelChatSessionBindingsByInstallation, arg.InstallationID, arg.ChannelType)
+	return err
+}
+
 const deleteChannelUserBindingsByWorkspaceMember = `-- name: DeleteChannelUserBindingsByWorkspaceMember :exec
 DELETE FROM channel_user_binding
 WHERE workspace_id = $1 AND multica_user_id = $2

@@ -455,7 +455,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			if rawScopes := strings.TrimSpace(os.Getenv("MULTICA_SLACK_SCOPES")); rawScopes != "" {
 				slackScopes = splitAndTrim(rawScopes)
 			}
-			installSvc, ierr := slack.NewInstallService(queries, box, slack.OAuthConfig{
+			installSvc, ierr := slack.NewInstallService(queries, pool, box, slack.OAuthConfig{
 				ClientID:     strings.TrimSpace(os.Getenv("MULTICA_SLACK_CLIENT_ID")),
 				ClientSecret: strings.TrimSpace(os.Getenv("MULTICA_SLACK_CLIENT_SECRET")),
 				RedirectURL:  redirectURL,

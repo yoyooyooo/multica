@@ -169,8 +169,11 @@ func (h *Handler) SlackOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	res, err := h.SlackInstall.Complete(r.Context(), code, state)
 	if err != nil {
 		reason := "internal_error"
-		if errors.Is(err, slack.ErrInvalidState) {
+		switch {
+		case errors.Is(err, slack.ErrInvalidState):
 			reason = "invalid_state"
+		case errors.Is(err, slack.ErrTeamOwnedByAnotherWorkspace):
+			reason = "team_in_other_workspace"
 		}
 		slog.Error("slack: oauth callback failed", "error", err, "reason", reason)
 		http.Redirect(w, r, settingsURL+"&slack_error="+reason, http.StatusFound)

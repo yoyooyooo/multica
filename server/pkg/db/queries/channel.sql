@@ -274,6 +274,17 @@ WHERE chat_session_id = $1;
 DELETE FROM channel_chat_session_binding
 WHERE chat_session_id = $1;
 
+-- name: DeleteChannelChatSessionBindingsByInstallation :exec
+-- Retire every chat-session binding for an installation. Used when an
+-- installation is re-pointed to a different agent (Slack re-connect): each
+-- existing chat_session is permanently tied to the agent it was created under,
+-- so reusing it would keep routing the conversation to the OLD agent. Dropping
+-- the bindings forces the next inbound message to create a fresh session under
+-- the new agent. The chat_session rows are preserved for history; only the
+-- channel binding is removed.
+DELETE FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_type = $2;
+
 -- =====================
 -- channel_inbound_message_dedup
 -- =====================

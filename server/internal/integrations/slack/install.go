@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/slack-go/slack"
 
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,6 +60,11 @@ var (
 	ErrInvalidState = errors.New("slack: invalid or expired oauth state")
 	// ErrInstallationNotFound surfaces "no row matches in this workspace".
 	ErrInstallationNotFound = errors.New("slack installation not found")
+	// ErrTeamOwnedByAnotherWorkspace is returned by Complete when the Slack
+	// workspace (team) is already connected to a DIFFERENT Multica workspace.
+	// Re-pointing it would inherit the other workspace's user / chat-session
+	// bindings, so we refuse it — the owning workspace must disconnect first.
+	ErrTeamOwnedByAnotherWorkspace = errors.New("slack: this Slack workspace is already connected to a different Multica workspace")
 )
 
 // OAuthConfig holds the deployment-level credentials for the hosted Slack app.
@@ -73,14 +79,27 @@ func (c OAuthConfig) supported() bool {
 	return c.ClientID != "" && c.ClientSecret != "" && c.RedirectURL != ""
 }
 
-// installQueries is the slice of generated queries InstallService needs.
-// *db.Queries satisfies it.
+// installQueries is the slice of generated queries InstallService needs. WithTx
+// returns the same interface bound to a transaction so Complete can run its
+// lookup → upsert → binding cleanup → installer-bind atomically.
 type installQueries interface {
+	WithTx(tx pgx.Tx) installQueries
+	GetChannelInstallationByAppID(ctx context.Context, arg db.GetChannelInstallationByAppIDParams) (db.ChannelInstallation, error)
 	UpsertChannelInstallationByAppID(ctx context.Context, arg db.UpsertChannelInstallationByAppIDParams) (db.ChannelInstallation, error)
 	CreateChannelUserBinding(ctx context.Context, arg db.CreateChannelUserBindingParams) (db.ChannelUserBinding, error)
+	DeleteChannelChatSessionBindingsByInstallation(ctx context.Context, arg db.DeleteChannelChatSessionBindingsByInstallationParams) error
 	ListChannelInstallationsByWorkspace(ctx context.Context, arg db.ListChannelInstallationsByWorkspaceParams) ([]db.ChannelInstallation, error)
 	GetChannelInstallationInWorkspace(ctx context.Context, arg db.GetChannelInstallationInWorkspaceParams) (db.ChannelInstallation, error)
 	SetChannelInstallationStatus(ctx context.Context, arg db.SetChannelInstallationStatusParams) error
+}
+
+// dbInstallQueries adapts *db.Queries to installQueries — the generated WithTx
+// returns *db.Queries, so we wrap it to return the interface (the same adapter
+// pattern engine.ChatSession uses).
+type dbInstallQueries struct{ *db.Queries }
+
+func (q dbInstallQueries) WithTx(tx pgx.Tx) installQueries {
+	return dbInstallQueries{q.Queries.WithTx(tx)}
 }
 
 // InstallService owns the OAuth install lifecycle and the at-rest encryption of
@@ -90,6 +109,7 @@ type InstallService struct {
 	oauth      OAuthConfig
 	box        *secretbox.Box
 	q          installQueries
+	tx         engine.TxStarter
 	httpClient *http.Client
 	logger     *slog.Logger
 	now        func() time.Time
@@ -99,16 +119,28 @@ type InstallService struct {
 	apiURL string
 }
 
-// NewInstallService binds the service to queries, an encryption box, and the
-// hosted app's OAuth credentials. Listing / revoking work whenever the box is
-// present; Begin / Complete additionally require the OAuth credentials
-// (InstallSupported reports whether they are set).
-func NewInstallService(q installQueries, box *secretbox.Box, oauth OAuthConfig, logger *slog.Logger) (*InstallService, error) {
+// NewInstallService binds the service to queries, a tx starter (*pgxpool.Pool),
+// an encryption box, and the hosted app's OAuth credentials. Listing / revoking
+// work whenever the box is present; Begin / Complete additionally require the
+// OAuth credentials (InstallSupported reports whether they are set).
+func NewInstallService(q *db.Queries, tx engine.TxStarter, box *secretbox.Box, oauth OAuthConfig, logger *slog.Logger) (*InstallService, error) {
+	if q == nil {
+		return nil, errors.New("slack: InstallService requires queries")
+	}
+	return newInstallService(dbInstallQueries{q}, tx, box, oauth, logger)
+}
+
+// newInstallService is the testable core: it takes the installQueries interface
+// so tests can inject a fake (with a fake TxStarter) without a real DB.
+func newInstallService(q installQueries, tx engine.TxStarter, box *secretbox.Box, oauth OAuthConfig, logger *slog.Logger) (*InstallService, error) {
 	if box == nil {
 		return nil, errors.New("slack: InstallService requires a non-nil secretbox.Box")
 	}
 	if q == nil {
 		return nil, errors.New("slack: InstallService requires queries")
+	}
+	if tx == nil {
+		return nil, errors.New("slack: InstallService requires a tx starter")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -120,6 +152,7 @@ func NewInstallService(q installQueries, box *secretbox.Box, oauth OAuthConfig, 
 		oauth:      oauth,
 		box:        box,
 		q:          q,
+		tx:         tx,
 		httpClient: http.DefaultClient,
 		logger:     logger,
 		now:        time.Now,
@@ -217,11 +250,39 @@ func (s *InstallService) Complete(ctx context.Context, code, rawState string) (C
 	if err != nil {
 		return CompletedInstall{}, fmt.Errorf("encode slack installation config: %w", err)
 	}
-	// Team-keyed upsert: a Slack workspace (team_id) is one installation. Re-
-	// connecting the same team — including to represent a different agent —
-	// updates the existing row rather than colliding with the (channel_type,
-	// app_id) unique index (Niko review must-fix #3).
-	inst, err := s.q.UpsertChannelInstallationByAppID(ctx, db.UpsertChannelInstallationByAppIDParams{
+	// One transaction so the lookup, upsert, stale-binding retire and installer
+	// bind are atomic — a partial apply (moved agent but stale chat-session
+	// bindings) is exactly the inconsistency this guards against.
+	tx, err := s.tx.Begin(ctx)
+	if err != nil {
+		return CompletedInstall{}, fmt.Errorf("begin install tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	// Look up any existing installation for this Slack team (team_id is stored as
+	// config->>'app_id'). A team is one installation globally; the result drives
+	// the cross-workspace guard and the agent-change cleanup below.
+	existing, lookupErr := qtx.GetChannelInstallationByAppID(ctx, db.GetChannelInstallationByAppIDParams{
+		ChannelType: string(TypeSlack),
+		AppID:       resp.Team.ID,
+	})
+	hadExisting := lookupErr == nil
+	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return CompletedInstall{}, fmt.Errorf("lookup existing slack installation: %w", lookupErr)
+	}
+
+	// A Slack workspace belongs to exactly one Multica workspace. Refuse to
+	// silently re-point it to another — that would inherit this workspace's user
+	// and chat-session bindings. The owning workspace must disconnect first.
+	if hadExisting && existing.WorkspaceID != wsID {
+		return CompletedInstall{}, ErrTeamOwnedByAnotherWorkspace
+	}
+
+	// Team-keyed upsert: re-connecting the same team — including to represent a
+	// different agent — updates the existing row rather than colliding with the
+	// (channel_type, app_id) unique index.
+	inst, err := qtx.UpsertChannelInstallationByAppID(ctx, db.UpsertChannelInstallationByAppIDParams{
 		WorkspaceID:     wsID,
 		AgentID:         agentID,
 		ChannelType:     string(TypeSlack),
@@ -232,12 +293,30 @@ func (s *InstallService) Complete(ctx context.Context, code, rawState string) (C
 		return CompletedInstall{}, fmt.Errorf("upsert slack installation: %w", err)
 	}
 
+	// Agent change within the same workspace: each existing chat_session is
+	// permanently tied to the agent it was created under (session.go reuses a
+	// session purely by (installation_id, channel_chat_id)), so without this a
+	// moved bot's existing DMs / threads would keep routing to the OLD agent
+	// (Elon review). Retire the stale chat-session bindings so the next inbound
+	// message creates a fresh session under the new agent. User bindings stay
+	// valid (same users, same workspace) and are intentionally kept.
+	if hadExisting && existing.AgentID != agentID {
+		if err := qtx.DeleteChannelChatSessionBindingsByInstallation(ctx, db.DeleteChannelChatSessionBindingsByInstallationParams{
+			InstallationID: inst.ID,
+			ChannelType:    string(TypeSlack),
+		}); err != nil {
+			return CompletedInstall{}, fmt.Errorf("retire stale chat-session bindings: %w", err)
+		}
+	}
+
 	// Auto-bind the installer to their Slack user id (authed_user.id) so their
 	// own first DM / mention is not dropped as unbound — mirroring Feishu's
-	// installer auto-bind. Best-effort: the install itself already succeeded, so
-	// a bind failure is logged, not fatal (the user can rebind later).
+	// installer auto-bind. If the installer's Slack id is already bound to a
+	// DIFFERENT Multica user the gated upsert returns no rows; that is a benign
+	// skip (the install still succeeds), not a reason to roll back. A real DB
+	// error, by contrast, poisons the tx and must abort the whole install.
 	if installerSlackID := resp.AuthedUser.ID; installerSlackID != "" {
-		if _, err := s.q.CreateChannelUserBinding(ctx, db.CreateChannelUserBindingParams{
+		if _, err := qtx.CreateChannelUserBinding(ctx, db.CreateChannelUserBindingParams{
 			WorkspaceID:    wsID,
 			MulticaUserID:  userID,
 			InstallationID: inst.ID,
@@ -245,11 +324,18 @@ func (s *InstallService) Complete(ctx context.Context, code, rawState string) (C
 			ChannelUserID:  installerSlackID,
 			Config:         []byte(`{}`),
 		}); err != nil {
-			s.logger.WarnContext(ctx, "slack: installer auto-bind failed (install still active)",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				s.logger.WarnContext(ctx, "slack: installer already bound to a different user; skipping auto-bind",
+					"installation_id", util.UUIDToString(inst.ID))
+			} else {
+				return CompletedInstall{}, fmt.Errorf("bind installer: %w", err)
+			}
 		}
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return CompletedInstall{}, fmt.Errorf("commit slack install: %w", err)
+	}
 	return CompletedInstall{
 		WorkspaceID:    wsID,
 		AgentID:        agentID,

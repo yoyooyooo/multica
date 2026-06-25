@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/util"
@@ -40,13 +41,30 @@ func mustUUID(t *testing.T, s string) pgtype.UUID {
 }
 
 type fakeInstallQueries struct {
+	// existing, when set, is returned by GetChannelInstallationByAppID (else
+	// pgx.ErrNoRows — a fresh install).
+	existing     *db.ChannelInstallation
 	upsertParams db.UpsertChannelInstallationByAppIDParams
+	upsertCalled bool
 	bindParams   db.CreateChannelUserBindingParams
 	bindCalled   bool
+	deleteCalled bool
+	deleteParams db.DeleteChannelChatSessionBindingsByInstallationParams
 	rowID        pgtype.UUID
 }
 
+// WithTx returns the same fake — the fake tx is a no-op token.
+func (f *fakeInstallQueries) WithTx(_ pgx.Tx) installQueries { return f }
+
+func (f *fakeInstallQueries) GetChannelInstallationByAppID(_ context.Context, _ db.GetChannelInstallationByAppIDParams) (db.ChannelInstallation, error) {
+	if f.existing == nil {
+		return db.ChannelInstallation{}, pgx.ErrNoRows
+	}
+	return *f.existing, nil
+}
+
 func (f *fakeInstallQueries) UpsertChannelInstallationByAppID(_ context.Context, arg db.UpsertChannelInstallationByAppIDParams) (db.ChannelInstallation, error) {
+	f.upsertCalled = true
 	f.upsertParams = arg
 	return db.ChannelInstallation{
 		ID:              f.rowID,
@@ -65,6 +83,12 @@ func (f *fakeInstallQueries) CreateChannelUserBinding(_ context.Context, arg db.
 	return db.ChannelUserBinding{}, nil
 }
 
+func (f *fakeInstallQueries) DeleteChannelChatSessionBindingsByInstallation(_ context.Context, arg db.DeleteChannelChatSessionBindingsByInstallationParams) error {
+	f.deleteCalled = true
+	f.deleteParams = arg
+	return nil
+}
+
 func (f *fakeInstallQueries) ListChannelInstallationsByWorkspace(_ context.Context, _ db.ListChannelInstallationsByWorkspaceParams) ([]db.ChannelInstallation, error) {
 	return nil, nil
 }
@@ -77,11 +101,26 @@ func (f *fakeInstallQueries) SetChannelInstallationStatus(_ context.Context, _ d
 	return nil
 }
 
+// fakeTx is a no-op pgx.Tx: embedding the interface satisfies it, and Complete
+// only ever calls Commit / Rollback. committed records whether the install
+// committed (the happy path) vs rolled back (a rejected install).
+type fakeTx struct {
+	pgx.Tx
+	committed bool
+}
+
+func (t *fakeTx) Commit(context.Context) error   { t.committed = true; return nil }
+func (t *fakeTx) Rollback(context.Context) error { return nil }
+
+type fakeTxStarter struct{ tx *fakeTx }
+
+func (f *fakeTxStarter) Begin(context.Context) (pgx.Tx, error) { return f.tx, nil }
+
 func newTestInstallService(t *testing.T, q installQueries, oauth OAuthConfig) *InstallService {
 	t.Helper()
-	svc, err := NewInstallService(q, testBox(t), oauth, nil)
+	svc, err := newInstallService(q, &fakeTxStarter{tx: &fakeTx{}}, testBox(t), oauth, nil)
 	if err != nil {
-		t.Fatalf("NewInstallService: %v", err)
+		t.Fatalf("newInstallService: %v", err)
 	}
 	return svc
 }
@@ -242,6 +281,104 @@ func TestComplete_ExchangesUpsertsAndBindsInstaller(t *testing.T) {
 	}
 	if q.bindParams.ChannelUserID != "UADMIN" || q.bindParams.ChannelType != string(TypeSlack) {
 		t.Errorf("installer binding = %+v", q.bindParams)
+	}
+	// A fresh install (no existing row) changes no agent, so no chat-session
+	// bindings are retired.
+	if q.deleteCalled {
+		t.Error("a fresh install must not retire chat-session bindings")
+	}
+}
+
+// oauthServer returns an oauth.v2.access stub that always grants team T123.
+func oauthServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"access_token":"xoxb-bot-token","token_type":"bot","scope":"chat:write","bot_user_id":"UBOT","app_id":"A123","team":{"id":"T123","name":"Acme Inc"},"authed_user":{"id":"UADMIN"}}`))
+	}))
+}
+
+func signStdState(t *testing.T, svc *InstallService, ws, agent string) string {
+	t.Helper()
+	state, err := svc.signState(installState{
+		WorkspaceID: ws,
+		AgentID:     agent,
+		UserID:      "33333333-3333-3333-3333-333333333333",
+		Exp:         svc.now().Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("signState: %v", err)
+	}
+	return state
+}
+
+func TestComplete_AgentMove_RetiresStaleSessionBindings(t *testing.T) {
+	srv := oauthServer(t)
+	defer srv.Close()
+	// Same Slack team already installed for agent A in this workspace; the new
+	// install (state) targets agent B → the bot moves and the old chat-session
+	// bindings MUST be retired so existing convos re-bind under agent B.
+	q := &fakeInstallQueries{
+		rowID: mustUUID(t, "44444444-4444-4444-4444-444444444444"),
+		existing: &db.ChannelInstallation{
+			WorkspaceID: mustUUID(t, "11111111-1111-1111-1111-111111111111"),
+			AgentID:     mustUUID(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		},
+	}
+	svc := newTestInstallService(t, q, fullOAuthConfig())
+	svc.apiURL = srv.URL + "/"
+	state := signStdState(t, svc, "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	if _, err := svc.Complete(context.Background(), "code", state); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !q.deleteCalled {
+		t.Fatal("an agent change must retire the installation's chat-session bindings")
+	}
+	if q.deleteParams.InstallationID != q.rowID || q.deleteParams.ChannelType != string(TypeSlack) {
+		t.Errorf("retire params = %+v", q.deleteParams)
+	}
+}
+
+func TestComplete_SameAgentReinstall_NoRetire(t *testing.T) {
+	srv := oauthServer(t)
+	defer srv.Close()
+	q := &fakeInstallQueries{
+		rowID: mustUUID(t, "44444444-4444-4444-4444-444444444444"),
+		existing: &db.ChannelInstallation{
+			WorkspaceID: mustUUID(t, "11111111-1111-1111-1111-111111111111"),
+			AgentID:     mustUUID(t, "22222222-2222-2222-2222-222222222222"), // same agent as the state
+		},
+	}
+	svc := newTestInstallService(t, q, fullOAuthConfig())
+	svc.apiURL = srv.URL + "/"
+	state := signStdState(t, svc, "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	if _, err := svc.Complete(context.Background(), "code", state); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if q.deleteCalled {
+		t.Error("re-installing the same agent must not retire chat-session bindings")
+	}
+}
+
+func TestComplete_CrossWorkspace_Rejected(t *testing.T) {
+	srv := oauthServer(t)
+	defer srv.Close()
+	// The team is already connected to workspace W1; the new install targets W2.
+	q := &fakeInstallQueries{
+		rowID: mustUUID(t, "44444444-4444-4444-4444-444444444444"),
+		existing: &db.ChannelInstallation{
+			WorkspaceID: mustUUID(t, "11111111-1111-1111-1111-111111111111"), // W1
+			AgentID:     mustUUID(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		},
+	}
+	svc := newTestInstallService(t, q, fullOAuthConfig())
+	svc.apiURL = srv.URL + "/"
+	state := signStdState(t, svc, "99999999-9999-9999-9999-999999999999", "22222222-2222-2222-2222-222222222222") // W2
+	if _, err := svc.Complete(context.Background(), "code", state); err != ErrTeamOwnedByAnotherWorkspace {
+		t.Fatalf("cross-workspace install = %v, want ErrTeamOwnedByAnotherWorkspace", err)
+	}
+	if q.upsertCalled {
+		t.Error("a cross-workspace install must be rejected before the upsert")
 	}
 }
 
