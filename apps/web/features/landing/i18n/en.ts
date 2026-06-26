@@ -294,6 +294,31 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.31",
+        date: "2026-06-26",
+        title: "Cross-Workspace Unread Awareness, Composio Toolkit Foundations, and a Friendlier Editor",
+        changes: [],
+        features: [
+          "The workspace switcher now shows a brand dot next to any other workspace that has unread inbox items, so you can spot fresh activity without leaving the one you're in — backed by a single account-level summary call, with the dot lighting up and clearing in realtime as new notifications arrive",
+          "Multica now ships a standalone Composio SDK foundation, opening the door to the upcoming third-party toolkit integrations — connect-account links, tool execution, and signed webhook delivery are all wired up under the hood",
+          "Running multiple desktop dev environments side by side from different worktrees is now collision-free — each worktree gets its own renderer port and app instance, so two checkouts can run at the same time without fighting over the same window",
+          "The Chinese documentation homepage now opens with a click-to-play intro video, and the new VideoEmbed building block is available for reuse across other docs pages",
+        ],
+        improvements: [
+          "The contributor docs now make it explicit that the desktop dev command self-isolates per worktree, matching the new behavior",
+        ],
+        fixes: [
+          "Pressing Tab inside Issue editor lists now reliably indents the selected items and keeps the cursor in place — selecting several list items from the top and pressing Tab nests them under an anchor item, and Tab no longer pulls focus out of the editor when an item can't indent further",
+          "When a Squad leader is asked to organize work via an @mention reply or a comment thread, it now reliably boots with the full Squad briefing instead of trying to do the work alone — and a reply that inherits the parent's @Squad mention no longer triggers the leader a second time",
+          "Selected text in code blocks inside Issues and comments now stays selected while other parts of the page re-render, so copying a snippet during a live agent stream just works",
+          "When you assign an Issue directly to an agent, the run confirmation handoff-note box opens immediately instead of pausing on a 'checking…' state",
+          "The Issue inbox unread indicator now matches what you actually see — duplicate notifications for the same Issue are collapsed before counting, so the switcher dot won't stay lit on an inbox that already looks empty",
+          "Editing an Issue comment now shows a clear loading state on the save button until the change is committed",
+          "Search results now load reliably across the app after a backend API shape change",
+          "Self-hosting now fails fast with an actionable hint when Docker Compose v2 is missing, instead of surfacing a confusing 'unknown shorthand flag' error from the legacy CLI",
+        ],
+      },
+      {
         version: "0.3.30",
         date: "2026-06-25",
         title: "Slack Channel Integration, a Smoother Editor, and Many Reliability Fixes",
