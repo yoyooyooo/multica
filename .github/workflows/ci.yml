@@ -59,21 +59,21 @@ jobs:
 
       - name: Decide
         id: decide
-        # Always run the frontend job on push to main (full validation);
-        # on pull_request, run only when frontend-relevant paths changed.
-        # The frontend job itself always runs and reports success — its
-        # steps are gated on this output rather than the job being skipped
-        # — so the required "frontend" status check is satisfied with a
-        # genuine green instead of being left pending on filtered PRs.
+        # Trust the path filter on both events. On pull_request it diffs
+        # against the base branch; on push it diffs against the previous
+        # tip (github.event.before), so a backend/docs-only commit landing
+        # on main skips the heavy frontend job just like the PR did. This
+        # is safe because the frontend build graph is independent of the
+        # backend — the only frontend/backend couplings (reserved_slugs.json
+        # and the selfhost scripts) are in the filter above, so a push that
+        # changes none of the listed paths has nothing new for the frontend
+        # job to validate. The frontend job itself always runs and reports
+        # success — its steps are gated on this output rather than the job
+        # being skipped — so the required "frontend" status check is
+        # satisfied with a genuine green instead of being left pending.
         env:
-          EVENT_NAME: ${{ github.event_name }}
           FRONTEND_CHANGED: ${{ steps.filter.outputs.frontend }}
-        run: |
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FRONTEND_CHANGED" = "true" ]; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "frontend=$FRONTEND_CHANGED" >> "$GITHUB_OUTPUT"
 
   frontend:
     needs: changes
