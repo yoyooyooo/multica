@@ -10,6 +10,7 @@ import {
   deduplicateInboxItems,
   useInboxUnreadCount,
 } from "@multica/core/inbox/queries";
+import { chatSessionsOptions } from "@multica/core/chat/queries";
 import {
   useMarkInboxRead,
   useArchiveInbox,
@@ -49,7 +50,12 @@ import {
 } from "@multica/ui/components/ui/dropdown-menu";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { PageHeader } from "../../layout/page-header";
-import { getInboxItemRenderer, inboxItemKind } from "../item-types";
+import {
+  getInboxItemRenderer,
+  notificationEntry,
+  conversationEntry,
+  type InboxFeedEntry,
+} from "../item-types";
 import { useT } from "../../i18n";
 
 export function InboxPage() {
@@ -69,13 +75,30 @@ export function InboxPage() {
   const { data: rawItems = [], isLoading: loading } = useQuery(inboxListOptions(wsId));
   const items = useMemo(() => deduplicateInboxItems(rawItems), [rawItems]);
 
+  // Agent conversations are surfaced inline in the same feed as notifications.
+  const { data: rawSessions = [] } = useQuery(chatSessionsOptions(wsId));
+  const sessions = useMemo(
+    () => rawSessions.filter((s) => s.status === "active"),
+    [rawSessions],
+  );
+
+  // The merged typed feed: notifications + conversations, newest first. Each
+  // entry dispatches to its item-type renderer for the row.
+  const feed = useMemo<InboxFeedEntry[]>(() => {
+    const entries = [
+      ...items.map(notificationEntry),
+      ...sessions.map(conversationEntry),
+    ];
+    return entries.sort((a, b) => b.sortAt.localeCompare(a.sortAt));
+  }, [items, sessions]);
+
   const selected = items.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
 
   // Notifications backed by an issue defer to the shared IssueDetail surface;
   // everything else renders the detail pane its item-type renderer provides.
   const SelectedDetail =
     selected && !selected.issue_id
-      ? getInboxItemRenderer(inboxItemKind(selected)).Detail
+      ? getInboxItemRenderer("issue_notification").Detail
       : undefined;
 
   // Track the last key we actually resolved against the inbox list. Lets the
@@ -268,22 +291,32 @@ export function InboxPage() {
     </PageHeader>
   );
 
-  const listBody = items.length === 0 ? (
+  const listBody = feed.length === 0 ? (
     <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
       <Inbox className="mb-3 h-8 w-8 text-muted-foreground/50" />
       <p className="text-sm">{t(($) => $.list.empty)}</p>
     </div>
   ) : (
     <div>
-      {items.map((item) => {
-        const { Row } = getInboxItemRenderer(inboxItemKind(item));
+      {feed.map((entry) => {
+        const { Row } = getInboxItemRenderer(entry.kind);
+        const isNotification = entry.kind === "issue_notification";
         return (
           <Row
-            key={item.id}
-            item={item}
-            isSelected={(item.issue_id ?? item.id) === selectedKey}
-            onSelect={() => handleSelect(item)}
-            onArchive={() => handleArchive(item.id)}
+            key={`${entry.kind}:${entry.id}`}
+            entry={entry}
+            isSelected={
+              isNotification &&
+              (entry.notification.issue_id ?? entry.notification.id) === selectedKey
+            }
+            onSelect={() => {
+              // Conversations self-open the chat window in their renderer;
+              // notifications select into the detail pane.
+              if (isNotification) handleSelect(entry.notification);
+            }}
+            onArchive={() => {
+              if (isNotification) handleArchive(entry.notification.id);
+            }}
           />
         );
       })}
@@ -316,7 +349,7 @@ export function InboxPage() {
     </ErrorBoundary>
   ) : selected && SelectedDetail ? (
     <SelectedDetail
-      item={selected}
+      entry={notificationEntry(selected)}
       onArchive={() => handleArchive(selected.id)}
     />
   ) : null;
@@ -429,7 +462,7 @@ export function InboxPage() {
           <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
             <Inbox className="mb-3 h-10 w-10 text-muted-foreground/30" />
             <p className="text-sm">
-              {items.length === 0
+              {feed.length === 0
                 ? t(($) => $.detail.empty)
                 : t(($) => $.detail.select_prompt)}
             </p>

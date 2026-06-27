@@ -1,27 +1,69 @@
 import type { ComponentType } from "react";
-import type { InboxItem } from "@multica/core/types";
+import type { ChatSession, InboxItem } from "@multica/core/types";
 
 /**
  * Inbox is a *typed feed*: one list whose entries each declare a high-level
- * `kind`, and a registered renderer decides how that kind looks in the list,
- * how its detail pane behaves, and which actions it offers. The envelope
- * (actor, time, read state, work anchor) and the list/triage machinery are
- * shared across kinds; only the row + detail + actions are polymorphic.
+ * `kind`, and a registered renderer decides how that kind looks in the list
+ * and behaves when opened. The envelope (id, sort time, unread) and the
+ * list/triage machinery are shared across kinds; only the row + detail are
+ * polymorphic.
  *
- * See MUL-3788 for the design. Today every server-issued `InboxItem` is an
- * issue notification; `conversation` / `approval` / `digest` land as those
- * item types are introduced — each just registers another renderer, without
- * touching the list, filtering, sorting, or read machinery.
+ * Two kinds ship today, both backed by real data:
+ *   - `issue_notification` — an {@link InboxItem} from the inbox feed.
+ *   - `conversation`        — an agent {@link ChatSession} surfaced inline.
+ *
+ * Further kinds (approval, digest, …) register another renderer without
+ * touching the list, filtering, sorting, or read machinery. See MUL-3788.
  */
-export type InboxItemKind =
-  | "issue_notification"
-  | "conversation"
-  | "approval"
-  | "digest";
+export type InboxItemKind = "issue_notification" | "conversation";
+
+/**
+ * A normalized entry in the merged feed. Sources as different as a
+ * notification and a chat session are projected onto one shape — `id`,
+ * `sortAt`, `unread` form the shared envelope the list sorts/filters on —
+ * while the kind-specific payload rides along for its renderer.
+ */
+export type InboxFeedEntry =
+  | {
+      kind: "issue_notification";
+      id: string;
+      sortAt: string;
+      unread: boolean;
+      notification: InboxItem;
+    }
+  | {
+      kind: "conversation";
+      id: string;
+      sortAt: string;
+      unread: boolean;
+      conversation: ChatSession;
+    };
+
+/** Project a raw notification onto a feed entry. */
+export function notificationEntry(item: InboxItem): InboxFeedEntry {
+  return {
+    kind: "issue_notification",
+    id: item.id,
+    sortAt: item.created_at,
+    unread: !item.read,
+    notification: item,
+  };
+}
+
+/** Project a chat session onto a feed entry. */
+export function conversationEntry(session: ChatSession): InboxFeedEntry {
+  return {
+    kind: "conversation",
+    id: session.id,
+    sortAt: session.updated_at,
+    unread: session.has_unread,
+    conversation: session,
+  };
+}
 
 /** Props every kind's list-row component receives. */
 export interface InboxItemRowProps {
-  item: InboxItem;
+  entry: InboxFeedEntry;
   isSelected: boolean;
   onSelect: () => void;
   onArchive: () => void;
@@ -29,15 +71,16 @@ export interface InboxItemRowProps {
 
 /** Props every kind's detail-pane component receives. */
 export interface InboxItemDetailProps {
-  item: InboxItem;
+  entry: InboxFeedEntry;
   onArchive: () => void;
 }
 
 /**
  * A renderer is the per-kind half of the contract. `Row` is required (a kind
- * must be listable); `Detail` is optional because some kinds (e.g. an issue
- * notification that points at an issue) defer their detail pane to a shared
- * surface rather than rendering their own.
+ * must be listable); `Detail` is optional — a kind may open elsewhere (e.g. a
+ * conversation opens the chat window) or defer to a shared surface (an
+ * issue-backed notification defers to `IssueDetail`) instead of rendering its
+ * own pane.
  */
 export interface InboxItemRenderer {
   kind: InboxItemKind;
@@ -67,14 +110,4 @@ export function getInboxItemRenderer(kind: InboxItemKind): InboxItemRenderer {
     throw new Error(`No inbox item renderer registered for kind "${kind}"`);
   }
   return renderer;
-}
-
-/**
- * Map a raw `InboxItem` to its high-level kind. This is the single place that
- * decides which renderer an item dispatches to. Every current item type is an
- * issue notification; future kinds add their discriminant here as the data
- * model grows.
- */
-export function inboxItemKind(_item: InboxItem): InboxItemKind {
-  return "issue_notification";
 }

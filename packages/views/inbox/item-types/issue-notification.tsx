@@ -22,14 +22,15 @@ import {
  * shared `IssueDetail` surface, so this `Detail` deliberately omits that path.
  */
 function IssueNotificationRow({
-  item,
+  entry,
   isSelected,
   onSelect,
   onArchive,
 }: InboxItemRowProps) {
+  if (entry.kind !== "issue_notification") return null;
   return (
     <InboxListItem
-      item={item}
+      item={entry.notification}
       isSelected={isSelected}
       onClick={onSelect}
       onArchive={onArchive}
@@ -37,10 +38,12 @@ function IssueNotificationRow({
   );
 }
 
-function IssueNotificationDetail({ item, onArchive }: InboxItemDetailProps) {
+function IssueNotificationDetail({ entry, onArchive }: InboxItemDetailProps) {
   const { t } = useT("inbox");
   const typeLabels = useTypeLabels();
   const timeAgo = useTimeAgo();
+  if (entry.kind !== "issue_notification") return null;
+  const item = entry.notification;
 
   return (
     <div className="p-6">

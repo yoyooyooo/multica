@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { InboxItem } from "@multica/core/types";
+import type { ChatSession, InboxItem } from "@multica/core/types";
 import {
+  conversationEntry,
   getInboxItemRenderer,
   hasInboxItemRenderer,
-  inboxItemKind,
+  notificationEntry,
 } from "./index";
 
 function item(overrides: Partial<InboxItem> = {}): InboxItem {
@@ -28,27 +29,51 @@ function item(overrides: Partial<InboxItem> = {}): InboxItem {
   };
 }
 
+function session(overrides: Partial<ChatSession> = {}): ChatSession {
+  return {
+    id: "session-1",
+    workspace_id: "workspace-1",
+    agent_id: "agent-1",
+    creator_id: "member-1",
+    title: "Fix login redirect",
+    status: "active",
+    has_unread: true,
+    created_at: "2026-04-29T11:00:00Z",
+    updated_at: "2026-04-29T13:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("inbox feed entries", () => {
+  it("projects a notification onto an issue_notification entry", () => {
+    const entry = notificationEntry(item({ id: "n1", read: false }));
+    expect(entry.kind).toBe("issue_notification");
+    expect(entry.id).toBe("n1");
+    expect(entry.unread).toBe(true);
+    expect(entry.sortAt).toBe("2026-04-29T12:00:00Z");
+  });
+
+  it("projects a chat session onto a conversation entry sorted by updated_at", () => {
+    const entry = conversationEntry(session({ id: "s1", has_unread: false }));
+    expect(entry.kind).toBe("conversation");
+    expect(entry.id).toBe("s1");
+    expect(entry.unread).toBe(false);
+    expect(entry.sortAt).toBe("2026-04-29T13:00:00Z");
+  });
+});
+
 describe("inbox item-type registry", () => {
-  it("maps every current server item to the issue_notification kind", () => {
-    expect(inboxItemKind(item({ type: "new_comment" }))).toBe(
-      "issue_notification",
-    );
-    expect(inboxItemKind(item({ type: "quick_create_failed" }))).toBe(
-      "issue_notification",
-    );
-  });
-
-  it("registers a renderer for issue_notification with a row and detail", () => {
+  it("registers renderers for both shipping kinds", () => {
     expect(hasInboxItemRenderer("issue_notification")).toBe(true);
-    const renderer = getInboxItemRenderer("issue_notification");
-    expect(renderer.kind).toBe("issue_notification");
-    expect(typeof renderer.Row).toBe("function");
-    expect(typeof renderer.Detail).toBe("function");
-  });
+    expect(hasInboxItemRenderer("conversation")).toBe(true);
 
-  it("throws for a kind with no registered renderer", () => {
-    expect(() => getInboxItemRenderer("conversation")).toThrow(
-      /No inbox item renderer registered/,
-    );
+    const notif = getInboxItemRenderer("issue_notification");
+    expect(typeof notif.Row).toBe("function");
+    expect(typeof notif.Detail).toBe("function");
+
+    const convo = getInboxItemRenderer("conversation");
+    expect(typeof convo.Row).toBe("function");
+    // Conversations open the chat window, so they intentionally have no pane.
+    expect(convo.Detail).toBeUndefined();
   });
 });

@@ -2,12 +2,15 @@
 // side effect. Import it once (the inbox page does) before resolving a renderer
 // via getInboxItemRenderer.
 import "./issue-notification";
+import "./conversation";
 
 export {
+  conversationEntry,
   getInboxItemRenderer,
   hasInboxItemRenderer,
-  inboxItemKind,
+  notificationEntry,
   registerInboxItemType,
+  type InboxFeedEntry,
   type InboxItemDetailProps,
   type InboxItemKind,
   type InboxItemRenderer,
