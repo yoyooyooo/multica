@@ -5,8 +5,6 @@ import { useDefaultLayout } from "react-resizable-panels";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { useModalStore } from "@multica/core/modals";
-import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import {
   inboxListOptions,
   deduplicateInboxItems,
@@ -51,9 +49,7 @@ import {
 } from "@multica/ui/components/ui/dropdown-menu";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { PageHeader } from "../../layout/page-header";
-import { InboxListItem, useTimeAgo } from "./inbox-list-item";
-import { useTypeLabels } from "./inbox-detail-label";
-import { getInboxDisplayTitle } from "./inbox-display";
+import { getInboxItemRenderer, inboxItemKind } from "../item-types";
 import { useT } from "../../i18n";
 
 export function InboxPage() {
@@ -74,6 +70,13 @@ export function InboxPage() {
   const items = useMemo(() => deduplicateInboxItems(rawItems), [rawItems]);
 
   const selected = items.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
+
+  // Notifications backed by an issue defer to the shared IssueDetail surface;
+  // everything else renders the detail pane its item-type renderer provides.
+  const SelectedDetail =
+    selected && !selected.issue_id
+      ? getInboxItemRenderer(inboxItemKind(selected)).Detail
+      : undefined;
 
   // Track the last key we actually resolved against the inbox list. Lets the
   // fallback effect distinguish "shared-link to a notification not in our
@@ -121,8 +124,6 @@ export function InboxPage() {
   const archiveAllMutation = useArchiveAllInbox();
   const archiveAllReadMutation = useArchiveAllReadInbox();
   const archiveCompletedMutation = useArchiveCompletedInbox();
-  const timeAgo = useTimeAgo();
-  const typeLabels = useTypeLabels();
 
 
   // Auto-mark-read whenever a selected item is unread — covers both click-
@@ -274,15 +275,18 @@ export function InboxPage() {
     </div>
   ) : (
     <div>
-      {items.map((item) => (
-        <InboxListItem
-          key={item.id}
-          item={item}
-          isSelected={(item.issue_id ?? item.id) === selectedKey}
-          onClick={() => handleSelect(item)}
-          onArchive={() => handleArchive(item.id)}
-        />
-      ))}
+      {items.map((item) => {
+        const { Row } = getInboxItemRenderer(inboxItemKind(item));
+        return (
+          <Row
+            key={item.id}
+            item={item}
+            isSelected={(item.issue_id ?? item.id) === selectedKey}
+            onSelect={() => handleSelect(item)}
+            onArchive={() => handleArchive(item.id)}
+          />
+        );
+      })}
     </div>
   );
 
@@ -310,58 +314,11 @@ export function InboxPage() {
         }}
       />
     </ErrorBoundary>
-  ) : selected ? (
-    <div className="p-6">
-      <h2 className="text-lg font-semibold">{getInboxDisplayTitle(selected)}</h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        {typeLabels[selected.type]} · {timeAgo(selected.created_at)}
-      </p>
-      {selected.body && (
-        <div className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">
-          {selected.body}
-        </div>
-      )}
-      {selected.type === "quick_create_failed" && selected.details?.original_prompt && (
-        <div className="mt-4 rounded-md border bg-muted/40 p-3">
-          <p className="text-xs font-medium text-muted-foreground">
-            {t(($) => $.detail.original_input)}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap text-sm">{selected.details.original_prompt}</p>
-        </div>
-      )}
-      <div className="mt-4 flex gap-2">
-        {selected.type === "quick_create_failed" && (
-          <Button
-            size="sm"
-            onClick={() => {
-              // Seed the legacy advanced form with the original prompt so the
-              // user can recover their input in the full editor instead of
-              // retyping. The agent picker hint becomes the assignee
-              // candidate (still editable).
-              const prompt = selected.details?.original_prompt ?? "";
-              const agentId = selected.details?.agent_id;
-              useIssueDraftStore.getState().setDraft({
-                description: prompt,
-                ...(agentId
-                  ? { assigneeType: "agent" as const, assigneeId: agentId }
-                  : {}),
-              });
-              useModalStore.getState().open("create-issue");
-            }}
-          >
-            {t(($) => $.detail.edit_advanced)}
-          </Button>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => handleArchive(selected.id)}
-        >
-          <Archive className="mr-1.5 h-3.5 w-3.5" />
-          {t(($) => $.detail.archive)}
-        </Button>
-      </div>
-    </div>
+  ) : selected && SelectedDetail ? (
+    <SelectedDetail
+      item={selected}
+      onArchive={() => handleArchive(selected.id)}
+    />
   ) : null;
 
   // -- Mobile layout: list / detail toggle -----------------------------------
