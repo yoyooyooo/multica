@@ -46,7 +46,7 @@ services:
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     volumes:
-      - backend_uploads:/app/data/uploads
+      - ./data/uploads:/app/data/uploads
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@postgres:5432/${POSTGRES_DB:-multica}?sslmode=disable
       PORT: "8080"
@@ -132,4 +132,3 @@ services:
 
 volumes:
   pgdata:
-  backend_uploads:
