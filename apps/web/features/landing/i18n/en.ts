@@ -310,9 +310,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         fixes: [
           "Scheduled autopilots advance their next-run time the moment a run is dispatched, so a slow runner can no longer cause back-to-back duplicate dispatches.",
           "Attachment previews open correctly whether the URL redirects inside a frame, comes back from the same origin, or was uploaded locally — and local upload URLs are now preferred when available.",
-          "The usage leaderboard hides agents that have been deleted, so dashboards no longer surface ghost entries.",
           "When the failed-task handler unsticks an Issue, the Issue view refreshes immediately instead of waiting for a manual reload.",
-          "Antigravity daemon-mode guidance now states more clearly what each option does.",
           "Sticky Issue comment headers share the same background fade as the highlight, so settling on a comment no longer looks out of sync.",
           "Chat conversations refresh their message cache when reconnecting, so you no longer see stale messages right after coming back online.",
         ],
