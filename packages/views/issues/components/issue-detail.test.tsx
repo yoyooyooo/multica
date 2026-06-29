@@ -1217,6 +1217,48 @@ describe("IssueDetail (shared)", () => {
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
     });
+
+    it("keeps a short highlighted timeline on the flat (non-virtualized) path", async () => {
+      renderIssueDetailWithHighlight("comment-2");
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-comment-2")).not.toBeNull();
+      });
+      // Short list → flat render, no Virtuoso. (Flat render lands precisely.)
+      expect(screen.queryByTestId("virtuoso-mock")).toBeNull();
+    });
+
+    it("virtualizes a long highlighted timeline instead of mounting every comment", async () => {
+      // Reproduces the inbox freeze: a comment-heavy issue opened with a
+      // highlight target used to flat-render every CommentCard synchronously.
+      // Past FLAT_TIMELINE_LIMIT it must hand off to Virtuoso (positioned on
+      // the target) so the page doesn't freeze on entry.
+      const longTimeline: TimelineEntry[] = Array.from({ length: 40 }, (_, i) => ({
+        type: "comment",
+        id: `c-${i}`,
+        actor_type: "member",
+        actor_id: "user-1",
+        content: `Comment ${i}`,
+        parent_id: null,
+        created_at: `2026-01-18T00:${String(i).padStart(2, "0")}:00Z`,
+        updated_at: `2026-01-18T00:${String(i).padStart(2, "0")}:00Z`,
+        comment_type: "comment",
+      })) as TimelineEntry[];
+      mockApiObj.listTimeline.mockResolvedValue(longTimeline);
+
+      renderIssueDetailWithHighlight("c-20");
+
+      // Virtuoso path is taken (the mock renders a virtuoso-mock wrapper), and
+      // the highlight tint still lands on the target row.
+      await waitFor(() => {
+        expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(
+          document.getElementById("comment-c-20")?.querySelector(".ring-2"),
+        ).not.toBeNull();
+      });
+    });
   });
 
   it("sends empty description when editor is cleared", async () => {

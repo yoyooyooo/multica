@@ -434,6 +434,15 @@ function TimelineSkeleton() {
 // activities" line that expands in place.
 const LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT = 8;
 
+// Above this many timeline items, a deep-link/highlight target switches from
+// flat render to a Virtuoso list positioned on the target. Flat render mounts
+// every CommentCard (markdown + lowlight) synchronously, which is the
+// multi-second freeze on entering/leaving a comment-heavy issue from the inbox
+// (inbox notifications always carry a comment_id → highlight). Short timelines
+// stay flat: the precise scroll/center landing is cheap and pixel-accurate
+// there, and small lists never froze.
+const FLAT_TIMELINE_LIMIT = 30;
+
 // Collapsible wrapper for an activity block. Older blocks default to a single
 // "N activities" summary line so the timeline isn't dominated by status /
 // priority / assignee churn; the trailing block stays expanded because it
@@ -1062,6 +1071,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return items.findIndex((it) => it.id === rootId);
   }, [items, highlightCommentId, replyToRoot]);
 
+  // Render the highlighted timeline flat only while it is short enough that
+  // mounting every CommentCard up front is cheap. Past the threshold we hand
+  // the highlight off to Virtuoso (positioned on the target below) so we never
+  // synchronously mount a long comment list — the inbox freeze fix.
+  const flatTimeline = !!highlightCommentId && items.length <= FLAT_TIMELINE_LIMIT;
+
   const {
     reactions: issueReactions,
     toggleReaction: handleToggleIssueReaction,
@@ -1173,50 +1188,57 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       }
     }
 
-    const el = document.getElementById(`comment-${highlightCommentId}`);
-    const container = scrollContainerEl;
-    if (!el || !container) return;
-
-    didHighlightRef.current = highlightCommentId;
-
-    // Center the target comment WITHIN its own scroll container by driving the
-    // container's scrollTop directly — never native scrollIntoView. Native
-    // scrollIntoView is spec'd to scroll EVERY scrollable ancestor: on a cold
-    // mount where the timeline is still growing (streaming agent), the inner
-    // scroller can't satisfy centering on its own, so the scroll propagates up
-    // and moves the desktop shell's `overflow:hidden` wrapper — shoving the
-    // whole page, header included, off the top with no scrollbar to recover,
-    // until a resize reflows it (#3929). Scoping the scroll to `container`
-    // keeps it contained; re-centering across frames lands the comment
-    // precisely once async heights (markdown, code highlight, streamed replies)
-    // settle, instead of leaning on the ancestor scroll the way native did.
     let rafId = 0;
-    let frames = 0;
-    let last = -1;
-    const center = () => {
-      const c = container.getBoundingClientRect();
-      const e = el.getBoundingClientRect();
-      const target = Math.max(
-        0,
-        container.scrollTop + (e.top - c.top) - (container.clientHeight - e.height) / 2,
-      );
-      container.scrollTop = target;
-      // Content is still laying out → the centered offset keeps shifting; keep
-      // re-centering until it stabilizes (within 1px) or we hit ~0.5s of frames.
-      if (Math.abs(target - last) > 1 && ++frames < 30) {
-        last = target;
-        rafId = requestAnimationFrame(center);
-      }
-    };
-    rafId = requestAnimationFrame(center);
+    if (flatTimeline) {
+      // Flat render: the target id is in the DOM. Center it WITHIN its own
+      // scroll container by driving the container's scrollTop directly — never
+      // native scrollIntoView. Native scrollIntoView is spec'd to scroll EVERY
+      // scrollable ancestor: on a cold mount where the timeline is still
+      // growing (streaming agent), the inner scroller can't satisfy centering
+      // on its own, so the scroll propagates up and moves the desktop shell's
+      // `overflow:hidden` wrapper — shoving the whole page, header included,
+      // off the top with no scrollbar to recover, until a resize reflows it
+      // (#3929). Scoping the scroll to `container` keeps it contained;
+      // re-centering across frames lands the comment precisely once async
+      // heights (markdown, code highlight, streamed replies) settle.
+      const el = document.getElementById(`comment-${highlightCommentId}`);
+      const container = scrollContainerEl;
+      if (!el || !container) return;
+
+      didHighlightRef.current = highlightCommentId;
+
+      let frames = 0;
+      let last = -1;
+      const center = () => {
+        const c = container.getBoundingClientRect();
+        const e = el.getBoundingClientRect();
+        const target = Math.max(
+          0,
+          container.scrollTop + (e.top - c.top) - (container.clientHeight - e.height) / 2,
+        );
+        container.scrollTop = target;
+        // Content is still laying out → the centered offset keeps shifting;
+        // keep re-centering until it stabilizes (within 1px) or ~0.5s of frames.
+        if (Math.abs(target - last) > 1 && ++frames < 30) {
+          last = target;
+          rafId = requestAnimationFrame(center);
+        }
+      };
+      rafId = requestAnimationFrame(center);
+    } else {
+      // Long timeline: Virtuoso positions itself on the target via
+      // `initialTopMostItemIndex` (it owns the shared scroller, so driving
+      // scrollTop here would fight it). We only apply the highlight tint.
+      didHighlightRef.current = highlightCommentId;
+    }
 
     setHighlightedId(highlightCommentId);
     const fade = window.setTimeout(() => setHighlightedId(null), 2500);
     return () => {
-      cancelAnimationFrame(rafId);
+      if (rafId) cancelAnimationFrame(rafId);
       clearTimeout(fade);
     };
-  }, [highlightCommentId, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand]);
+  }, [highlightCommentId, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, flatTimeline]);
 
   // Cmd-F / Ctrl-F on a virtualized timeline only searches what's mounted in
   // the viewport — off-screen comments are invisible to browser find-in-page.
@@ -2204,52 +2226,50 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             {timelineLoading && timelineView.groups.length === 0 ? (
               <TimelineSkeleton />
             ) : (
-              // Two render modes:
-              //   - `highlightCommentId` set (came from inbox deep-link) →
-              //     render flat. Every comment mounts, every height is real,
-              //     the target id is in the DOM the instant the useEffect
-              //     above runs `scrollIntoView`. No virtualization estimate
-              //     errors, no spacer reflow drift. Pays cold-mount cost
-              //     proportional to items.length (markdown + lowlight per
-              //     comment), which is acceptable in the deep-link case —
-              //     the user has explicit intent to land on a specific item.
-              //   - otherwise → Virtuoso. Browsing mode, virtualization
-              //     wins on first-paint perf for long timelines.
-              //
-              // The split is deliberate: virtualization and "land precisely
-              // on a target" have fundamentally opposed contracts (estimated
-              // heights vs real heights). Trying to satisfy both in one
-              // path is what produced the bug history this PR closes.
-              !highlightCommentId ? (
-                !scrollContainerEl ? (
-                  // Skeleton while the callback ref populates so the gap
-                  // between IssueDetail mount and Virtuoso mount doesn't
-                  // flash empty.
-                  <TimelineSkeleton />
-                ) : (
-                  <div className="mt-4">
-                    <Virtuoso
-                      key={`${wsId}:${id}`}
-                      customScrollParent={scrollContainerEl}
-                      data={items}
-                      increaseViewportBy={{ top: 800, bottom: 800 }}
-                      computeItemKey={(_i, item) => `${item.kind}:${item.id}`}
-                      skipAnimationFrameInResizeObserver
-                      // followOutput intentionally NOT set. Virtuoso treats
-                      // it as a sticky "is at bottom" flag and resets
-                      // scrollTop to maxScrollTop on every height-change
-                      // tick — issue-detail is document-shaped, not chat.
-                      itemContent={renderItem}
-                    />
-                  </div>
-                )
-              ) : (
+              // Three render modes:
+              //   - SHORT highlighted timeline (`flatTimeline`) → render flat.
+              //     Every comment mounts, every height is real, the target id
+              //     is in the DOM the instant the deep-link effect above runs.
+              //     No virtualization estimate errors, no spacer reflow drift.
+              //     Cheap because the list is short.
+              //   - LONG highlighted timeline → Virtuoso positioned on the
+              //     target via `initialTopMostItemIndex`. Avoids synchronously
+              //     mounting a long comment list (markdown + lowlight per
+              //     CommentCard), which is the multi-second freeze on entering
+              //     a comment-heavy issue from the inbox. Landing is best-effort
+              //     (estimated heights) rather than pixel-perfect — the right
+              //     trade for not freezing the page.
+              //   - no highlight → Virtuoso browsing mode.
+              flatTimeline ? (
                 <div className="mt-4">
                   {items.map((item, i) => (
                     <Fragment key={`${item.kind}:${item.id}`}>
                       {renderItem(i, item)}
                     </Fragment>
                   ))}
+                </div>
+              ) : !scrollContainerEl ? (
+                // Skeleton while the callback ref populates so the gap between
+                // IssueDetail mount and Virtuoso mount doesn't flash empty.
+                <TimelineSkeleton />
+              ) : (
+                <div className="mt-4">
+                  <Virtuoso
+                    key={`${wsId}:${id}`}
+                    customScrollParent={scrollContainerEl}
+                    data={items}
+                    {...(highlightCommentId && targetIdx >= 0
+                      ? { initialTopMostItemIndex: { index: targetIdx, align: "center" as const } }
+                      : {})}
+                    increaseViewportBy={{ top: 800, bottom: 800 }}
+                    computeItemKey={(_i, item) => `${item.kind}:${item.id}`}
+                    skipAnimationFrameInResizeObserver
+                    // followOutput intentionally NOT set. Virtuoso treats
+                    // it as a sticky "is at bottom" flag and resets
+                    // scrollTop to maxScrollTop on every height-change
+                    // tick — issue-detail is document-shaped, not chat.
+                    itemContent={renderItem}
+                  />
                 </div>
               )
             )}
