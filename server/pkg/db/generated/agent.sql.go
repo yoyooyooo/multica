@@ -553,10 +553,10 @@ func (q *Queries) CancelAgentTasksByTriggerComment(ctx context.Context, triggerC
 const cancelDeferredEscalationsForIssueAgent = `-- name: CancelDeferredEscalationsForIssueAgent :many
 WITH cancelled AS (
     UPDATE agent_task_queue fallback
-    SET status = 'cancelled', completed_at = now()
+    SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
     FROM agent_task_queue primary_task
     WHERE fallback.escalation_for_task_id = primary_task.id
-      AND fallback.status = 'deferred'
+      AND fallback.status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
       AND primary_task.issue_id = $1
       AND primary_task.agent_id = $2
     RETURNING fallback.id, fallback.agent_id, fallback.issue_id, fallback.status, fallback.priority, fallback.dispatched_at, fallback.started_at, fallback.completed_at, fallback.result, fallback.error, fallback.created_at, fallback.context, fallback.runtime_id, fallback.session_id, fallback.work_dir, fallback.trigger_comment_id, fallback.chat_session_id, fallback.autopilot_run_id, fallback.attempt, fallback.max_attempts, fallback.parent_task_id, fallback.failure_reason, fallback.trigger_summary, fallback.force_fresh_session, fallback.is_leader_task, fallback.wait_reason, fallback.initiator_user_id, fallback.handoff_note, fallback.prepare_lease_expires_at, fallback.squad_id, fallback.escalation_for_task_id, fallback.fire_at
@@ -659,9 +659,9 @@ func (q *Queries) CancelDeferredEscalationsForIssueAgent(ctx context.Context, ar
 
 const cancelDeferredEscalationsForTask = `-- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now()
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE escalation_for_task_id = $1
-  AND status = 'deferred'
+  AND status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, escalation_for_task_id, fire_at
 `
 

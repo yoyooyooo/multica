@@ -660,18 +660,18 @@ RETURNING *;
 
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now()
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE escalation_for_task_id = $1
-  AND status = 'deferred'
+  AND status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
 RETURNING *;
 
 -- name: CancelDeferredEscalationsForIssueAgent :many
 WITH cancelled AS (
     UPDATE agent_task_queue fallback
-    SET status = 'cancelled', completed_at = now()
+    SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
     FROM agent_task_queue primary_task
     WHERE fallback.escalation_for_task_id = primary_task.id
-      AND fallback.status = 'deferred'
+      AND fallback.status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
       AND primary_task.issue_id = @issue_id
       AND primary_task.agent_id = @agent_id
     RETURNING fallback.*

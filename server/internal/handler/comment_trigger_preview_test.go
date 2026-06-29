@@ -518,7 +518,7 @@ func TestCreateComment_ThreadParentEscalationCanBeDisabled(t *testing.T) {
 	}
 }
 
-func TestCreateComment_ParentAgentReplyCancelsDeferredFallback(t *testing.T) {
+func TestCreateComment_ParentAgentReplyCancelsPromotedFallbackBeforeClaim(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -545,12 +545,26 @@ func TestCreateComment_ParentAgentReplyCancelsDeferredFallback(t *testing.T) {
 		t.Fatalf("deferred assignee fallback before parent ack = %d, want 1", got)
 	}
 
-	var primaryTaskID string
+	var primaryTaskID, fallbackTaskID string
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent_task_queue
 		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 	`, issueID, parentAgentID).Scan(&primaryTaskID); err != nil {
 		t.Fatalf("load primary task: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		UPDATE agent_task_queue
+		SET fire_at = now() - interval '1 second'
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'deferred'
+		RETURNING id
+	`, issueID, assigneeID).Scan(&fallbackTaskID); err != nil {
+		t.Fatalf("make deferred fallback due: %v", err)
+	}
+	if err := testHandler.TaskService.PromoteDueDeferredTasksForRuntime(ctx, util.MustParseUUID(testRuntimeID)); err != nil {
+		t.Fatalf("promote due deferred fallback: %v", err)
+	}
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 1 {
+		t.Fatalf("queued assignee fallback before parent ack = %d, want 1", got)
 	}
 
 	w := httptest.NewRecorder()
@@ -569,8 +583,88 @@ func TestCreateComment_ParentAgentReplyCancelsDeferredFallback(t *testing.T) {
 	if got := countCommentTriggerTasksWithStatus(t, issueID, assigneeID, "deferred"); got != 0 {
 		t.Fatalf("deferred assignee fallback after parent ack = %d, want 0", got)
 	}
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
+		t.Fatalf("queued assignee fallback after parent ack = %d, want 0", got)
+	}
 	if got := countCommentTriggerTasksWithStatus(t, issueID, assigneeID, "cancelled"); got != 1 {
 		t.Fatalf("cancelled assignee fallback after parent ack = %d, want 1", got)
+	}
+	claimed, err := testHandler.TaskService.ClaimTask(ctx, util.MustParseUUID(assigneeID))
+	if err != nil {
+		t.Fatalf("claim assignee fallback after parent ack: %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("assignee claimed cancelled fallback %s after parent ack; fallback task was %s", util.UUIDToString(claimed.ID), fallbackTaskID)
+	}
+}
+
+func TestStartTaskCancelsPromotedFallbackBeforeAssigneeCanClaim(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	assigneeID := createHandlerTestAgent(t, "Thread Parent Start Cancel Assignee", nil)
+	parentAgentID := createHandlerTestAgent(t, "Thread Parent Start Cancel Owner", nil)
+	issueID := createCommentTriggerPreviewIssue(t, "thread parent start cancels fallback", "agent", assigneeID)
+
+	var parentCommentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+		VALUES ($1, $2, 'agent', $3, 'I am handling this')
+		RETURNING id
+	`, testWorkspaceID, issueID, parentAgentID).Scan(&parentCommentID); err != nil {
+		t.Fatalf("insert parent agent comment: %v", err)
+	}
+
+	postCommentForTriggerPreviewTest(t, issueID, map[string]any{
+		"content":   "can you follow up here?",
+		"parent_id": parentCommentID,
+	})
+	if got := countCommentTriggerTasksWithStatus(t, issueID, assigneeID, "deferred"); got != 1 {
+		t.Fatalf("deferred assignee fallback before start = %d, want 1", got)
+	}
+
+	primary, err := testHandler.TaskService.ClaimTask(ctx, util.MustParseUUID(parentAgentID))
+	if err != nil {
+		t.Fatalf("claim parent task: %v", err)
+	}
+	if primary == nil {
+		t.Fatal("claim parent task returned nil")
+	}
+
+	var fallbackTaskID string
+	if err := testPool.QueryRow(ctx, `
+		UPDATE agent_task_queue
+		SET fire_at = now() - interval '1 second'
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'deferred'
+		RETURNING id
+	`, issueID, assigneeID).Scan(&fallbackTaskID); err != nil {
+		t.Fatalf("make deferred fallback due: %v", err)
+	}
+	if err := testHandler.TaskService.PromoteDueDeferredTasksForRuntime(ctx, util.MustParseUUID(testRuntimeID)); err != nil {
+		t.Fatalf("promote due deferred fallback: %v", err)
+	}
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 1 {
+		t.Fatalf("queued assignee fallback before parent start = %d, want 1", got)
+	}
+
+	if _, err := testHandler.TaskService.StartTask(ctx, primary.ID); err != nil {
+		t.Fatalf("start parent task: %v", err)
+	}
+
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
+		t.Fatalf("queued assignee fallback after parent start = %d, want 0", got)
+	}
+	if got := countCommentTriggerTasksWithStatus(t, issueID, assigneeID, "cancelled"); got != 1 {
+		t.Fatalf("cancelled assignee fallback after parent start = %d, want 1", got)
+	}
+	claimed, err := testHandler.TaskService.ClaimTask(ctx, util.MustParseUUID(assigneeID))
+	if err != nil {
+		t.Fatalf("claim assignee fallback after parent start: %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("assignee claimed cancelled fallback %s after parent start; fallback task was %s", util.UUIDToString(claimed.ID), fallbackTaskID)
 	}
 }
 

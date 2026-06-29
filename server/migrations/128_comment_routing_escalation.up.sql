@@ -1,5 +1,5 @@
 ALTER TABLE agent_task_queue
-    ADD COLUMN escalation_for_task_id UUID REFERENCES agent_task_queue(id) ON DELETE SET NULL,
+    ADD COLUMN escalation_for_task_id UUID,
     ADD COLUMN fire_at TIMESTAMPTZ;
 
 ALTER TABLE agent_task_queue
