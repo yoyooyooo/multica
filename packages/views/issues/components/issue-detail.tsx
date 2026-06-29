@@ -1262,11 +1262,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }, [id, items.length, t]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
-  // Defer the heavy description Tiptap editor past the first paint so it stays
-  // out of the synchronous remount commit when switching issues in the inbox
-  // (where IssueDetail is keyed by issue_id). Until it mounts we show the
-  // description as read-only markdown — visually identical, near-zero cost.
+  // Defer the two heavy Tiptap editors (description + bottom comment composer)
+  // past first paint so a fresh ProseMirror EditorView is never created inside
+  // the synchronous commit of an issue switch. Until they hydrate, the
+  // description shows as read-only markdown and the composer shows a static
+  // placeholder — both near-zero cost. The render-phase reset in
+  // useDeferredMount re-arms this on every issueId change, including the inbox
+  // pane (now reconciled in place, no remount) and the full-page route.
   const { ready: descEditorReady, mountNow: mountDescEditor } = useDeferredMount(id);
+  const { ready: commentComposerReady } = useDeferredMount(id);
   // Only steal focus into the editor when the user actively clicked the
   // read-only placeholder — never on the automatic post-paint mount, which
   // would yank focus to the description on every issue switch.
@@ -2276,12 +2280,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
             {/* Bottom comment input — no avatar, full width */}
             <div className="mt-4">
-              {/* key={id}: web's /issues/[id] route doesn't remount on
-                  issueId change, so without an explicit key the editor
-                  keeps the previous issue's in-memory content and the
-                  next keystroke would flush it into the new issue's
-                  draft key. */}
-              <CommentInput key={id} issueId={id} onSubmit={submitComment} />
+              {/* Deferred one frame past paint (commentComposerReady) so the
+                  composer's Tiptap editor isn't created inside the synchronous
+                  issue-switch commit; a static placeholder of similar height
+                  holds the spot meanwhile (it usually sits below the fold on
+                  comment-heavy issues anyway). No manual expand control — it
+                  hydrates on its own.
+                  key={id}: web's /issues/[id] route doesn't remount on issueId
+                  change, so without an explicit key the editor keeps the
+                  previous issue's in-memory content and the next keystroke
+                  would flush it into the new issue's draft key. */}
+              {commentComposerReady ? (
+                <CommentInput key={id} issueId={id} onSubmit={submitComment} />
+              ) : (
+                <div className="relative flex flex-col rounded-lg bg-card pb-8 ring-1 ring-border">
+                  <div className="px-3 py-2 text-sm text-muted-foreground">
+                    {t(($) => $.comment.leave_comment_placeholder)}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -298,13 +298,16 @@ export function InboxPage() {
   );
 
   const detailContent = detailSelected?.issue_id ? (
-    // Key by issue_id (not inbox-item id): a new comment/reaction generates a
-    // new inbox notification for the same issue, and the dedup helper picks the
-    // newest one — keying on its id would remount IssueDetail on every event,
-    // wiping the comment composer draft and resetting scroll position.
+    // No `key` on IssueDetail: switching issues updates `issueId` in place and
+    // lets React reconcile the heavy subtree (sidebar, pickers, layout) instead
+    // of tearing it down and rebuilding it on every click — the full-page issue
+    // route already drives IssueDetail this way. IssueDetail resets its own
+    // per-issue state on issueId change (description/comment editors are keyed
+    // by id internally, optional-prop + attachment state reset via effects).
+    // ErrorBoundary still resets per issue so one issue's render error doesn't
+    // stick to the next.
     <ErrorBoundary resetKeys={[detailSelected.issue_id]}>
       <IssueDetail
-        key={detailSelected.issue_id}
         issueId={detailSelected.issue_id}
         defaultSidebarOpen={false}
         layoutId="multica_inbox_issue_detail_layout"

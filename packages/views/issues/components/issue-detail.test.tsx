@@ -557,6 +557,18 @@ describe("IssueDetail (shared)", () => {
     expect(description).toHaveAttribute("data-flush-on-unmount", "true");
   });
 
+  it("hydrates the bottom comment composer after first paint (deferred, not synchronous)", async () => {
+    // The composer's Tiptap editor is mounted one animation frame past paint
+    // (useDeferredMount) so it stays out of the synchronous issue-switch
+    // commit. A static placeholder holds the spot meanwhile; await the real
+    // editor (its placeholder textarea) to confirm it still hydrates.
+    renderIssueDetail();
+
+    expect(
+      await screen.findByPlaceholderText("Leave a comment..."),
+    ).toBeInTheDocument();
+  });
+
   it("renders the issue title leaf as a link to the issue detail page", async () => {
     renderIssueDetail();
 
