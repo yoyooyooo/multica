@@ -71,14 +71,14 @@ type AgentResponse struct {
 	// members infer another member's integration footprint. Redacted to
 	// `nil` + `composio_toolkit_allowlist_redacted=true` for non-owners,
 	// mirroring the existing mcp_config redaction contract.
-	ComposioToolkitAllowlist         []string `json:"composio_toolkit_allowlist,omitempty"`
-	ComposioToolkitAllowlistRedacted bool     `json:"composio_toolkit_allowlist_redacted,omitempty"`
-	OwnerID                          *string  `json:"owner_id"`
-	Skills        []AgentSkillSummary `json:"skills"`
-	CreatedAt     string              `json:"created_at"`
-	UpdatedAt     string              `json:"updated_at"`
-	ArchivedAt    *string             `json:"archived_at"`
-	ArchivedBy    *string             `json:"archived_by"`
+	ComposioToolkitAllowlist         []string            `json:"composio_toolkit_allowlist,omitempty"`
+	ComposioToolkitAllowlistRedacted bool                `json:"composio_toolkit_allowlist_redacted,omitempty"`
+	OwnerID                          *string             `json:"owner_id"`
+	Skills                           []AgentSkillSummary `json:"skills"`
+	CreatedAt                        string              `json:"created_at"`
+	UpdatedAt                        string              `json:"updated_at"`
+	ArchivedAt                       *string             `json:"archived_at"`
+	ArchivedBy                       *string             `json:"archived_by"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for

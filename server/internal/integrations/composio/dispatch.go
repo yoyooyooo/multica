@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	sdk "github.com/multica-ai/multica/server/pkg/composio"
 	"github.com/multica-ai/multica/server/internal/util"
+	sdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
