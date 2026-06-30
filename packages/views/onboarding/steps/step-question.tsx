@@ -56,6 +56,7 @@ export function StepQuestion({
   onBack,
   multiSelect = false,
   notice,
+  afterOptions,
 }: {
   step: OnboardingStep;
   number: number;
@@ -75,6 +76,7 @@ export function StepQuestion({
   onSkip: () => void;
   onBack?: () => void;
   multiSelect?: boolean;
+  afterOptions?: ReactNode;
 }) {
   const { t } = useT("onboarding");
   const [pendingOther, setPendingOther] = useState(false);
@@ -209,6 +211,12 @@ export function StepQuestion({
               ),
             )}
           </fieldset>
+
+          {afterOptions ? (
+            <div className="mt-6">
+              {afterOptions}
+            </div>
+          ) : null}
 
           <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
             <span

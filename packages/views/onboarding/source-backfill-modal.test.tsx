@@ -138,7 +138,7 @@ describe("SourceBackfillModal", () => {
     expect(mockCaptureEvent).toHaveBeenCalledWith("source_backfill_shown");
   });
 
-  it("uses reporting copy when the backend config enables source channel reporting", async () => {
+  it("shows reporting controls after a source is selected when reporting is enabled", async () => {
     configStore.getState().setSourceChannelReportingConfig({
       sourceChannelReportingEnabled: true,
     });
@@ -147,11 +147,15 @@ describe("SourceBackfillModal", () => {
       onboarded_at: "2026-01-01T00:00:00Z",
       onboarding_questionnaire: { source: [] },
     });
+    const user = userEvent.setup();
     renderModal();
+    expect(screen.queryByText("Source statistics")).not.toBeInTheDocument();
+    await user.click(await screen.findByText("Friends or colleagues"));
 
+    expect(screen.getByText("Source statistics")).toBeInTheDocument();
     expect(
-      await screen.findByText(/domain's MD5 hash/i),
-    ).toBeInTheDocument();
+      screen.getByRole("switch", { name: /send this instance's domain/i }),
+    ).toBeChecked();
   });
 
   it("Submit PATCHes the merged questionnaire preserving role / use_case", async () => {
@@ -178,12 +182,43 @@ describe("SourceBackfillModal", () => {
     const sent = mockSaveQuestionnaire.mock.calls[0]![0];
     expect(sent.source).toEqual(["friends_colleagues"]);
     expect(sent.source_skipped).toBe(false);
+    expect(sent.source_domain_consent).toBe(true);
     expect(sent.role).toBe("engineer");
     expect(sent.use_case).toEqual(["ship_code", "plan_research"]);
     expect(sent.version).toBe(2);
     expect(mockCaptureEvent).toHaveBeenCalledWith(
       "source_backfill_submitted",
       expect.objectContaining({ source: ["friends_colleagues"] }),
+    );
+  });
+
+  it("persists false when the user disables plaintext domain reporting", async () => {
+    configStore.getState().setSourceChannelReportingConfig({
+      sourceChannelReportingEnabled: true,
+    });
+    setUser({
+      id: "u1",
+      onboarded_at: "2026-01-01T00:00:00Z",
+      onboarding_questionnaire: {
+        source: [],
+        role: "engineer",
+        use_case: ["ship_code"],
+        version: 2,
+      },
+    });
+    const user = userEvent.setup();
+    renderModal();
+    await user.click(await screen.findByText("Friends or colleagues"));
+    await user.click(
+      screen.getByRole("switch", { name: /send this instance's domain/i }),
+    );
+    await user.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => {
+      expect(mockSaveQuestionnaire).toHaveBeenCalledTimes(1);
+    });
+    expect(mockSaveQuestionnaire.mock.calls[0]![0].source_domain_consent).toBe(
+      false,
     );
   });
 
@@ -209,6 +244,7 @@ describe("SourceBackfillModal", () => {
     const sent = mockSaveQuestionnaire.mock.calls[0]![0];
     expect(sent.source).toEqual([]);
     expect(sent.source_skipped).toBe(true);
+    expect(sent.source_domain_consent).toBe(true);
     expect(sent.role).toBe("founder");
     expect(sent.use_case).toEqual(["manage_team"]);
     expect(mockCaptureEvent).toHaveBeenCalledWith("source_backfill_skipped");

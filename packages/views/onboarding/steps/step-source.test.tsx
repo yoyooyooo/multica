@@ -14,6 +14,7 @@ const EMPTY: QuestionnaireAnswers = {
   source: [],
   source_other: null,
   source_skipped: false,
+  source_domain_consent: true,
   role: null,
   role_other: null,
   role_skipped: false,
@@ -60,21 +61,45 @@ describe("StepSource (single-select primary source)", () => {
       source: ["social_linkedin"],
       source_other: null,
       source_skipped: false,
+      source_domain_consent: true,
     });
     // A click only records — it must NOT auto-advance.
     expect(onAdvance).not.toHaveBeenCalled();
   });
 
-  it("shows the reporting disclosure when the backend config enables source channel reporting", () => {
+  it("shows the reporting controls after a source is selected when reporting is enabled", () => {
     configStore.getState().setSourceChannelReportingConfig({
       sourceChannelReportingEnabled: true,
     });
 
-    renderStep();
+    renderStep({
+      ...EMPTY,
+      source: ["social_linkedin"],
+    });
 
+    expect(screen.getByText("Source statistics")).toBeInTheDocument();
     expect(
-      screen.getByText(/domain's MD5 hash/i),
-    ).toBeInTheDocument();
+      screen.getByRole("switch", { name: /send this instance's domain/i }),
+    ).toBeChecked();
+  });
+
+  it("lets the user disable plaintext domain reporting", async () => {
+    configStore.getState().setSourceChannelReportingConfig({
+      sourceChannelReportingEnabled: true,
+    });
+    const user = userEvent.setup();
+    const { onChange } = renderStep({
+      ...EMPTY,
+      source: ["search"],
+    });
+
+    await user.click(
+      screen.getByRole("switch", { name: /send this instance's domain/i }),
+    );
+
+    expect(onChange).toHaveBeenLastCalledWith({
+      source_domain_consent: false,
+    });
   });
 
   it("picking a second option replaces the first (no stacking)", async () => {
@@ -90,6 +115,7 @@ describe("StepSource (single-select primary source)", () => {
       source: ["social_x"],
       source_other: null,
       source_skipped: false,
+      source_domain_consent: true,
     });
   });
 
@@ -117,6 +143,7 @@ describe("StepSource (single-select primary source)", () => {
       source: ["other"],
       source_other: null,
       source_skipped: false,
+      source_domain_consent: true,
     });
 
     const input = await screen.findByPlaceholderText(/podcast/i);
@@ -138,6 +165,7 @@ describe("StepSource (single-select primary source)", () => {
       source: ["social_linkedin"],
       source_other: null,
       source_skipped: false,
+      source_domain_consent: true,
     });
   });
 });

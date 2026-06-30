@@ -17,13 +17,13 @@ const SourceOtherMaxRunes = 512
 const DomainMaxLength = 255
 
 type Report struct {
-	SchemaVersion int    `json:"schema_version"`
-	Channel       string `json:"channel"`
-	InstanceHash  string `json:"instance_hash"`
-	SubjectHash   string `json:"subject_hash"`
-	SourceOther   string `json:"source_other,omitempty"`
-	Domain        string `json:"domain,omitempty"`
-	DomainMD5     string `json:"domain_md5,omitempty"`
+	SchemaVersion int     `json:"schema_version"`
+	Channel       string  `json:"channel"`
+	InstanceHash  string  `json:"instance_hash"`
+	SubjectHash   string  `json:"subject_hash"`
+	SourceOther   string  `json:"source_other,omitempty"`
+	Domain        *string `json:"domain"`
+	DomainMD5     string  `json:"domain_md5"`
 }
 
 var validChannels = map[string]struct{}{

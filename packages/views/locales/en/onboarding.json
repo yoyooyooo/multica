@@ -46,9 +46,18 @@
   "source_backfill": {
     "eyebrow": "Quick question",
     "lede": "We noticed you didn't pick this during signup — it helps us understand who finds Multica useful. One question, then you're back to your work.",
-    "self_host_lede": "About this statistic: this page sends Multica the source option you pick, the note you enter if you pick Other, this instance's domain, the domain's MD5 hash, and anonymous deduplication identifiers. It does not send your name, email, or organization info.",
     "submit": "Submit",
     "hint_ready": "Looks good. Hit Submit when you're ready."
+  },
+  "source_reporting": {
+    "summary": {
+      "title": "Source statistics",
+      "description": "Sends the source you pick. If you choose Other, it also sends your note."
+    },
+    "domain": {
+      "label": "Send this instance's domain",
+      "description": "On sends the domain and its MD5 hash. Off sends only the domain hash, not the plaintext domain."
+    }
   },
   "questions": {
     "eyebrow_about_you": "About you",
@@ -67,8 +76,7 @@
       "event_conference": "Conference / meetup",
       "dont_remember": "Don't remember",
       "other": "Other",
-      "other_placeholder": "e.g. a podcast I listen to",
-      "self_host_notice": "About this statistic: this page sends Multica the source option you pick, the note you enter if you pick Other, this instance's domain, the domain's MD5 hash, and anonymous deduplication identifiers. It does not send your name, email, or organization info."
+      "other_placeholder": "e.g. a podcast I listen to"
     },
     "role": {
       "question": "Which best describes you?",

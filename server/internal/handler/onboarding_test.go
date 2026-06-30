@@ -45,18 +45,19 @@ func newWaitlistRequest(userID string, body map[string]string) *http.Request {
 }
 
 type recordedSourceChannelReport struct {
-	userID      string
-	channel     string
-	sourceOther string
-	domain      string
+	userID        string
+	channel       string
+	sourceOther   string
+	domain        string
+	includeDomain bool
 }
 
 type recordingSourceChannelReporter struct {
 	calls []recordedSourceChannelReport
 }
 
-func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel, sourceOther, domain string) {
-	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel, sourceOther: sourceOther, domain: domain})
+func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel, sourceOther, domain string, includeDomain bool) {
+	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel, sourceOther: sourceOther, domain: domain, includeDomain: includeDomain})
 }
 
 func installRecordingSourceChannelReporter(t *testing.T) *recordingSourceChannelReporter {
@@ -89,6 +90,7 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 		"source": ["search"],
 		"source_other": null,
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"version": 2
 	}`))
 	if w.Code != http.StatusOK {
@@ -103,6 +105,7 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 		"source": ["search"],
 		"source_other": null,
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -120,12 +123,16 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 	if recorder.calls[0].userID != userID || recorder.calls[0].channel != "search" {
 		t.Fatalf("unexpected report: %+v", recorder.calls[0])
 	}
+	if !recorder.calls[0].includeDomain {
+		t.Fatalf("expected plaintext domain consent to be forwarded")
+	}
 
 	w = httptest.NewRecorder()
 	testHandler.PatchOnboarding(w, newPatchOnboardingRequest(userID, `{
 		"source": ["search"],
 		"source_other": null,
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -146,6 +153,7 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 		"source": ["social_github"],
 		"source_other": null,
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -163,6 +171,38 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 	if recorder.calls[1].userID != userID || recorder.calls[1].channel != "social_github" {
 		t.Fatalf("unexpected updated report: %+v", recorder.calls[1])
 	}
+	if !recorder.calls[1].includeDomain {
+		t.Fatalf("expected updated report to keep plaintext domain consent")
+	}
+}
+
+func TestPatchOnboardingReportsSelfHostSourceWithoutPlaintextDomain(t *testing.T) {
+	userID := newWaitlistTestUser(t, "source-no-domain@multica.ai")
+	recorder := installRecordingSourceChannelReporter(t)
+
+	w := httptest.NewRecorder()
+	testHandler.PatchOnboarding(w, newPatchOnboardingRequest(userID, `{
+		"source": ["search"],
+		"source_other": null,
+		"source_skipped": false,
+		"source_domain_consent": false,
+		"role": "engineer",
+		"role_other": null,
+		"role_skipped": false,
+		"use_case": ["ship_code"],
+		"use_case_other": null,
+		"use_case_skipped": false,
+		"version": 2
+	}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete patch: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(recorder.calls) != 1 {
+		t.Fatalf("complete patch should report once, got %+v", recorder.calls)
+	}
+	if recorder.calls[0].includeDomain {
+		t.Fatalf("expected plaintext domain consent to be false")
+	}
 }
 
 func TestPatchOnboardingReportsSelfHostSourceOtherText(t *testing.T) {
@@ -174,6 +214,7 @@ func TestPatchOnboardingReportsSelfHostSourceOtherText(t *testing.T) {
 		"source": ["other"],
 		"source_other": "a podcast",
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -204,6 +245,7 @@ func TestPatchOnboardingReportsSelfHostSourceOtherTextChange(t *testing.T) {
 		"source": ["other"],
 		"source_other": "old podcast",
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -221,6 +263,7 @@ func TestPatchOnboardingReportsSelfHostSourceOtherTextChange(t *testing.T) {
 		"source": ["other"],
 		"source_other": "new podcast",
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,
@@ -265,6 +308,7 @@ func TestPatchOnboardingReportsSelfHostSourceForBackfillSubmit(t *testing.T) {
 		"source": ["blog_newsletter"],
 		"source_other": null,
 		"source_skipped": false,
+			"source_domain_consent": true,
 		"role": "engineer",
 		"role_other": null,
 		"role_skipped": false,

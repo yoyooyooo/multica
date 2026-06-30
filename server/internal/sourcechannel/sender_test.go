@@ -39,7 +39,7 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    time.Second,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ", "https://Example.com:443/path")
+	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ", "https://Example.com:443/path", true)
 
 	select {
 	case payload := <-got:
@@ -52,8 +52,8 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 		if payload.SourceOther != "a podcast" {
 			t.Fatalf("source_other: want trimmed text, got %q", payload.SourceOther)
 		}
-		if payload.Domain != "example.com" {
-			t.Fatalf("domain: want example.com, got %q", payload.Domain)
+		if payload.Domain == nil || *payload.Domain != "example.com" {
+			t.Fatalf("domain: want example.com, got %+v", payload.Domain)
 		}
 		if payload.DomainMD5 != DomainMD5("example.com") {
 			t.Fatalf("domain_md5: want %q, got %q", DomainMD5("example.com"), payload.DomainMD5)
@@ -63,6 +63,37 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 		}
 		if payload.SubjectHash == "user-123" || strings.Contains(payload.SubjectHash, "user-123") {
 			t.Fatalf("subject_hash leaked raw user id: %q", payload.SubjectHash)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for source channel report")
+	}
+}
+
+func TestSenderCanReportDomainHashWithoutPlaintextDomain(t *testing.T) {
+	got := make(chan Report, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload Report
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		got <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
+		APIBaseURL: server.URL,
+		Timeout:    time.Second,
+	})
+	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://Example.com:443/path", false)
+
+	select {
+	case payload := <-got:
+		if payload.Domain != nil {
+			t.Fatalf("domain: want nil when plaintext consent is false, got %+v", payload.Domain)
+		}
+		if payload.DomainMD5 != DomainMD5("example.com") {
+			t.Fatalf("domain_md5: want %q, got %q", DomainMD5("example.com"), payload.DomainMD5)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for source channel report")
@@ -81,7 +112,7 @@ func TestSenderDropsUnknownChannel(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    50 * time.Millisecond,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text", "example.com")
+	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text", "example.com", true)
 
 	select {
 	case <-got:
@@ -102,7 +133,7 @@ func TestSenderDropsOfficialMulticaDomain(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    50 * time.Millisecond,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://api.multica.ai")
+	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://api.multica.ai", true)
 
 	select {
 	case <-got:

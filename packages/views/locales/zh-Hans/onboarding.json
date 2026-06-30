@@ -46,9 +46,18 @@
   "source_backfill": {
     "eyebrow": "顺便问一句",
     "lede": "我们注意到你之前没有勾选这一项——花一秒补一下，能帮我们更了解像你一样的用户。完成后立刻回到你正在做的事。",
-    "self_host_lede": "关于这项统计：这里会向 Multica 发送你选择的来源选项；如果选择“其他”，也会发送你填写的补充说明；同时会发送本实例的域名、域名的 MD5 哈希，以及用于去重的匿名标识。不会发送姓名、邮箱或组织信息。",
     "submit": "提交",
     "hint_ready": "看起来不错，准备好就点提交。"
+  },
+  "source_reporting": {
+    "summary": {
+      "title": "来源统计",
+      "description": "会发送你选择的来源；如果选择“其他”，也会发送补充说明。"
+    },
+    "domain": {
+      "label": "发送本实例域名",
+      "description": "开启后会发送本实例域名和域名的 MD5 哈希；关闭后只发送域名的 MD5 哈希，不发送明文域名。"
+    }
   },
   "questions": {
     "eyebrow_about_you": "关于你",
@@ -67,8 +76,7 @@
       "event_conference": "线下活动 / Meetup",
       "dont_remember": "想不起来了",
       "other": "其他",
-      "other_placeholder": "例如：一档播客",
-      "self_host_notice": "关于这项统计：这里会向 Multica 发送你选择的来源选项；如果选择“其他”，也会发送你填写的补充说明；同时会发送本实例的域名、域名的 MD5 哈希，以及用于去重的匿名标识。不会发送姓名、邮箱或组织信息。"
+      "other_placeholder": "例如：一档播客"
     },
     "role": {
       "question": "你是什么角色？",

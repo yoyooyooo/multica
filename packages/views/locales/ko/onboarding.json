@@ -46,9 +46,18 @@
   "source_backfill": {
     "eyebrow": "간단한 질문 하나",
     "lede": "가입할 때 선택하지 않으셨더라고요. 어떤 사용자에게 Multica가 유용한지 파악하는 데 도움이 됩니다. 답하시면 바로 작업으로 돌아가실 수 있어요.",
-    "self_host_lede": "이 통계에 대해: 여기서는 선택한 유입 경로, Other를 선택했을 때 입력한 내용, 이 인스턴스의 도메인, 도메인의 MD5 해시, 중복 제거용 익명 식별자를 Multica로 전송합니다. 이름, 이메일, 조직 정보는 전송하지 않습니다.",
     "submit": "제출",
     "hint_ready": "좋습니다. 준비되면 제출을 눌러주세요."
+  },
+  "source_reporting": {
+    "summary": {
+      "title": "유입 경로 통계",
+      "description": "선택한 유입 경로를 전송합니다. Other를 선택한 경우 입력한 설명도 전송됩니다."
+    },
+    "domain": {
+      "label": "이 인스턴스의 도메인 전송",
+      "description": "켜면 도메인과 도메인의 MD5 해시를 전송합니다. 끄면 도메인의 해시만 전송하고 평문 도메인은 전송하지 않습니다."
+    }
   },
   "questions": {
     "eyebrow_about_you": "내 정보",
@@ -67,8 +76,7 @@
       "event_conference": "컨퍼런스 / 밋업",
       "dont_remember": "기억나지 않음",
       "other": "기타",
-      "other_placeholder": "예: 자주 듣는 팟캐스트",
-      "self_host_notice": "이 통계에 대해: 여기서는 선택한 유입 경로, Other를 선택했을 때 입력한 내용, 이 인스턴스의 도메인, 도메인의 MD5 해시, 중복 제거용 익명 식별자를 Multica로 전송합니다. 이름, 이메일, 조직 정보는 전송하지 않습니다."
+      "other_placeholder": "예: 자주 듣는 팟캐스트"
     },
     "role": {
       "question": "어떤 역할에 가장 가까우신가요?",

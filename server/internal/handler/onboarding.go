@@ -171,16 +171,17 @@ func (s *stringOrSlice) UnmarshalJSON(data []byte) error {
 }
 
 type questionnaireAnswers struct {
-	Source         stringOrSlice `json:"source"`
-	SourceOther    string        `json:"source_other"`
-	SourceSkipped  bool          `json:"source_skipped"`
-	Role           string        `json:"role"`
-	RoleOther      string        `json:"role_other"`
-	RoleSkipped    bool          `json:"role_skipped"`
-	UseCase        stringOrSlice `json:"use_case"`
-	UseCaseOther   string        `json:"use_case_other"`
-	UseCaseSkipped bool          `json:"use_case_skipped"`
-	Version        int           `json:"version"`
+	Source              stringOrSlice `json:"source"`
+	SourceOther         string        `json:"source_other"`
+	SourceSkipped       bool          `json:"source_skipped"`
+	SourceDomainConsent bool          `json:"source_domain_consent"`
+	Role                string        `json:"role"`
+	RoleOther           string        `json:"role_other"`
+	RoleSkipped         bool          `json:"role_skipped"`
+	UseCase             stringOrSlice `json:"use_case"`
+	UseCaseOther        string        `json:"use_case_other"`
+	UseCaseSkipped      bool          `json:"use_case_skipped"`
+	Version             int           `json:"version"`
 }
 
 func (q questionnaireAnswers) sourceResolved() bool {
@@ -300,7 +301,7 @@ func (h *Handler) reportSelfHostSourceChannelIfNeeded(r *http.Request, userID st
 	backfillSubmitted := beforeOnboarded && len(before.Source) == 0 && !before.SourceSkipped && len(after.Source) > 0
 	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceAttributionChanged(before, after)
 	if questionnaireJustCompleted || backfillSubmitted || sourceChangedAfterCompletion {
-		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther, sourcechannel.ReportingDomain(r))
+		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther, sourcechannel.ReportingDomain(r), after.SourceDomainConsent)
 	}
 }
 
@@ -309,9 +310,10 @@ func sourceAttributionChanged(before, after questionnaireAnswers) bool {
 		return true
 	}
 	if len(after.Source) == 0 || strings.TrimSpace(after.Source[0]) != "other" {
-		return false
+		return before.SourceDomainConsent != after.SourceDomainConsent
 	}
-	return strings.TrimSpace(before.SourceOther) != strings.TrimSpace(after.SourceOther)
+	return strings.TrimSpace(before.SourceOther) != strings.TrimSpace(after.SourceOther) ||
+		before.SourceDomainConsent != after.SourceDomainConsent
 }
 
 func sourceChanged(before, after stringOrSlice) bool {
