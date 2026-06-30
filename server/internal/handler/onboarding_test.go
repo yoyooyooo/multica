@@ -45,16 +45,17 @@ func newWaitlistRequest(userID string, body map[string]string) *http.Request {
 }
 
 type recordedSourceChannelReport struct {
-	userID  string
-	channel string
+	userID      string
+	channel     string
+	sourceOther string
 }
 
 type recordingSourceChannelReporter struct {
 	calls []recordedSourceChannelReport
 }
 
-func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel string) {
-	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel})
+func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel, sourceOther string) {
+	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel, sourceOther: sourceOther})
 }
 
 func installRecordingSourceChannelReporter(t *testing.T) *recordingSourceChannelReporter {
@@ -160,6 +161,81 @@ func TestPatchOnboardingReportsSelfHostSourceWhenQuestionnaireCompletes(t *testi
 	}
 	if recorder.calls[1].userID != userID || recorder.calls[1].channel != "social_github" {
 		t.Fatalf("unexpected updated report: %+v", recorder.calls[1])
+	}
+}
+
+func TestPatchOnboardingReportsSelfHostSourceOtherText(t *testing.T) {
+	userID := newWaitlistTestUser(t, "source-other@multica.ai")
+	recorder := installRecordingSourceChannelReporter(t)
+
+	w := httptest.NewRecorder()
+	testHandler.PatchOnboarding(w, newPatchOnboardingRequest(userID, `{
+		"source": ["other"],
+		"source_other": "a podcast",
+		"source_skipped": false,
+		"role": "engineer",
+		"role_other": null,
+		"role_skipped": false,
+		"use_case": ["ship_code"],
+		"use_case_other": null,
+		"use_case_skipped": false,
+		"version": 2
+	}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete other patch: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(recorder.calls) != 1 {
+		t.Fatalf("complete other patch should report once, got %+v", recorder.calls)
+	}
+	if recorder.calls[0].userID != userID || recorder.calls[0].channel != "other" || recorder.calls[0].sourceOther != "a podcast" {
+		t.Fatalf("unexpected report: %+v", recorder.calls[0])
+	}
+}
+
+func TestPatchOnboardingReportsSelfHostSourceOtherTextChange(t *testing.T) {
+	userID := newWaitlistTestUser(t, "source-other-change@multica.ai")
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE "user"
+		   SET onboarded_at = now(),
+		       onboarding_questionnaire = $2::jsonb
+		 WHERE id = $1
+	`, userID, `{
+		"source": ["other"],
+		"source_other": "old podcast",
+		"source_skipped": false,
+		"role": "engineer",
+		"role_other": null,
+		"role_skipped": false,
+		"use_case": ["ship_code"],
+		"use_case_other": null,
+		"use_case_skipped": false,
+		"version": 2
+	}`); err != nil {
+		t.Fatalf("seed onboarded user: %v", err)
+	}
+	recorder := installRecordingSourceChannelReporter(t)
+
+	w := httptest.NewRecorder()
+	testHandler.PatchOnboarding(w, newPatchOnboardingRequest(userID, `{
+		"source": ["other"],
+		"source_other": "new podcast",
+		"source_skipped": false,
+		"role": "engineer",
+		"role_other": null,
+		"role_skipped": false,
+		"use_case": ["ship_code"],
+		"use_case_other": null,
+		"use_case_skipped": false,
+		"version": 2
+	}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("other text change patch: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(recorder.calls) != 1 {
+		t.Fatalf("other text change patch should report once, got %+v", recorder.calls)
+	}
+	if recorder.calls[0].userID != userID || recorder.calls[0].channel != "other" || recorder.calls[0].sourceOther != "new podcast" {
+		t.Fatalf("unexpected report: %+v", recorder.calls[0])
 	}
 }
 

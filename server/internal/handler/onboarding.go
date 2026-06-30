@@ -297,10 +297,20 @@ func (h *Handler) reportSelfHostSourceChannelIfNeeded(userID string, before, aft
 
 	questionnaireJustCompleted := after.complete() && !before.complete()
 	backfillSubmitted := beforeOnboarded && len(before.Source) == 0 && !before.SourceSkipped && len(after.Source) > 0
-	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceChanged(before.Source, after.Source)
+	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceAttributionChanged(before, after)
 	if questionnaireJustCompleted || backfillSubmitted || sourceChangedAfterCompletion {
-		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel)
+		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther)
 	}
+}
+
+func sourceAttributionChanged(before, after questionnaireAnswers) bool {
+	if sourceChanged(before.Source, after.Source) {
+		return true
+	}
+	if len(after.Source) == 0 || strings.TrimSpace(after.Source[0]) != "other" {
+		return false
+	}
+	return strings.TrimSpace(before.SourceOther) != strings.TrimSpace(after.SourceOther)
 }
 
 func sourceChanged(before, after stringOrSlice) bool {

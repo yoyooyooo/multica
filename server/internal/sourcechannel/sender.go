@@ -88,7 +88,7 @@ func MustNewSender(settings settingStore, cfg SenderConfig) *Sender {
 	return s
 }
 
-func (s *Sender) ReportSelfHostSourceChannel(userID, channel string) {
+func (s *Sender) ReportSelfHostSourceChannel(userID, channel, sourceOther string) {
 	if s == nil {
 		return
 	}
@@ -97,10 +97,11 @@ func (s *Sender) ReportSelfHostSourceChannel(userID, channel string) {
 	if userID == "" || !ValidChannel(channel) {
 		return
 	}
-	go s.report(context.Background(), userID, channel)
+	sourceOther = NormalizeSourceOther(channel, sourceOther)
+	go s.report(context.Background(), userID, channel, sourceOther)
 }
 
-func (s *Sender) report(parent context.Context, userID, channel string) {
+func (s *Sender) report(parent context.Context, userID, channel, sourceOther string) {
 	ctx, cancel := context.WithTimeout(parent, s.timeout)
 	defer cancel()
 
@@ -115,6 +116,7 @@ func (s *Sender) report(parent context.Context, userID, channel string) {
 		Channel:       channel,
 		InstanceHash:  InstanceHash(salt),
 		SubjectHash:   SubjectHash(salt, userID),
+		SourceOther:   sourceOther,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/sourcechannel"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -15,8 +16,8 @@ const selfHostSourceChannelBodyLimit = 4 * 1024
 
 // RecordSelfHostSourceChannel receives the anonymous source-channel report
 // posted by self-hosted Multica instances. The payload deliberately excludes
-// account/profile/workspace data and free-text answers; only a fixed channel
-// enum and anonymous dedupe hashes are accepted.
+// account/profile/workspace data; only a fixed channel enum, optional
+// "other" text, and anonymous dedupe hashes are accepted.
 func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, selfHostSourceChannelBodyLimit)
 	dec := json.NewDecoder(r.Body)
@@ -35,6 +36,7 @@ func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Req
 	channel := sourcechannel.NormalizeChannel(req.Channel)
 	instanceHash := sourcechannel.NormalizeHash(req.InstanceHash)
 	subjectHash := sourcechannel.NormalizeHash(req.SubjectHash)
+	sourceOther := sourcechannel.NormalizeSourceOther(channel, req.SourceOther)
 	if req.SchemaVersion != sourcechannel.SchemaVersion {
 		writeError(w, http.StatusBadRequest, "unsupported schema_version")
 		return
@@ -52,12 +54,16 @@ func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	_, err := h.Queries.UpsertSelfHostSourceChannel(r.Context(), db.UpsertSelfHostSourceChannelParams{
+	params := db.UpsertSelfHostSourceChannelParams{
 		SchemaVersion: int32(req.SchemaVersion),
 		Channel:       channel,
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
-	})
+	}
+	if sourceOther != "" {
+		params.SourceOther = pgtype.Text{String: sourceOther, Valid: true}
+	}
+	_, err := h.Queries.UpsertSelfHostSourceChannel(r.Context(), params)
 	if err != nil {
 		slog.Warn("self-host source channel upsert failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to record source channel")

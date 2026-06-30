@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/sourcechannel"
 )
 
@@ -25,9 +26,10 @@ func TestRecordSelfHostSourceChannelUpsertsByAnonymousSubject(t *testing.T) {
 
 	postSourceReport(t, sourcechannel.Report{
 		SchemaVersion: sourcechannel.SchemaVersion,
-		Channel:       "social_github",
+		Channel:       "other",
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
+		SourceOther:   "  a podcast  ",
 	})
 	postSourceReport(t, sourcechannel.Report{
 		SchemaVersion: sourcechannel.SchemaVersion,
@@ -38,38 +40,56 @@ func TestRecordSelfHostSourceChannelUpsertsByAnonymousSubject(t *testing.T) {
 
 	var (
 		channel     string
+		sourceOther pgtype.Text
 		reportCount int
 	)
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT channel, report_count
+		SELECT channel, source_other, report_count
 		  FROM self_host_source_channel
 		 WHERE instance_hash = $1 AND subject_hash = $2
-	`, instanceHash, subjectHash).Scan(&channel, &reportCount); err != nil {
+	`, instanceHash, subjectHash).Scan(&channel, &sourceOther, &reportCount); err != nil {
 		t.Fatalf("load source channel row: %v", err)
 	}
 	if channel != "search" {
 		t.Fatalf("channel: want latest value search, got %q", channel)
+	}
+	if sourceOther.Valid {
+		t.Fatalf("source_other should clear when latest channel is not other, got %q", sourceOther.String)
 	}
 	if reportCount != 2 {
 		t.Fatalf("report_count: want 2, got %d", reportCount)
 	}
 }
 
-func TestRecordSelfHostSourceChannelRejectsFreeTextFields(t *testing.T) {
-	body := []byte(`{
-		"schema_version": 1,
-		"channel": "other",
-		"instance_hash": "` + strings.Repeat("c", 64) + `",
-		"subject_hash": "` + strings.Repeat("d", 64) + `",
-		"source_other": "private free text"
-	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/acquisition/self-host-source", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
+func TestRecordSelfHostSourceChannelStoresOtherText(t *testing.T) {
+	instanceHash := strings.Repeat("c", 64)
+	subjectHash := strings.Repeat("d", 64)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM self_host_source_channel WHERE instance_hash = $1 AND subject_hash = $2`,
+			instanceHash,
+			subjectHash,
+		)
+	})
 
-	testHandler.RecordSelfHostSourceChannel(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for unknown free-text field, got %d: %s", w.Code, w.Body.String())
+	postSourceReport(t, sourcechannel.Report{
+		SchemaVersion: sourcechannel.SchemaVersion,
+		Channel:       "other",
+		InstanceHash:  instanceHash,
+		SubjectHash:   subjectHash,
+		SourceOther:   "  private free text  ",
+	})
+
+	var sourceOther pgtype.Text
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT source_other
+		  FROM self_host_source_channel
+		 WHERE instance_hash = $1 AND subject_hash = $2
+	`, instanceHash, subjectHash).Scan(&sourceOther); err != nil {
+		t.Fatalf("load source_other: %v", err)
+	}
+	if !sourceOther.Valid || sourceOther.String != "private free text" {
+		t.Fatalf("source_other: want trimmed text, got %+v", sourceOther)
 	}
 }
 

@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const upsertSelfHostSourceChannel = `-- name: UpsertSelfHostSourceChannel :one
@@ -14,23 +16,26 @@ INSERT INTO self_host_source_channel (
     schema_version,
     channel,
     instance_hash,
-    subject_hash
+    subject_hash,
+    source_other
 ) VALUES (
-    $1, $2, $3, $4
+    $1, $2, $3, $4, $5
 )
 ON CONFLICT (instance_hash, subject_hash) DO UPDATE SET
     schema_version = EXCLUDED.schema_version,
     channel = EXCLUDED.channel,
+    source_other = EXCLUDED.source_other,
     last_received_at = now(),
     report_count = self_host_source_channel.report_count + 1
-RETURNING instance_hash, subject_hash, channel, schema_version, first_received_at, last_received_at, report_count
+RETURNING instance_hash, subject_hash, channel, schema_version, first_received_at, last_received_at, report_count, source_other
 `
 
 type UpsertSelfHostSourceChannelParams struct {
-	SchemaVersion int32  `json:"schema_version"`
-	Channel       string `json:"channel"`
-	InstanceHash  string `json:"instance_hash"`
-	SubjectHash   string `json:"subject_hash"`
+	SchemaVersion int32       `json:"schema_version"`
+	Channel       string      `json:"channel"`
+	InstanceHash  string      `json:"instance_hash"`
+	SubjectHash   string      `json:"subject_hash"`
+	SourceOther   pgtype.Text `json:"source_other"`
 }
 
 func (q *Queries) UpsertSelfHostSourceChannel(ctx context.Context, arg UpsertSelfHostSourceChannelParams) (SelfHostSourceChannel, error) {
@@ -39,6 +44,7 @@ func (q *Queries) UpsertSelfHostSourceChannel(ctx context.Context, arg UpsertSel
 		arg.Channel,
 		arg.InstanceHash,
 		arg.SubjectHash,
+		arg.SourceOther,
 	)
 	var i SelfHostSourceChannel
 	err := row.Scan(
@@ -49,6 +55,7 @@ func (q *Queries) UpsertSelfHostSourceChannel(ctx context.Context, arg UpsertSel
 		&i.FirstReceivedAt,
 		&i.LastReceivedAt,
 		&i.ReportCount,
+		&i.SourceOther,
 	)
 	return i, err
 }

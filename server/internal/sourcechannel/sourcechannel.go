@@ -8,12 +8,14 @@ import (
 )
 
 const SchemaVersion = 1
+const SourceOtherMaxRunes = 512
 
 type Report struct {
 	SchemaVersion int    `json:"schema_version"`
 	Channel       string `json:"channel"`
 	InstanceHash  string `json:"instance_hash"`
 	SubjectHash   string `json:"subject_hash"`
+	SourceOther   string `json:"source_other,omitempty"`
 }
 
 var validChannels = map[string]struct{}{
@@ -49,6 +51,21 @@ func NormalizeHash(hash string) string {
 
 func ValidHash(hash string) bool {
 	return hashPattern.MatchString(NormalizeHash(hash))
+}
+
+func NormalizeSourceOther(channel, sourceOther string) string {
+	if NormalizeChannel(channel) != "other" {
+		return ""
+	}
+	sourceOther = strings.TrimSpace(sourceOther)
+	if sourceOther == "" {
+		return ""
+	}
+	runes := []rune(sourceOther)
+	if len(runes) > SourceOtherMaxRunes {
+		sourceOther = string(runes[:SourceOtherMaxRunes])
+	}
+	return sourceOther
 }
 
 func InstanceHash(salt string) string {

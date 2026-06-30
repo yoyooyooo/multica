@@ -20,7 +20,7 @@ func (f fakeSettingStore) GetOrCreateSystemSetting(context.Context, db.GetOrCrea
 	return f.value, nil
 }
 
-func TestSenderReportsOnlyChannelAndAnonymousHashes(t *testing.T) {
+func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 	got := make(chan Report, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != ReportPath {
@@ -39,15 +39,18 @@ func TestSenderReportsOnlyChannelAndAnonymousHashes(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    time.Second,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "Social_GitHub")
+	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ")
 
 	select {
 	case payload := <-got:
 		if payload.SchemaVersion != SchemaVersion {
 			t.Fatalf("schema_version: want %d, got %d", SchemaVersion, payload.SchemaVersion)
 		}
-		if payload.Channel != "social_github" {
-			t.Fatalf("channel: want social_github, got %q", payload.Channel)
+		if payload.Channel != "other" {
+			t.Fatalf("channel: want other, got %q", payload.Channel)
+		}
+		if payload.SourceOther != "a podcast" {
+			t.Fatalf("source_other: want trimmed text, got %q", payload.SourceOther)
 		}
 		if !ValidHash(payload.InstanceHash) || !ValidHash(payload.SubjectHash) {
 			t.Fatalf("hashes should be 64-char lowercase hex: %+v", payload)
@@ -72,7 +75,7 @@ func TestSenderDropsUnknownChannel(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    50 * time.Millisecond,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "private_text")
+	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text")
 
 	select {
 	case <-got:
