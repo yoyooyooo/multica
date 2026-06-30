@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  Blocks,
   BookOpenText,
   FileText,
   KeyRound,
@@ -34,6 +35,7 @@ import { SkillsTab } from "./tabs/skills-tab";
 import { EnvTab } from "./tabs/env-tab";
 import { CustomArgsTab } from "./tabs/custom-args-tab";
 import { McpConfigTab } from "./tabs/mcp-config-tab";
+import { AgentMcpTab } from "./tabs/agent-mcp-tab";
 import { IntegrationsTab } from "./tabs/integrations-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
 import { ActorIssuesPanel } from "../../common/actor-issues-panel";
@@ -47,10 +49,11 @@ export type DetailTab =
   | "env"
   | "custom_args"
   | "mcp_config"
+  | "composio_mcp"
   | "integrations"
   | "runtime_config";
 
-const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "skills" | "environment" | "custom_args" | "mcp_config" | "integrations" | "runtime_config"> = {
+const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "skills" | "environment" | "custom_args" | "mcp_config" | "composio_mcp" | "integrations" | "runtime_config"> = {
   activity: "activity",
   tasks: "tasks",
   instructions: "instructions",
@@ -58,6 +61,7 @@ const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "
   env: "environment",
   custom_args: "custom_args",
   mcp_config: "mcp_config",
+  composio_mcp: "composio_mcp",
   integrations: "integrations",
   runtime_config: "runtime_config",
 };
@@ -73,6 +77,7 @@ const detailTabs: {
   { id: "env", icon: KeyRound },
   { id: "custom_args", icon: Terminal },
   { id: "mcp_config", icon: Plug },
+  { id: "composio_mcp", icon: Blocks },
   { id: "integrations", icon: Webhook },
   { id: "runtime_config", icon: Router },
 ];
@@ -81,6 +86,13 @@ interface AgentOverviewPaneProps {
   agent: Agent;
   runtimes: AgentRuntime[];
   onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
+  /**
+   * The viewer's user id. Gates the creator-only MCP tab — the tab entry is
+   * only rendered when the viewer is the agent owner (`agent.owner_id`),
+   * matching the backend's owner-only read/write of the toolkit allowlist
+   * (MUL-3870). `null` while auth is still loading hides the tab.
+   */
+  currentUserId?: string | null;
   /**
    * One-shot request from a sibling (the inspector's compact Lark status
    * row) to focus a specific tab. Routed through the same `requestTabChange`
@@ -118,6 +130,7 @@ export function AgentOverviewPane({
   agent,
   runtimes,
   onUpdate,
+  currentUserId,
   navIntent,
   onNavIntentHandled,
 }: AgentOverviewPaneProps) {
@@ -168,13 +181,20 @@ export function AgentOverviewPane({
   const visibleTabs = useMemo(() => {
     const showMcp = runtime ? providerSupportsMcpConfig(runtime.provider) : true;
     const showRuntimeConfig = runtime ? runtime.provider === "openclaw" : false;
+    // The Composio MCP tab is creator-only: it edits the agent owner's own
+    // toolkit allowlist, which the backend reads/writes for the owner alone
+    // (redacted + write-dropped for everyone else — MUL-3870 / MUL-3869).
+    // Hide the entry entirely for non-owners, and while auth is still loading.
+    const showComposioMcp =
+      !!currentUserId && !!agent.owner_id && agent.owner_id === currentUserId;
     return detailTabs.filter((tab) => {
       if (tab.id === "mcp_config") return showMcp;
+      if (tab.id === "composio_mcp") return showComposioMcp;
       if (tab.id === "integrations") return integrationsConfigured;
       if (tab.id === "runtime_config") return showRuntimeConfig;
       return true;
     });
-  }, [runtime, integrationsConfigured]);
+  }, [runtime, integrationsConfigured, currentUserId, agent.owner_id]);
 
   // If the active tab disappears (e.g. user just switched the agent's
   // runtime to one that doesn't read mcp_config), fall back to Activity
@@ -285,6 +305,11 @@ export function AgentOverviewPane({
               onSave={(updates) => onUpdate(agent.id, updates)}
               onDirtyChange={setActiveDirty}
             />
+          </TabContent>
+        )}
+        {effectiveTab === "composio_mcp" && (
+          <TabContent>
+            <AgentMcpTab agent={agent} />
           </TabContent>
         )}
         {effectiveTab === "integrations" && (

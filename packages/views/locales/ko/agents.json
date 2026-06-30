@@ -216,6 +216,7 @@
     "environment": "환경",
     "custom_args": "사용자 지정 인자",
     "mcp_config": "MCP",
+    "composio_mcp": "MCP 앱",
     "integrations": "연동",
     "runtime_config": "라우팅",
     "discard_dialog_title": "저장하지 않은 변경사항을 버릴까요?",
@@ -328,6 +329,20 @@
       "save_failed_toast": "MCP config를 저장하지 못했습니다",
       "redacted_title": "설정됨 - 현재 보기에서는 숨김",
       "redacted_hint": "에이전트 소유자 또는 워크스페이스 관리자만 이 config를 읽을 수 있습니다."
+    },
+    "composio_mcp": {
+      "subtitle": "툴킷을 선택하면, 본인(이 에이전트의 생성자)이 직접 또는 하위 에이전트 체인을 통해 이 에이전트를 트리거할 때만 MCP 서버로 마운트됩니다.",
+      "loading": "연결을 불러오는 중…",
+      "load_failed": "연결된 앱을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+      "empty_title": "아직 연결된 앱이 없습니다",
+      "empty_hint": "아직 서드파티 서비스를 연결하지 않았습니다. 먼저 하나를 인증한 뒤 여기서 허용하세요.",
+      "empty_link_to_settings": "설정 → 연동에서 연결하기",
+      "connected": "연결됨",
+      "toggle_aria": "이 에이전트에 {{toolkit}} 허용",
+      "saving": "저장 중…",
+      "save_failed_toast": "저장하지 못했습니다. 다시 시도하세요",
+      "redacted_title": "설정됨 — 보기에서 숨김",
+      "redacted_hint": "이 에이전트가 사용할 수 있는 앱은 생성자만 보거나 변경할 수 있습니다."
     },
     "runtime_config": {
       "intro": "OpenClaw 런타임이 이 에이전트의 각 턴을 어떻게 실행할지 선택하세요. Local 모드는 에이전트를 daemon 프로세스 내부에서 실행합니다. Gateway 모드는 각 턴을 OpenClaw Gateway로 전달합니다 — daemon 호스트가 가벼운 조율기 역할을 하고 실제 작업은 더 강력한 머신에서 돌리고 싶을 때 유용합니다.",

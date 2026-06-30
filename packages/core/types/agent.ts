@@ -281,6 +281,24 @@ export interface Agent {
    * Older backends omit this field; treat `undefined` as false.
    */
   mcp_config_redacted?: boolean;
+  /**
+   * The subset of Composio toolkit slugs this agent is allowed to mount as
+   * MCP servers at task dispatch — but only when the run originator is the
+   * agent owner (MUL-3869 / MUL-3721). `null`/`[]`/omitted all mean "no
+   * overlay regardless of who triggers". Owner-only data: the server hands
+   * it through verbatim to the owner and redacts it to `undefined` +
+   * `composio_toolkit_allowlist_redacted=true` for everyone else (same
+   * contract as `mcp_config`). Treat `undefined` as "unknown — assume none".
+   */
+  composio_toolkit_allowlist?: string[];
+  /**
+   * True when the server stripped `composio_toolkit_allowlist` from this
+   * response because the caller is not the agent owner. The MCP tab is
+   * creator-only so a redacted value should never reach the editor, but the
+   * UI renders a "hidden" fallback defensively. Older backends omit this
+   * field; treat `undefined` as false.
+   */
+  composio_toolkit_allowlist_redacted?: boolean;
   visibility: AgentVisibility;
   status: AgentStatus;
   max_concurrent_tasks: number;
@@ -432,6 +450,18 @@ export interface UpdateAgentRequest {
    *     validate / translate it according to their own MCP integration
    */
   mcp_config?: unknown | null;
+  /**
+   * Composio toolkit allowlist. Tri-state semantics, mirroring the backend
+   * gate (MUL-3869):
+   *   - field omitted → no change
+   *   - `null` → clear the column (no MCP overlay for anyone)
+   *   - string[] → wholesale replace; the server lowercases / trims / dedupes
+   *     the slugs before persisting
+   * Writes are silently dropped server-side unless the caller is the agent
+   * owner, so the UI only ever exposes this field through the creator-only
+   * MCP tab.
+   */
+  composio_toolkit_allowlist?: string[] | null;
   visibility?: AgentVisibility;
   status?: AgentStatus;
   max_concurrent_tasks?: number;

@@ -216,6 +216,7 @@
     "environment": "Environment",
     "custom_args": "Custom Args",
     "mcp_config": "MCP",
+    "composio_mcp": "MCP Apps",
     "integrations": "Integrations",
     "runtime_config": "Routing",
     "discard_dialog_title": "Discard unsaved changes?",
@@ -328,6 +329,20 @@
       "save_failed_toast": "Failed to save MCP config",
       "redacted_title": "Configured — hidden from your view",
       "redacted_hint": "Only the agent owner or a workspace admin can read this config."
+    },
+    "composio_mcp": {
+      "subtitle": "Check a toolkit to let this agent mount it as an MCP server — but only when you (its creator) are the one who triggered the run, directly or down a sub-agent chain.",
+      "loading": "Loading your connections…",
+      "load_failed": "Couldn't load your connected apps. Try again shortly.",
+      "empty_title": "No connected apps yet",
+      "empty_hint": "You haven't connected any third-party services. Authorize one first, then come back here to allow it.",
+      "empty_link_to_settings": "Connect one in Settings → Integrations",
+      "connected": "Connected",
+      "toggle_aria": "Allow {{toolkit}} for this agent",
+      "saving": "Saving…",
+      "save_failed_toast": "Couldn't save — please try again",
+      "redacted_title": "Configured — hidden from your view",
+      "redacted_hint": "Only the agent's creator can view or change which apps it may use."
     },
     "runtime_config": {
       "intro": "Choose how the OpenClaw runtime executes this agent's turns. Local mode runs the agent inside the daemon process. Gateway mode forwards each turn to an OpenClaw Gateway — useful when the daemon host is a lightweight coordinator and the agent should run on a more powerful machine.",
