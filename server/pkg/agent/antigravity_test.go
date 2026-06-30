@@ -536,18 +536,23 @@ func TestReadAntigravityTranscriptOutput(t *testing.T) {
 	}
 
 	seedAntigravityTranscript(t, appDataDir, cid, []string{
-		// User input and non-MODEL planner text must be excluded.
-		`{"type":"USER_INPUT","source":"USER","status":"DONE","step_index":0,"content":"the user's prompt — must be ignored"}`,
+		// USER_INPUT (source=USER_EXPLICIT in practice) opens the turn.
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","step_index":0,"content":"the user's prompt — must be ignored"}`,
 		// Tool-only model steps carry content=null and must be skipped.
 		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":2,"content":null}`,
 		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":3,"content":"First I will read the file."}`,
-		`{"type":"VIEW_FILE","status":"DONE","step_index":4}`,
+		// Tool records can also be source=MODEL — excluded by the type check.
+		`{"type":"VIEW_FILE","source":"MODEL","status":"DONE","step_index":4}`,
+		// Non-MODEL planner text must be excluded.
 		`{"type":"PLANNER_RESPONSE","source":"SYSTEM","status":"DONE","step_index":5,"content":"non-model planner text — must be ignored"}`,
-		`{"type":"CODE_ACTION","status":"DONE","step_index":6}`,
-		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":7,"content":"Done: created result.txt and verified it."}`,
+		// A non-DONE (streaming/partial) model record must be excluded.
+		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"IN_PROGRESS","step_index":6,"content":"partial streaming text — must be ignored"}`,
+		`{"type":"CODE_ACTION","source":"MODEL","status":"DONE","step_index":7}`,
+		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":8,"content":"Done: created result.txt and verified it."}`,
 	})
 
-	// MODEL text is joined in order; null/tool/non-model records are dropped.
+	// MODEL/DONE text is joined in order; null/tool/non-model/non-DONE records
+	// are all dropped.
 	got := readAntigravityTranscriptOutput(logPath, cid)
 	want := "First I will read the file.\n\nDone: created result.txt and verified it."
 	if got != want {
@@ -566,6 +571,44 @@ func TestReadAntigravityTranscriptOutput(t *testing.T) {
 	}
 	if got := readAntigravityTranscriptOutput("", cid); got != "" {
 		t.Errorf("empty log path should yield empty, got %q", got)
+	}
+}
+
+// TestReadAntigravityTranscriptOutputResumeReturnsCurrentTurnOnly is the
+// regression guard for the PR #4744 review must-fix: the transcript accumulates
+// across resumed turns (daemon reuses the conversation via --conversation), so
+// recovery must return ONLY the current turn's reply. Without the USER_INPUT
+// turn boundary, a second empty-stdout turn would re-emit the previous turn's
+// answer alongside the new one.
+func TestReadAntigravityTranscriptOutputResumeReturnsCurrentTurnOnly(t *testing.T) {
+	t.Parallel()
+
+	appDataDir := t.TempDir()
+	cid := "9e18418b-a431-4523-9616-75a94904554e"
+
+	logPath := filepath.Join(t.TempDir(), "agy.log")
+	if err := os.WriteFile(logPath, []byte(strings.Join([]string{
+		`I0630 14:19:40.582492 1 common.go:156] CLI app data directory: ` + appDataDir,
+		`I0630 14:19:46.755801 1 printmode.go:179] Print mode: conversation=` + cid + `, sending message`,
+	}, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two turns in one accumulated transcript, matching real agy resume output:
+	// each turn opens with its own USER_INPUT.
+	seedAntigravityTranscript(t, appDataDir, cid, []string{
+		// --- turn 1 ---
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","step_index":0,"content":"read marker.txt"}`,
+		`{"type":"VIEW_FILE","source":"MODEL","status":"DONE","step_index":1}`,
+		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":2,"content":"The two values are alpha-1 and beta-2."}`,
+		// --- turn 2 (resumed) ---
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","step_index":3,"content":"what is 7 times 8?"}`,
+		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":4,"content":"56"}`,
+	})
+
+	got := readAntigravityTranscriptOutput(logPath, cid)
+	if got != "56" {
+		t.Fatalf("expected only the current turn's reply %q, got %q (prior turn leaked?)", "56", got)
 	}
 }
 
@@ -601,8 +644,9 @@ func TestAntigravityBackendRecoversEmptyStdoutFromTranscript(t *testing.T) {
 	appDataDir := t.TempDir()
 	cid := "44a57718-801c-41e7-9691-3225be2b1cb8"
 	seedAntigravityTranscript(t, appDataDir, cid, []string{
+		`{"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","step_index":0,"content":"create result.txt"}`,
 		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":2,"content":null}`,
-		`{"type":"VIEW_FILE","status":"DONE","step_index":3}`,
+		`{"type":"VIEW_FILE","source":"MODEL","status":"DONE","step_index":3}`,
 		`{"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","step_index":4,"content":"I read marker.txt and created result.txt with VERIFIED=yes."}`,
 	})
 

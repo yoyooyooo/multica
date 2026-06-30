@@ -298,13 +298,15 @@ func readAntigravityConversationID(logPath string) string {
 var antigravityAppDataDirRe = regexp.MustCompile(`CLI app data directory:\s*(.+)`)
 
 // antigravityTranscriptRecord is the minimal shape of one line in agy's
-// per-conversation transcript.jsonl. The assistant's turns are PLANNER_RESPONSE
-// records with source=MODEL; Content holds the text (or JSON null for a
-// tool-only step). Content is RawMessage so a null or non-string value is
-// skipped rather than failing the whole line.
+// per-conversation transcript.jsonl. A turn opens with a USER_INPUT record; the
+// assistant's replies are PLANNER_RESPONSE records with source=MODEL and (once
+// settled) status=DONE. Content holds the text, or JSON null for a tool-only
+// step — it is RawMessage so a null or non-string value is skipped rather than
+// failing the whole line.
 type antigravityTranscriptRecord struct {
 	Type    string          `json:"type"`
 	Source  string          `json:"source"`
+	Status  string          `json:"status"`
 	Content json.RawMessage `json:"content"`
 }
 
@@ -316,10 +318,19 @@ type antigravityTranscriptRecord struct {
 //
 //	<appDataDir>/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
 //
-// as PLANNER_RESPONSE / source=MODEL records. We join their text in order
+// as PLANNER_RESPONSE / source=MODEL records.
+//
+// The transcript is per-conversation and ACCUMULATES across resumed turns
+// (daemon reuses the conversation via --conversation / ResumeSessionID), so we
+// must return only the CURRENT turn's reply — otherwise a later empty-stdout
+// turn would re-emit prior turns' answers. Each turn opens with a USER_INPUT
+// record, so we reset on every USER_INPUT and keep only the model text that
+// follows the last one. We also require status=DONE to skip any future
+// streaming/partial planner records. The remaining text is joined in order
 // (intermediate narration + final reply), mirroring what stdout would have
-// streamed. Best-effort: returns "" if the app data dir or conversation id is
-// unknown, the transcript is missing, or it holds no model text.
+// streamed for this turn. Best-effort: returns "" if the app data dir or
+// conversation id is unknown, the transcript is missing, or it holds no model
+// text for the current turn.
 func readAntigravityTranscriptOutput(logPath, conversationID string) string {
 	if logPath == "" || conversationID == "" {
 		return ""
@@ -349,7 +360,13 @@ func readAntigravityTranscriptOutput(logPath, conversationID string) string {
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}
-		if rec.Type != "PLANNER_RESPONSE" || rec.Source != "MODEL" {
+		if rec.Type == "USER_INPUT" {
+			// New turn boundary: drop anything collected for prior turns so a
+			// resumed conversation yields only the current turn's reply.
+			parts = parts[:0]
+			continue
+		}
+		if rec.Type != "PLANNER_RESPONSE" || rec.Source != "MODEL" || rec.Status != "DONE" {
 			continue
 		}
 		var text string
