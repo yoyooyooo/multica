@@ -295,3 +295,10 @@ func (n *slackTypingNotifier) OnIngested(ctx context.Context, inst engine.Resolv
 	}
 	n.mgr.Add(ctx, ci, sessionID, msg.Source.ChatID, msg.MessageID)
 }
+
+// OnSettled clears the reaction when the run trigger enqueued no task (agent
+// offline / archived, or an enqueue failure) — the bus-driven clear on
+// chat-done / task-failed never fires for those, so without this the 👀 sticks.
+func (n *slackTypingNotifier) OnSettled(ctx context.Context, sessionID pgtype.UUID) {
+	n.mgr.Clear(ctx, sessionID)
+}

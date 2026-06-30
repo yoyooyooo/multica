@@ -136,3 +136,22 @@ func TestTypingIndicator_IgnoresNonChatEvent(t *testing.T) {
 		t.Errorf("non-chat event must be ignored, removed %d", len(fr.removed))
 	}
 }
+
+// When the run trigger enqueues no task (agent offline / archived), no task
+// lifecycle event ever publishes, so the engine clears the indicator through the
+// notifier's OnSettled instead of the bus.
+func TestSlackTypingNotifier_OnSettledClears(t *testing.T) {
+	sessionID := uid(7)
+	q := &fakeOutboundQueries{
+		binding: db.ChannelChatSessionBinding{InstallationID: uid(1)},
+		inst:    db.ChannelInstallation{ID: uid(1), Status: "active", Config: slackInstallConfigJSON()},
+	}
+	fr := &fakeReactor{}
+	m := newTestTyping(q, fr)
+	m.Add(context.Background(), db.ChannelInstallation{Config: slackInstallConfigJSON()}, sessionID, "C1", freshTS())
+
+	(&slackTypingNotifier{mgr: m}).OnSettled(context.Background(), sessionID)
+	if len(fr.removed) != 1 || fr.removed[0].Channel != "C1" {
+		t.Fatalf("OnSettled must clear the reaction, removed = %+v", fr.removed)
+	}
+}
