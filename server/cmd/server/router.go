@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/deployment"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflagdispatch"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -31,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/sourcechannel"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
@@ -65,6 +67,11 @@ func allowedOrigins() []string {
 		return defaultOrigins
 	}
 	return origins
+}
+
+func analyticsDisabledFromEnv() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("ANALYTICS_DISABLED")))
+	return v == "true" || v == "1"
 }
 
 // appURLFromEnv resolves the user-facing web app URL. It prefers
@@ -175,6 +182,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
+	if deployment.IsSelfHostFromEnv() {
+		if analyticsDisabledFromEnv() {
+			slog.Info("self-host source channel reporting disabled via ANALYTICS_DISABLED")
+		} else if reporter, err := sourcechannel.NewSender(queries, sourcechannel.SenderConfig{
+			APIBaseURL: strings.TrimSpace(os.Getenv("MULTICA_SOURCE_CHANNEL_API_BASE_URL")),
+		}); err != nil {
+			slog.Warn("self-host source channel reporter disabled", "error", err)
+		} else {
+			h.SourceChannelReporter = reporter
+			slog.Info("self-host source channel reporter enabled")
+		}
+	}
 	if opts.FeatureFlags != nil {
 		h.DaemonFeatureFlags = featureflagdispatch.NewEvaluator(opts.FeatureFlags)
 	}
@@ -586,6 +605,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	authRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH", 5), time.Minute, trustedProxies)
 	authVerifyRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH_VERIFY", 20), time.Minute, trustedProxies)
 	contactSalesRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_CONTACT_SALES", 5), time.Hour, trustedProxies)
+	selfHostSourceRL := middleware.RateLimit(rdb, 60, time.Minute, trustedProxies)
 	r.With(authRL).Post("/auth/send-code", h.SendCode)
 	r.With(authVerifyRL).Post("/auth/verify-code", h.VerifyCode)
 	r.With(authRL).Post("/auth/google", h.GoogleLogin)
@@ -593,6 +613,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// Public API
 	r.Get("/api/config", h.GetConfig)
+	if !deployment.IsSelfHostFromEnv() {
+		r.With(selfHostSourceRL).Post("/api/acquisition/self-host-source", h.RecordSelfHostSourceChannel)
+	}
 	r.With(contactSalesRL).Post("/api/contact-sales", h.CreateContactSales)
 
 	// Webhook ingress for autopilots. Outside the authenticated group on

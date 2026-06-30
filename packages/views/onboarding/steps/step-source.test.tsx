@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { configStore } from "@multica/core/config";
 import type { QuestionnaireAnswers } from "@multica/core/onboarding";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -42,7 +43,10 @@ function renderStep(answers: QuestionnaireAnswers = EMPTY) {
 }
 
 describe("StepSource (single-select primary source)", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    configStore.getState().setDeploymentConfig({ deploymentKind: "" });
+  });
 
   it("clicking a non-Other option writes a one-element source array", async () => {
     const user = userEvent.setup();
@@ -57,6 +61,16 @@ describe("StepSource (single-select primary source)", () => {
     });
     // A click only records — it must NOT auto-advance.
     expect(onAdvance).not.toHaveBeenCalled();
+  });
+
+  it("shows the self-host disclosure when the backend config marks this deployment as self-hosted", () => {
+    configStore.getState().setDeploymentConfig({ deploymentKind: "self_host" });
+
+    renderStep();
+
+    expect(
+      screen.getByText(/anonymous deduplication identifier/i),
+    ).toBeInTheDocument();
   });
 
   it("picking a second option replaces the first (no stacking)", async () => {

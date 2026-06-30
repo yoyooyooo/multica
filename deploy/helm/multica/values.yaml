@@ -91,6 +91,7 @@ backend:
         - ReadWriteOnce
   # All non-secret backend env. Secret values come from `existingSecret`.
   config:
+    deploymentKind: self_host
     appEnv: production
     appUrl: http://multica.dev.lan
     frontendOrigin: http://multica.dev.lan

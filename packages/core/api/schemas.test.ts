@@ -416,6 +416,15 @@ describe("AppConfigSchema cdn_signed drift", () => {
     const parsed = AppConfigSchema.parse({ cdn_signed: true });
     expect(parsed.cdn_signed).toBe(true);
   });
+
+  it("keeps deployment_kind when it is a string and drops malformed values", () => {
+    expect(
+      AppConfigSchema.parse({ deployment_kind: "self_host" }).deployment_kind,
+    ).toBe("self_host");
+    expect(
+      AppConfigSchema.parse({ deployment_kind: 42 }).deployment_kind,
+    ).toBeUndefined();
+  });
 });
 
 describe("InboxUnreadSummarySchema", () => {

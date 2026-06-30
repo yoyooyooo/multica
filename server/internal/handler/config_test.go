@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/deployment"
 )
 
 func TestGetConfigReportsCdnSignedMode(t *testing.T) {
@@ -101,6 +102,26 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 	if cfg.DaemonAppURL != "https://app.example.com" {
 		t.Fatalf("daemon_app_url: want https://app.example.com, got %q", cfg.DaemonAppURL)
+	}
+}
+
+func TestGetConfigExposesDeploymentKind(t *testing.T) {
+	t.Setenv(deployment.KindEnv, "self-host")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w := httptest.NewRecorder()
+
+	testHandler.GetConfig(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var cfg AppConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if cfg.DeploymentKind != string(deployment.KindSelfHost) {
+		t.Fatalf("deployment_kind: want %q, got %q", deployment.KindSelfHost, cfg.DeploymentKind)
 	}
 }
 

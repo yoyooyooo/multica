@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import { captureEvent } from "@multica/core/analytics";
 import { useAuthStore } from "@multica/core/auth";
+import { useConfigStore } from "@multica/core/config";
 import {
   needsSourceBackfill,
   saveQuestionnaire,
@@ -162,6 +163,7 @@ function SourceBackfillDialogBody({
   onComplete: () => void;
 }) {
   const { t } = useT("onboarding");
+  const isSelfHost = useConfigStore((s) => s.deploymentKind === "self_host");
 
   const [answers, setAnswers] = useState(EMPTY_BACKFILL);
   const [busy, setBusy] = useState(false);
@@ -302,7 +304,9 @@ function SourceBackfillDialogBody({
           {t(($) => $.questions.source.question)}
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t(($) => $.source_backfill.lede)}
+          {isSelfHost
+            ? t(($) => $.source_backfill.self_host_lede)
+            : t(($) => $.source_backfill.lede)}
         </p>
       </div>
 

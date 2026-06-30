@@ -234,8 +234,10 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	// we should, never twice for the same transition.
 	var before questionnaireAnswers
 	beforeRaw := []byte("{}")
+	beforeOnboarded := false
 	if beforeUser, err := h.Queries.GetUser(r.Context(), parseUUID(userID)); err == nil {
 		beforeRaw = beforeUser.OnboardingQuestionnaire
+		beforeOnboarded = beforeUser.OnboardedAt.Valid
 		_ = json.Unmarshal(beforeRaw, &before)
 	}
 	// firstTouch is true when the user has never written any
@@ -265,6 +267,7 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	var after questionnaireAnswers
 	_ = json.Unmarshal(user.OnboardingQuestionnaire, &after)
+	h.reportSelfHostSourceChannelIfNeeded(userID, before, after, beforeOnboarded)
 	if after.complete() && !before.complete() {
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.OnboardingQuestionnaireSubmitted(
 			userID,
@@ -281,6 +284,30 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, userToResponse(user))
+}
+
+func (h *Handler) reportSelfHostSourceChannelIfNeeded(userID string, before, after questionnaireAnswers, beforeOnboarded bool) {
+	if h.SourceChannelReporter == nil || len(after.Source) == 0 {
+		return
+	}
+	channel := strings.TrimSpace(after.Source[0])
+	if channel == "" {
+		return
+	}
+
+	questionnaireJustCompleted := after.complete() && !before.complete()
+	backfillSubmitted := beforeOnboarded && len(before.Source) == 0 && !before.SourceSkipped && len(after.Source) > 0
+	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceChanged(before.Source, after.Source)
+	if questionnaireJustCompleted || backfillSubmitted || sourceChangedAfterCompletion {
+		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel)
+	}
+}
+
+func sourceChanged(before, after stringOrSlice) bool {
+	if len(before) == 0 || len(after) == 0 {
+		return len(before) != len(after)
+	}
+	return before[0] != after[0]
 }
 
 type joinCloudWaitlistRequest struct {

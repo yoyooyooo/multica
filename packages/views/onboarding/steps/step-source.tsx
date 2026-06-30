@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import type { QuestionnaireAnswers, Source } from "@multica/core/onboarding";
+import { useConfigStore } from "@multica/core/config";
 import {
   GoogleIcon,
   LinkedInIcon,
@@ -39,6 +40,7 @@ export function StepSource({
   onBack?: () => void;
 }) {
   const { t } = useT("onboarding");
+  const isSelfHost = useConfigStore((s) => s.deploymentKind === "self_host");
 
   const options: QuestionOption[] = [
     { slug: "friends_colleagues", icon: <Users className="h-4 w-4" />, label: t(($) => $.questions.source.friends_colleagues) },
@@ -83,6 +85,11 @@ export function StepSource({
       number={1}
       eyebrow={t(($) => $.questions.eyebrow_about_you)}
       question={t(($) => $.questions.source.question)}
+      notice={
+        isSelfHost
+          ? t(($) => $.questions.source.self_host_notice)
+          : undefined
+      }
       options={options}
       selectedSlugs={selected}
       otherValue={answers.source_other ?? ""}

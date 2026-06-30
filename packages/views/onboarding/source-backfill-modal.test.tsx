@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configStore } from "@multica/core/config";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enOnboarding from "../locales/en/onboarding.json";
@@ -82,6 +83,7 @@ beforeEach(() => {
   mockSaveQuestionnaire.mockReset();
   mockSaveQuestionnaire.mockResolvedValue(undefined);
   mockCaptureEvent.mockReset();
+  configStore.getState().setDeploymentConfig({ deploymentKind: "" });
   setUser(null);
   wipeDismissCounters();
   mockPrefersReducedMotion(true);
@@ -132,6 +134,20 @@ describe("SourceBackfillModal", () => {
       ).toBeInTheDocument();
     });
     expect(mockCaptureEvent).toHaveBeenCalledWith("source_backfill_shown");
+  });
+
+  it("uses self-host copy when the backend config marks this deployment as self-hosted", async () => {
+    configStore.getState().setDeploymentConfig({ deploymentKind: "self_host" });
+    setUser({
+      id: "u1",
+      onboarded_at: "2026-01-01T00:00:00Z",
+      onboarding_questionnaire: { source: [] },
+    });
+    renderModal();
+
+    expect(
+      await screen.findByText(/anonymous deduplication identifier/i),
+    ).toBeInTheDocument();
   });
 
   it("Submit PATCHes the merged questionnaire preserving role / use_case", async () => {
