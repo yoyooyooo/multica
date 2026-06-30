@@ -294,6 +294,31 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.33",
+        date: "2026-06-30",
+        title: "Autopilot access controls, Slack history backfill and typing reaction, and skill-archive imports",
+        changes: [],
+        features: [
+          "Autopilots now have a clear write-permission layer. Editing, triggering, or rotating an autopilot's webhook is limited to its creator or a workspace owner/admin, and webhook tokens are hidden from everyone else. The autopilot detail page also adds Manage Access, so the creator can grant specific workspace members the right to manage a single autopilot without giving them workspace-wide admin.",
+          "Slack channels can now backfill their conversation history into Multica through the unified chat history pull, so an agent has the prior context the channel was already discussing the moment it joins.",
+          "Slack messages now show a 👀 reaction while an agent is preparing its reply, and that reaction is cleared on every termination path — including when the message did not trigger a run at all — so the indicator never gets stuck.",
+          "Skill bundles can be installed from a local .skill or .zip archive via multica skill import --file, with the same conflict, size, and reserved-file rules as URL imports.",
+          "The Agents page is now fully usable on mobile.",
+        ],
+        improvements: [
+          "Comment routing was rewritten end-to-end so parent-chain @mentions, agent-authored replies, and squad-leader fallback all flow through one well-tested cascade, with the squad-leader fallback for agent-authored comments restored along the way.",
+          "multica issue commands no longer accept short UUID prefixes (the legacy resolver could time out on large workspaces); pass the issue key like MUL-123 or the full UUID instead, and old short prefixes now return a clear hint.",
+          "Locale bundles dropped 117 dead `_one` plural keys that were never rendered, with a parity test guarding against regressions, and the built-in runtime list now points at CodeBuddy instead of the removed Gemini runtime.",
+          "Self-host preflight accepts newer Docker Compose CLI plugin versions while still rejecting legacy Docker Compose v1.",
+        ],
+        fixes: [
+          "After a WebSocket reconnect, the local daemon now reconciles in-flight tasks and workspace state immediately instead of waiting up to 30 seconds for the next ticker. (Community contribution by xiawiie, closes #4665.)",
+          "Antigravity replies that the agent produces silently now show up reliably — the daemon recovers the response from the run transcript instead of recording a blank but completed run.",
+          "Servers backed by managed Redis providers that reject CLIENT SETNAME now start up cleanly. (Community contribution by MeloMei.)",
+          "The agent-activity hover header now reads in terms of tasks instead of agents, so it no longer disagrees with the workspace chip when one agent runs several tasks at once.",
+        ],
+      },
+      {
         version: "0.3.32",
         date: "2026-06-29",
         title: "Detach sub-Issues, sturdier daemon reconnects, and friendlier attachment previews",
