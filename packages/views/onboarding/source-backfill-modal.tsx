@@ -163,7 +163,9 @@ function SourceBackfillDialogBody({
   onComplete: () => void;
 }) {
   const { t } = useT("onboarding");
-  const isSelfHost = useConfigStore((s) => s.deploymentKind === "self_host");
+  const sourceChannelReportingEnabled = useConfigStore(
+    (s) => s.sourceChannelReportingEnabled,
+  );
 
   const [answers, setAnswers] = useState(EMPTY_BACKFILL);
   const [busy, setBusy] = useState(false);
@@ -304,7 +306,7 @@ function SourceBackfillDialogBody({
           {t(($) => $.questions.source.question)}
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {isSelfHost
+          {sourceChannelReportingEnabled
             ? t(($) => $.source_backfill.self_host_lede)
             : t(($) => $.source_backfill.lede)}
         </p>

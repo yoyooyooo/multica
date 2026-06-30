@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/auth"
-	"github.com/multica-ai/multica/server/internal/deployment"
 )
 
 func TestGetConfigReportsCdnSignedMode(t *testing.T) {
@@ -105,8 +104,8 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 }
 
-func TestGetConfigExposesDeploymentKind(t *testing.T) {
-	t.Setenv(deployment.KindEnv, "self-host")
+func TestGetConfigExposesSourceChannelReportingForNonOfficialDomain(t *testing.T) {
+	t.Setenv("MULTICA_PUBLIC_URL", "https://api.customer.example")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
@@ -120,8 +119,8 @@ func TestGetConfigExposesDeploymentKind(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode config: %v", err)
 	}
-	if cfg.DeploymentKind != string(deployment.KindSelfHost) {
-		t.Fatalf("deployment_kind: want %q, got %q", deployment.KindSelfHost, cfg.DeploymentKind)
+	if !cfg.SourceChannelReportingEnabled {
+		t.Fatalf("source_channel_reporting_enabled: want true for non-official domain")
 	}
 }
 
@@ -194,6 +193,9 @@ func TestGetConfigOmitsOfficialCloudDaemonSetup(t *testing.T) {
 	}
 	if cfg.DaemonAppURL != "" {
 		t.Fatalf("daemon_app_url: want omitted for cloud, got %q", cfg.DaemonAppURL)
+	}
+	if cfg.SourceChannelReportingEnabled {
+		t.Fatalf("source_channel_reporting_enabled: want false for official cloud")
 	}
 }
 

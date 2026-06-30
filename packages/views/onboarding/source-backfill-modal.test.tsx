@@ -83,7 +83,9 @@ beforeEach(() => {
   mockSaveQuestionnaire.mockReset();
   mockSaveQuestionnaire.mockResolvedValue(undefined);
   mockCaptureEvent.mockReset();
-  configStore.getState().setDeploymentConfig({ deploymentKind: "" });
+  configStore.getState().setSourceChannelReportingConfig({
+    sourceChannelReportingEnabled: false,
+  });
   setUser(null);
   wipeDismissCounters();
   mockPrefersReducedMotion(true);
@@ -136,8 +138,10 @@ describe("SourceBackfillModal", () => {
     expect(mockCaptureEvent).toHaveBeenCalledWith("source_backfill_shown");
   });
 
-  it("uses self-host copy when the backend config marks this deployment as self-hosted", async () => {
-    configStore.getState().setDeploymentConfig({ deploymentKind: "self_host" });
+  it("uses reporting copy when the backend config enables source channel reporting", async () => {
+    configStore.getState().setSourceChannelReportingConfig({
+      sourceChannelReportingEnabled: true,
+    });
     setUser({
       id: "u1",
       onboarded_at: "2026-01-01T00:00:00Z",
@@ -146,7 +150,7 @@ describe("SourceBackfillModal", () => {
     renderModal();
 
     expect(
-      await screen.findByText(/anonymous deduplication identifier/i),
+      await screen.findByText(/domain's MD5 hash/i),
     ).toBeInTheDocument();
   });
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
-	"github.com/multica-ai/multica/server/internal/deployment"
+	"github.com/multica-ai/multica/server/internal/sourcechannel"
 )
 
 type AppConfig struct {
@@ -37,10 +37,9 @@ type AppConfig struct {
 	DaemonServerURL string `json:"daemon_server_url,omitempty"`
 	DaemonAppURL    string `json:"daemon_app_url,omitempty"`
 
-	// DeploymentKind is a public, non-secret deployment identity used by the
-	// frontend to adapt copy for official self-host templates. It is explicit
-	// config, not hostname inference: localhost can be a self-host quickstart.
-	DeploymentKind string `json:"deployment_kind,omitempty"`
+	// SourceChannelReportingEnabled tells clients whether source attribution
+	// submissions from this backend are reported to Multica's public API.
+	SourceChannelReportingEnabled bool `json:"source_channel_reporting_enabled,omitempty"`
 
 	// PostHog public config for the frontend. The key is the same Project
 	// API Key the backend uses; returning it here (instead of baking it
@@ -61,7 +60,9 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		AllowSignup:               os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:            os.Getenv("GOOGLE_CLIENT_ID"),
 		WorkspaceCreationDisabled: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		DeploymentKind:            string(deployment.KindFromEnv()),
+		SourceChannelReportingEnabled: sourcechannel.ShouldReportDomain(
+			sourcechannel.ReportingDomain(r),
+		),
 	}
 	if h.Storage != nil {
 		config.CdnDomain = h.Storage.CdnDomain()

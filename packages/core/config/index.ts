@@ -11,7 +11,7 @@ interface ConfigState {
   googleClientId: string;
   daemonServerUrl: string;
   daemonAppUrl: string;
-  deploymentKind: string;
+  sourceChannelReportingEnabled: boolean;
   // Self-host gate (#3433): when true, every "Create workspace" affordance
   // must be hidden. Defaults to false so unknown / older servers behave like
   // the managed-cloud case.
@@ -26,7 +26,9 @@ interface ConfigState {
     daemonServerUrl?: string;
     daemonAppUrl?: string;
   }) => void;
-  setDeploymentConfig: (config: { deploymentKind?: string }) => void;
+  setSourceChannelReportingConfig: (config: {
+    sourceChannelReportingEnabled?: boolean;
+  }) => void;
 }
 
 export const configStore = createStore<ConfigState>((set) => ({
@@ -36,14 +38,15 @@ export const configStore = createStore<ConfigState>((set) => ({
   googleClientId: "",
   daemonServerUrl: "",
   daemonAppUrl: "",
-  deploymentKind: "",
+  sourceChannelReportingEnabled: false,
   workspaceCreationDisabled: false,
   setCdnConfig: ({ cdnDomain, cdnSigned = false }) => set({ cdnDomain, cdnSigned }),
   setAuthConfig: ({ allowSignup, googleClientId = "", workspaceCreationDisabled = false }) =>
     set({ allowSignup, googleClientId, workspaceCreationDisabled }),
   setDaemonConfig: ({ daemonServerUrl = "", daemonAppUrl = "" }) =>
     set({ daemonServerUrl, daemonAppUrl }),
-  setDeploymentConfig: ({ deploymentKind = "" }) => set({ deploymentKind }),
+  setSourceChannelReportingConfig: ({ sourceChannelReportingEnabled = false }) =>
+    set({ sourceChannelReportingEnabled }),
 }));
 
 export function useConfigStore(): ConfigState;

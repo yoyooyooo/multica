@@ -40,7 +40,9 @@ export function StepSource({
   onBack?: () => void;
 }) {
   const { t } = useT("onboarding");
-  const isSelfHost = useConfigStore((s) => s.deploymentKind === "self_host");
+  const sourceChannelReportingEnabled = useConfigStore(
+    (s) => s.sourceChannelReportingEnabled,
+  );
 
   const options: QuestionOption[] = [
     { slug: "friends_colleagues", icon: <Users className="h-4 w-4" />, label: t(($) => $.questions.source.friends_colleagues) },
@@ -86,7 +88,7 @@ export function StepSource({
       eyebrow={t(($) => $.questions.eyebrow_about_you)}
       question={t(($) => $.questions.source.question)}
       notice={
-        isSelfHost
+        sourceChannelReportingEnabled
           ? t(($) => $.questions.source.self_host_notice)
           : undefined
       }

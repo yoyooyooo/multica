@@ -104,7 +104,7 @@ type RuntimeProfileRefreshNotifier interface {
 }
 
 type SourceChannelReporter interface {
-	ReportSelfHostSourceChannel(userID, channel, sourceOther string)
+	ReportSelfHostSourceChannel(userID, channel, sourceOther, domain string)
 }
 
 type Handler struct {

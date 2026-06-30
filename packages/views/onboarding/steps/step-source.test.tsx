@@ -45,7 +45,9 @@ function renderStep(answers: QuestionnaireAnswers = EMPTY) {
 describe("StepSource (single-select primary source)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    configStore.getState().setDeploymentConfig({ deploymentKind: "" });
+    configStore.getState().setSourceChannelReportingConfig({
+      sourceChannelReportingEnabled: false,
+    });
   });
 
   it("clicking a non-Other option writes a one-element source array", async () => {
@@ -63,13 +65,15 @@ describe("StepSource (single-select primary source)", () => {
     expect(onAdvance).not.toHaveBeenCalled();
   });
 
-  it("shows the self-host disclosure when the backend config marks this deployment as self-hosted", () => {
-    configStore.getState().setDeploymentConfig({ deploymentKind: "self_host" });
+  it("shows the reporting disclosure when the backend config enables source channel reporting", () => {
+    configStore.getState().setSourceChannelReportingConfig({
+      sourceChannelReportingEnabled: true,
+    });
 
     renderStep();
 
     expect(
-      screen.getByText(/anonymous deduplication identifier/i),
+      screen.getByText(/domain's MD5 hash/i),
     ).toBeInTheDocument();
   });
 

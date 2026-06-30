@@ -46,7 +46,7 @@
   "source_backfill": {
     "eyebrow": "Quick question",
     "lede": "We noticed you didn't pick this during signup — it helps us understand who finds Multica useful. One question, then you're back to your work.",
-    "self_host_lede": "About this statistic: this page sends Multica the source option you pick, an anonymous deduplication identifier, and, if you pick Other, the note you enter. It does not send your name, email, or organization info. Please avoid entering sensitive information in the note.",
+    "self_host_lede": "About this statistic: this page sends Multica the source option you pick, the note you enter if you pick Other, this instance's domain, the domain's MD5 hash, and anonymous deduplication identifiers. It does not send your name, email, or organization info.",
     "submit": "Submit",
     "hint_ready": "Looks good. Hit Submit when you're ready."
   },
@@ -68,7 +68,7 @@
       "dont_remember": "Don't remember",
       "other": "Other",
       "other_placeholder": "e.g. a podcast I listen to",
-      "self_host_notice": "About this statistic: this page sends Multica the source option you pick, an anonymous deduplication identifier, and, if you pick Other, the note you enter. It does not send your name, email, or organization info. Please avoid entering sensitive information in the note."
+      "self_host_notice": "About this statistic: this page sends Multica the source option you pick, the note you enter if you pick Other, this instance's domain, the domain's MD5 hash, and anonymous deduplication identifiers. It does not send your name, email, or organization info."
     },
     "role": {
       "question": "Which best describes you?",

@@ -696,6 +696,8 @@ type SelfHostSourceChannel struct {
 	LastReceivedAt  pgtype.Timestamptz `json:"last_received_at"`
 	ReportCount     int32              `json:"report_count"`
 	SourceOther     pgtype.Text        `json:"source_other"`
+	Domain          pgtype.Text        `json:"domain"`
+	DomainMd5       pgtype.Text        `json:"domain_md5"`
 }
 
 type Skill struct {

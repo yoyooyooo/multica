@@ -7,7 +7,6 @@ metadata:
 data:
   # --- Backend ---
   PORT: "8080"
-  MULTICA_DEPLOYMENT_KIND: {{ .Values.backend.config.deploymentKind | quote }}
   APP_ENV: {{ .Values.backend.config.appEnv | quote }}
   MULTICA_APP_URL: {{ .Values.backend.config.appUrl | quote }}
   FRONTEND_ORIGIN: {{ .Values.backend.config.frontendOrigin | quote }}

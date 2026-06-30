@@ -30,24 +30,30 @@ func TestRecordSelfHostSourceChannelUpsertsByAnonymousSubject(t *testing.T) {
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
 		SourceOther:   "  a podcast  ",
+		Domain:        "example.com",
+		DomainMD5:     sourcechannel.DomainMD5("example.com"),
 	})
 	postSourceReport(t, sourcechannel.Report{
 		SchemaVersion: sourcechannel.SchemaVersion,
 		Channel:       "search",
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
+		Domain:        "example.com",
+		DomainMD5:     sourcechannel.DomainMD5("example.com"),
 	})
 
 	var (
 		channel     string
 		sourceOther pgtype.Text
+		domain      pgtype.Text
+		domainMD5   pgtype.Text
 		reportCount int
 	)
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT channel, source_other, report_count
+		SELECT channel, source_other, domain, domain_md5, report_count
 		  FROM self_host_source_channel
 		 WHERE instance_hash = $1 AND subject_hash = $2
-	`, instanceHash, subjectHash).Scan(&channel, &sourceOther, &reportCount); err != nil {
+	`, instanceHash, subjectHash).Scan(&channel, &sourceOther, &domain, &domainMD5, &reportCount); err != nil {
 		t.Fatalf("load source channel row: %v", err)
 	}
 	if channel != "search" {
@@ -55,6 +61,12 @@ func TestRecordSelfHostSourceChannelUpsertsByAnonymousSubject(t *testing.T) {
 	}
 	if sourceOther.Valid {
 		t.Fatalf("source_other should clear when latest channel is not other, got %q", sourceOther.String)
+	}
+	if !domain.Valid || domain.String != "example.com" {
+		t.Fatalf("domain: want example.com, got %+v", domain)
+	}
+	if !domainMD5.Valid || domainMD5.String != sourcechannel.DomainMD5("example.com") {
+		t.Fatalf("domain_md5: want %q, got %+v", sourcechannel.DomainMD5("example.com"), domainMD5)
 	}
 	if reportCount != 2 {
 		t.Fatalf("report_count: want 2, got %d", reportCount)
@@ -78,6 +90,8 @@ func TestRecordSelfHostSourceChannelStoresOtherText(t *testing.T) {
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
 		SourceOther:   "  private free text  ",
+		Domain:        "example.com",
+		DomainMD5:     sourcechannel.DomainMD5("example.com"),
 	})
 
 	var sourceOther pgtype.Text
@@ -90,6 +104,29 @@ func TestRecordSelfHostSourceChannelStoresOtherText(t *testing.T) {
 	}
 	if !sourceOther.Valid || sourceOther.String != "private free text" {
 		t.Fatalf("source_other: want trimmed text, got %+v", sourceOther)
+	}
+}
+
+func TestRecordSelfHostSourceChannelRejectsInvalidDomainHash(t *testing.T) {
+	payload := sourcechannel.Report{
+		SchemaVersion: sourcechannel.SchemaVersion,
+		Channel:       "search",
+		InstanceHash:  strings.Repeat("e", 64),
+		SubjectHash:   strings.Repeat("f", 64),
+		Domain:        "example.com",
+		DomainMD5:     sourcechannel.DomainMD5("other.example"),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/acquisition/self-host-source", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	testHandler.RecordSelfHostSourceChannel(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid domain_md5, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

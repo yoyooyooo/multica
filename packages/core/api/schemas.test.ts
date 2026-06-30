@@ -417,13 +417,15 @@ describe("AppConfigSchema cdn_signed drift", () => {
     expect(parsed.cdn_signed).toBe(true);
   });
 
-  it("keeps deployment_kind when it is a string and drops malformed values", () => {
+  it("keeps source_channel_reporting_enabled when it is boolean and defaults malformed values", () => {
     expect(
-      AppConfigSchema.parse({ deployment_kind: "self_host" }).deployment_kind,
-    ).toBe("self_host");
+      AppConfigSchema.parse({ source_channel_reporting_enabled: true })
+        .source_channel_reporting_enabled,
+    ).toBe(true);
     expect(
-      AppConfigSchema.parse({ deployment_kind: 42 }).deployment_kind,
-    ).toBeUndefined();
+      AppConfigSchema.parse({ source_channel_reporting_enabled: 42 })
+        .source_channel_reporting_enabled,
+    ).toBe(false);
   });
 });
 

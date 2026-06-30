@@ -39,7 +39,7 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    time.Second,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ")
+	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ", "https://Example.com:443/path")
 
 	select {
 	case payload := <-got:
@@ -51,6 +51,12 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 		}
 		if payload.SourceOther != "a podcast" {
 			t.Fatalf("source_other: want trimmed text, got %q", payload.SourceOther)
+		}
+		if payload.Domain != "example.com" {
+			t.Fatalf("domain: want example.com, got %q", payload.Domain)
+		}
+		if payload.DomainMD5 != DomainMD5("example.com") {
+			t.Fatalf("domain_md5: want %q, got %q", DomainMD5("example.com"), payload.DomainMD5)
 		}
 		if !ValidHash(payload.InstanceHash) || !ValidHash(payload.SubjectHash) {
 			t.Fatalf("hashes should be 64-char lowercase hex: %+v", payload)
@@ -75,11 +81,60 @@ func TestSenderDropsUnknownChannel(t *testing.T) {
 		APIBaseURL: server.URL,
 		Timeout:    50 * time.Millisecond,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text")
+	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text", "example.com")
 
 	select {
 	case <-got:
 		t.Fatal("unexpected report for invalid channel")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestSenderDropsOfficialMulticaDomain(t *testing.T) {
+	got := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
+		APIBaseURL: server.URL,
+		Timeout:    50 * time.Millisecond,
+	})
+	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://api.multica.ai")
+
+	select {
+	case <-got:
+		t.Fatal("unexpected report for official Multica domain")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestDomainHelpers(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://Example.com:443/path?q=1", want: "example.com"},
+		{raw: "api.customer.example.", want: "api.customer.example"},
+		{raw: "backend:8080", want: "backend"},
+		{raw: "[::1]:8080", want: "::1"},
+		{raw: "", want: ""},
+	}
+	for _, tt := range tests {
+		if got := NormalizeDomain(tt.raw); got != tt.want {
+			t.Fatalf("NormalizeDomain(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+
+	if !IsOfficialMulticaDomain("https://api.multica.ai") {
+		t.Fatal("api.multica.ai should be official")
+	}
+	if IsOfficialMulticaDomain("multica.example.com") {
+		t.Fatal("multica.example.com should not be official")
+	}
+	if got := DomainMD5("Example.com"); got != "5ababd603b22780302dd8d83498e5172" {
+		t.Fatalf("DomainMD5 = %q", got)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/sourcechannel"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -267,7 +268,7 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	var after questionnaireAnswers
 	_ = json.Unmarshal(user.OnboardingQuestionnaire, &after)
-	h.reportSelfHostSourceChannelIfNeeded(userID, before, after, beforeOnboarded)
+	h.reportSelfHostSourceChannelIfNeeded(r, userID, before, after, beforeOnboarded)
 	if after.complete() && !before.complete() {
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.OnboardingQuestionnaireSubmitted(
 			userID,
@@ -286,7 +287,7 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userToResponse(user))
 }
 
-func (h *Handler) reportSelfHostSourceChannelIfNeeded(userID string, before, after questionnaireAnswers, beforeOnboarded bool) {
+func (h *Handler) reportSelfHostSourceChannelIfNeeded(r *http.Request, userID string, before, after questionnaireAnswers, beforeOnboarded bool) {
 	if h.SourceChannelReporter == nil || len(after.Source) == 0 {
 		return
 	}
@@ -299,7 +300,7 @@ func (h *Handler) reportSelfHostSourceChannelIfNeeded(userID string, before, aft
 	backfillSubmitted := beforeOnboarded && len(before.Source) == 0 && !before.SourceSkipped && len(after.Source) > 0
 	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceAttributionChanged(before, after)
 	if questionnaireJustCompleted || backfillSubmitted || sourceChangedAfterCompletion {
-		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther)
+		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther, sourcechannel.ReportingDomain(r))
 	}
 }
 

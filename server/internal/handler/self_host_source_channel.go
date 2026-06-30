@@ -17,7 +17,7 @@ const selfHostSourceChannelBodyLimit = 4 * 1024
 // RecordSelfHostSourceChannel receives the anonymous source-channel report
 // posted by self-hosted Multica instances. The payload deliberately excludes
 // account/profile/workspace data; only a fixed channel enum, optional
-// "other" text, and anonymous dedupe hashes are accepted.
+// "other" text, the reporting domain, and dedupe hashes are accepted.
 func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, selfHostSourceChannelBodyLimit)
 	dec := json.NewDecoder(r.Body)
@@ -37,6 +37,8 @@ func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Req
 	instanceHash := sourcechannel.NormalizeHash(req.InstanceHash)
 	subjectHash := sourcechannel.NormalizeHash(req.SubjectHash)
 	sourceOther := sourcechannel.NormalizeSourceOther(channel, req.SourceOther)
+	domain := sourcechannel.NormalizeDomain(req.Domain)
+	domainMD5 := sourcechannel.NormalizeHash(req.DomainMD5)
 	if req.SchemaVersion != sourcechannel.SchemaVersion {
 		writeError(w, http.StatusBadRequest, "unsupported schema_version")
 		return
@@ -53,12 +55,22 @@ func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid subject_hash")
 		return
 	}
+	if domain == "" || sourcechannel.IsOfficialMulticaDomain(domain) {
+		writeError(w, http.StatusBadRequest, "invalid domain")
+		return
+	}
+	if domainMD5 == "" || !sourcechannel.ValidDomainMD5(domainMD5) || domainMD5 != sourcechannel.DomainMD5(domain) {
+		writeError(w, http.StatusBadRequest, "invalid domain_md5")
+		return
+	}
 
 	params := db.UpsertSelfHostSourceChannelParams{
 		SchemaVersion: int32(req.SchemaVersion),
 		Channel:       channel,
 		InstanceHash:  instanceHash,
 		SubjectHash:   subjectHash,
+		Domain:        pgtype.Text{String: domain, Valid: true},
+		DomainMd5:     pgtype.Text{String: domainMD5, Valid: true},
 	}
 	if sourceOther != "" {
 		params.SourceOther = pgtype.Text{String: sourceOther, Valid: true}

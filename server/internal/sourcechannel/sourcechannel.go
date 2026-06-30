@@ -1,14 +1,20 @@
 package sourcechannel
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 )
 
 const SchemaVersion = 1
 const SourceOtherMaxRunes = 512
+const DomainMaxLength = 255
 
 type Report struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -16,6 +22,8 @@ type Report struct {
 	InstanceHash  string `json:"instance_hash"`
 	SubjectHash   string `json:"subject_hash"`
 	SourceOther   string `json:"source_other,omitempty"`
+	Domain        string `json:"domain,omitempty"`
+	DomainMD5     string `json:"domain_md5,omitempty"`
 }
 
 var validChannels = map[string]struct{}{
@@ -35,6 +43,7 @@ var validChannels = map[string]struct{}{
 }
 
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var md5Pattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func NormalizeChannel(channel string) string {
 	return strings.ToLower(strings.TrimSpace(channel))
@@ -53,6 +62,10 @@ func ValidHash(hash string) bool {
 	return hashPattern.MatchString(NormalizeHash(hash))
 }
 
+func ValidDomainMD5(hash string) bool {
+	return md5Pattern.MatchString(NormalizeHash(hash))
+}
+
 func NormalizeSourceOther(channel, sourceOther string) string {
 	if NormalizeChannel(channel) != "other" {
 		return ""
@@ -66,6 +79,73 @@ func NormalizeSourceOther(channel, sourceOther string) string {
 		sourceOther = string(runes[:SourceOtherMaxRunes])
 	}
 	return sourceOther
+}
+
+func ReportingDomain(r *http.Request) string {
+	for _, key := range []string{"MULTICA_PUBLIC_URL", "MULTICA_APP_URL", "FRONTEND_ORIGIN"} {
+		if domain := NormalizeDomain(os.Getenv(key)); domain != "" {
+			return domain
+		}
+	}
+	if r == nil {
+		return ""
+	}
+	if domain := NormalizeDomain(r.Host); domain != "" {
+		return domain
+	}
+	return ""
+}
+
+func ShouldReportDomain(domain string) bool {
+	domain = NormalizeDomain(domain)
+	return domain != "" && !IsOfficialMulticaDomain(domain)
+}
+
+func NormalizeDomain(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		if u, err := url.Parse(raw); err == nil {
+			raw = u.Host
+		}
+	} else if u, err := url.Parse("//" + raw); err == nil {
+		raw = u.Host
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	} else if strings.Count(raw, ":") == 1 {
+		if host, _, err := net.SplitHostPort(raw); err == nil {
+			raw = host
+		} else if i := strings.LastIndex(raw, ":"); i > 0 {
+			raw = raw[:i]
+		}
+	}
+	raw = strings.Trim(raw, "[]")
+	raw = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	if raw == "" || len(raw) > DomainMaxLength {
+		return ""
+	}
+	return raw
+}
+
+func IsOfficialMulticaDomain(domain string) bool {
+	domain = NormalizeDomain(domain)
+	return domain == "multica.ai" || strings.HasSuffix(domain, ".multica.ai")
+}
+
+func DomainMD5(domain string) string {
+	domain = NormalizeDomain(domain)
+	if domain == "" {
+		return ""
+	}
+	sum := md5.Sum([]byte(domain))
+	return hex.EncodeToString(sum[:])
 }
 
 func InstanceHash(salt string) string {
