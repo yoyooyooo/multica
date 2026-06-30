@@ -190,6 +190,13 @@ func buildChatPrompt(task Task) string {
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
 	b.WriteString("A user is chatting with you directly. Respond to their message.\n\n")
+	// Discoverability nudge for the on-demand channel-history pull (MUL-3871).
+	// When this conversation came from an IM channel (e.g. Slack) the message
+	// below may be only the line that triggered the agent, not the surrounding
+	// thread/channel discussion. The agent has no other signal that earlier
+	// context exists, so point it at the unified command; it returns an empty
+	// list (with a note) for web-only sessions, so an always-on hint is safe.
+	b.WriteString("If this conversation came from a chat channel (e.g. a Slack thread, channel, or DM), the message below may be only what triggered you — not what was said earlier. To read the prior conversation, run `multica chat history --output json` before replying. It returns an empty list if there is no connected channel.\n\n")
 	if task.Agent != nil && len(task.Agent.Skills) > 0 {
 		refs := ExtractSlashSkills(task.ChatMessage)
 		if len(refs) > 0 {

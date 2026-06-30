@@ -59,6 +59,15 @@ var (
 // the real channel id lives here so the outbound path can post back.
 type slackBindingConfig struct {
 	ChannelID string `json:"channel_id"`
+	// ThreadTS is set only when the session is rooted in a REAL Slack thread (a
+	// group @mention posted as a reply inside an existing thread). It is empty
+	// for DMs and for a top-level group @mention — whose own ts becomes the
+	// isolation root but which has sibling top-level messages a thread read
+	// would miss. The on-demand history reader keys off it to choose
+	// conversations.replies (a real thread) vs conversations.history (DM /
+	// top-level channel context) so it captures the surrounding conversation,
+	// not just one thread (MUL-3871).
+	ThreadTS string `json:"thread_ts,omitempty"`
 }
 
 // slackSessionRouting derives, from one inbound Slack message, the three things
@@ -78,14 +87,24 @@ type slackBindingConfig struct {
 // It is a pure function so the isolation contract is unit-tested without a DB.
 func slackSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte, replyThread string) {
 	chatID := msg.Source.ChatID
-	cfg, _ := json.Marshal(slackBindingConfig{ChannelID: chatID})
 	if msg.Source.ChatType == channel.ChatTypeP2P {
+		cfg, _ := json.Marshal(slackBindingConfig{ChannelID: chatID})
 		return chatID, cfg, msg.Source.ThreadID
 	}
+	// A genuine thread reply carries an inbound thread_ts; a top-level @mention
+	// does not (its own ts synthesizes the isolation root). Record ThreadTS
+	// only for the former so the history reader knows to read the thread rather
+	// than the surrounding channel.
 	threadRoot := msg.Source.ThreadID
+	threaded := threadRoot != ""
 	if threadRoot == "" {
 		threadRoot = msg.MessageID
 	}
+	binding := slackBindingConfig{ChannelID: chatID}
+	if threaded {
+		binding.ThreadTS = threadRoot
+	}
+	cfg, _ := json.Marshal(binding)
 	return chatID + ":" + threadRoot, cfg, threadRoot
 }
 
