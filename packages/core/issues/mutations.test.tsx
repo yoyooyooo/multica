@@ -209,6 +209,44 @@ describe("useLoadMoreByStatus", () => {
     expect(updated?.byStatus.in_progress?.issues).toHaveLength(2);
   });
 
+  it("targets the project surface cache when myIssues uses a project scope key", async () => {
+    const sort: IssueSortParam = { sort_by: "position", sort_direction: undefined };
+    const myIssues = { scope: "project:p1", filter: { project_id: "p1" } };
+    const activeKey = issueKeys.myListSorted(WS_ID, myIssues.scope, myIssues.filter, sort);
+    qc.setQueryData<ListIssuesCache>(activeKey, {
+      byStatus: { todo: { issues: [makeIssue(1, { project_id: "p1" })], total: 2 } },
+    });
+
+    listIssues.mockResolvedValue({
+      issues: [makeIssue(2, { project_id: "p1" })],
+      total: 2,
+    });
+
+    const { result } = renderHook(
+      () => useLoadMoreByStatus("todo", myIssues, sort),
+      { wrapper: createWrapper(qc) },
+    );
+
+    await act(async () => {
+      await result.current.loadMore();
+    });
+
+    expect(listIssues).toHaveBeenCalledWith({
+      status: "todo",
+      limit: 50,
+      offset: 1,
+      sort_by: "position",
+      sort_direction: undefined,
+      project_id: "p1",
+    });
+
+    const updated = qc.getQueryData<ListIssuesCache>(activeKey);
+    expect(updated?.byStatus.todo?.issues.map((i) => i.id)).toEqual([
+      "issue-1",
+      "issue-2",
+    ]);
+  });
+
   it("works with no sort (matches the {} key used by sort-less callers)", async () => {
     const myIssues = { scope: "actor", filter: { assignee_id: "user-2" } };
     const activeKey = issueKeys.myListSorted(WS_ID, myIssues.scope, myIssues.filter, undefined);
@@ -325,10 +363,13 @@ describe("useUpdateIssue — optimistic move keeps every bucketed board in sync"
   const sort: IssueSortParam = { sort_by: "position", sort_direction: undefined };
   const myScope = "assigned";
   const myFilter = { assignee_id: "user-1" };
+  const projectScope = "project:p1";
+  const projectFilter = { project_id: "p1" };
   const wsKey = issueKeys.listSorted(WS_ID, sort);
   // My-Issues AND the Project board both ride this myList cache; a move that
   // only patched the workspace cache snaps back on those boards.
   const myKey = issueKeys.myListSorted(WS_ID, myScope, myFilter, sort);
+  const projectKey = issueKeys.myListSorted(WS_ID, projectScope, projectFilter, sort);
 
   let qc: QueryClient;
   let updateIssue: ReturnType<typeof vi.fn<(id: string, data: unknown) => Promise<Issue>>>;
@@ -356,6 +397,7 @@ describe("useUpdateIssue — optimistic move keeps every bucketed board in sync"
     setApiInstance({ updateIssue } as unknown as ApiClient);
     qc.setQueryData<ListIssuesCache>(wsKey, makeBucketed());
     qc.setQueryData<ListIssuesCache>(myKey, makeBucketed());
+    qc.setQueryData<ListIssuesCache>(projectKey, makeBucketed());
   });
 
   afterEach(() => {
@@ -380,7 +422,7 @@ describe("useUpdateIssue — optimistic move keeps every bucketed board in sync"
     });
 
     // Optimistic state — the regression: myList must move too, not just ws.
-    for (const key of [wsKey, myKey]) {
+    for (const key of [wsKey, myKey, projectKey]) {
       expect(bucketIds(key, "todo")).toEqual([]);
       expect(bucketIds(key, "in_progress")).toEqual(["issue-1"]);
     }
@@ -390,7 +432,7 @@ describe("useUpdateIssue — optimistic move keeps every bucketed board in sync"
     });
 
     // Authoritative settle keeps the card in place in both caches.
-    for (const key of [wsKey, myKey]) {
+    for (const key of [wsKey, myKey, projectKey]) {
       expect(bucketIds(key, "in_progress")).toEqual(["issue-1"]);
     }
   });
@@ -408,7 +450,7 @@ describe("useUpdateIssue — optimistic move keeps every bucketed board in sync"
         .catch(() => {});
     });
 
-    for (const key of [wsKey, myKey]) {
+    for (const key of [wsKey, myKey, projectKey]) {
       expect(bucketIds(key, "todo")).toEqual(["issue-1"]);
       expect(bucketIds(key, "in_progress")).toEqual([]);
     }

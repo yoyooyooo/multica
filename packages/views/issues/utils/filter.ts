@@ -1,4 +1,4 @@
-import type { Issue, IssueStatus, IssuePriority } from "@multica/core/types";
+import type { Issue, IssueStatus, IssuePriority, IssueAssigneeGroup } from "@multica/core/types";
 import type { ActorFilterValue } from "@multica/core/issues/stores/view-store";
 
 export interface IssueFilters {
@@ -91,4 +91,23 @@ export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
 
     return true;
   });
+}
+
+export function filterRunningAssigneeGroups(
+  groups: IssueAssigneeGroup[] | undefined,
+  agentRunningFilter: boolean,
+  runningIssueIds: ReadonlySet<string>,
+): IssueAssigneeGroup[] | undefined {
+  if (!groups || !agentRunningFilter) return groups;
+
+  return groups
+    .map((group) => {
+      const issues = group.issues.filter((issue) => runningIssueIds.has(issue.id));
+      return {
+        ...group,
+        issues,
+        total: issues.length,
+      };
+    })
+    .filter((group) => group.issues.length > 0);
 }
