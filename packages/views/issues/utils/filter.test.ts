@@ -249,4 +249,43 @@ describe("filterIssues", () => {
     // in the running set → only "1" survives.
     expect(result.map((i) => i.id)).toEqual(["1"]);
   });
+
+  // --- Show sub-issues display toggle ---
+  const parentChildIssues: Issue[] = [
+    makeIssue({ id: "P1", parent_issue_id: null }),
+    makeIssue({ id: "C1", parent_issue_id: "P1" }),
+    makeIssue({ id: "P2", parent_issue_id: null }),
+    makeIssue({ id: "C2", parent_issue_id: "P2" }),
+  ];
+
+  it("hides sub-issues when showSubIssues is false", () => {
+    const result = filterIssues(parentChildIssues, {
+      ...NO_FILTER,
+      showSubIssues: false,
+    });
+    expect(result.map((i) => i.id)).toEqual(["P1", "P2"]);
+  });
+
+  it("keeps sub-issues when showSubIssues is true or omitted", () => {
+    expect(
+      filterIssues(parentChildIssues, { ...NO_FILTER, showSubIssues: true }),
+    ).toHaveLength(4);
+    // Omitting the flag entirely must preserve the show-all default.
+    expect(filterIssues(parentChildIssues, NO_FILTER)).toHaveLength(4);
+  });
+
+  it("composes showSubIssues with other filters (AND semantics)", () => {
+    const mixed: Issue[] = [
+      makeIssue({ id: "P", status: "todo", parent_issue_id: null }),
+      makeIssue({ id: "C", status: "todo", parent_issue_id: "P" }),
+      makeIssue({ id: "PD", status: "done", parent_issue_id: null }),
+    ];
+    const result = filterIssues(mixed, {
+      ...NO_FILTER,
+      statusFilters: ["todo"],
+      showSubIssues: false,
+    });
+    // "C" is a sub-issue (dropped), "PD" is done (dropped) → only "P" survives.
+    expect(result.map((i) => i.id)).toEqual(["P"]);
+  });
 });

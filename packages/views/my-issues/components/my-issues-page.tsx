@@ -38,6 +38,7 @@ export function MyIssuesPage() {
   const sortBy = useStore(myIssuesViewStore, (s) => s.sortBy);
   const sortDirection = useStore(myIssuesViewStore, (s) => s.sortDirection);
   const agentRunningFilter = useStore(myIssuesViewStore, (s) => s.agentRunningFilter);
+  const showSubIssues = useStore(myIssuesViewStore, (s) => s.showSubIssues);
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
 
   const sort = useMemo(
@@ -140,8 +141,9 @@ export function MyIssuesPage() {
         labelFilters: [],
         agentRunningFilter,
         runningIssueIds,
+        showSubIssues,
       }),
-    [myIssues, statusFilters, priorityFilters, agentRunningFilter, runningIssueIds],
+    [myIssues, statusFilters, priorityFilters, agentRunningFilter, runningIssueIds, showSubIssues],
   );
 
   // Status-unfiltered companion for Swimlane.
@@ -158,8 +160,9 @@ export function MyIssuesPage() {
         labelFilters: [],
         agentRunningFilter,
         runningIssueIds,
+        showSubIssues,
       }),
-    [myIssues, priorityFilters, agentRunningFilter, runningIssueIds],
+    [myIssues, priorityFilters, agentRunningFilter, runningIssueIds, showSubIssues],
   );
 
   const activeFilters = useMemo(() => ({
@@ -171,7 +174,8 @@ export function MyIssuesPage() {
     includeNoProject: false,
     labelFilters: [],
     agentRunningFilter,
-  }), [priorityFilters, agentRunningFilter]);
+    showSubIssues,
+  }), [priorityFilters, agentRunningFilter, showSubIssues]);
 
   const { data: childProgressMap = new Map() } = useQuery(childIssueProgressOptions(wsId));
 

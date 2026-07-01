@@ -67,6 +67,7 @@ export function IssuesPage() {
   const sortBy = useIssueViewStore((s) => s.sortBy);
   const sortDirection = useIssueViewStore((s) => s.sortDirection);
   const agentRunningFilter = useIssueViewStore((s) => s.agentRunningFilter);
+  const showSubIssues = useIssueViewStore((s) => s.showSubIssues);
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
 
   const sort = useMemo(
@@ -156,15 +157,15 @@ export function IssuesPage() {
   const headerIssues = usesAssigneeBoard ? assigneeIssues : scopedIssues;
 
   const issues = useMemo(
-    () => filterIssues(scopedIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds }),
-    [scopedIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds],
+    () => filterIssues(scopedIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds, showSubIssues }),
+    [scopedIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds, showSubIssues],
   );
 
   // Status-unfiltered companion for Swimlane — same narrowing as `issues`
   // minus the status filter.
   const swimlaneIssues = useMemo(
-    () => filterIssues(scopedIssues, { statusFilters: [], priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds }),
-    [scopedIssues, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds],
+    () => filterIssues(scopedIssues, { statusFilters: [], priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds, showSubIssues }),
+    [scopedIssues, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds, showSubIssues],
   );
 
   const activeFilters = useMemo(() => ({
@@ -176,6 +177,7 @@ export function IssuesPage() {
     includeNoProject,
     labelFilters,
     agentRunningFilter,
+    showSubIssues,
   }), [
     priorityFilters,
     assigneeFilters,
@@ -185,6 +187,7 @@ export function IssuesPage() {
     includeNoProject,
     labelFilters,
     agentRunningFilter,
+    showSubIssues,
   ]);
 
   // Fetch sub-issue progress from the backend so counts are accurate

@@ -16,6 +16,11 @@ export interface IssueFilters {
   // free of any data-fetching dependency.
   agentRunningFilter?: boolean;
   runningIssueIds?: ReadonlySet<string>;
+  // "Show sub-issues" display toggle. When explicitly `false`, hide issues
+  // that have a parent so only top-level issues remain. Undefined / true keeps
+  // the default behaviour of showing everything, so existing callers that omit
+  // it (and mobile's positional variant) are unaffected.
+  showSubIssues?: boolean;
 }
 
 /**
@@ -28,7 +33,7 @@ export interface IssueFilters {
  * - When both → show matching assignees + unassigned
  */
 export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
-  const { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds } = filters;
+  const { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds, showSubIssues } = filters;
   const hasAssigneeFilter = assigneeFilters.length > 0 || includeNoAssignee;
   const hasProjectFilter = projectFilters.length > 0 || includeNoProject;
   // Empty set passed without `agentRunningFilter` is a no-op. When the
@@ -39,6 +44,9 @@ export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
   return issues.filter((issue) => {
     if (applyAgentRunning && !(runningIssueIds?.has(issue.id) ?? false))
       return false;
+
+    // "Show sub-issues" off → keep only top-level issues.
+    if (showSubIssues === false && issue.parent_issue_id) return false;
 
     if (statusFilters.length > 0 && !statusFilters.includes(issue.status))
       return false;
