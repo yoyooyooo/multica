@@ -328,8 +328,8 @@ func attachmentText(a slack.Attachment) string {
 }
 
 // flattenBlocks renders Block Kit blocks to plain text, best-effort: it walks
-// the common text-bearing blocks (section, header, context, markdown) and skips
-// interactive/media blocks. Deeply nested rich_text is not expanded.
+// the common text-bearing blocks (section, header, context, markdown, and
+// rich_text) and skips interactive/media blocks.
 func flattenBlocks(blocks slack.Blocks) string {
 	parts := make([]string, 0, len(blocks.BlockSet))
 	add := func(s string) {
@@ -360,9 +360,59 @@ func flattenBlocks(blocks slack.Blocks) string {
 					add(tb.Text)
 				}
 			}
+		case *slack.RichTextBlock:
+			add(richTextBlockText(v))
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// richTextBlockText flattens a rich_text block to plain text, best-effort: it
+// walks sections, lists, quotes, and preformatted runs and concatenates their
+// text and link runs (one line per section). Mentions, emoji, and other inline
+// decorations are skipped — this is the plain body an agent needs, not a
+// faithful re-render. A rich_text-only body is the standard shape for messages
+// composed in Slack's own rich text input, so a bot that posts one with an
+// empty top-level Text would otherwise be dropped.
+func richTextBlockText(b *slack.RichTextBlock) string {
+	var lines []string
+	var writeElement func(el slack.RichTextElement)
+	writeSection := func(els []slack.RichTextSectionElement) {
+		var sb strings.Builder
+		for _, e := range els {
+			switch v := e.(type) {
+			case *slack.RichTextSectionTextElement:
+				sb.WriteString(v.Text)
+			case *slack.RichTextSectionLinkElement:
+				if v.Text != "" {
+					sb.WriteString(v.Text)
+				} else {
+					sb.WriteString(v.URL)
+				}
+			}
+		}
+		if s := strings.TrimSpace(sb.String()); s != "" {
+			lines = append(lines, s)
+		}
+	}
+	writeElement = func(el slack.RichTextElement) {
+		switch v := el.(type) {
+		case *slack.RichTextSection:
+			writeSection(v.Elements)
+		case *slack.RichTextQuote:
+			writeSection(v.Elements)
+		case *slack.RichTextPreformatted:
+			writeSection(v.Elements)
+		case *slack.RichTextList:
+			for _, item := range v.Elements {
+				writeElement(item)
+			}
+		}
+	}
+	for _, el := range b.Elements {
+		writeElement(el)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // truncateRunes trims s to at most max runes, appending an ellipsis when cut.

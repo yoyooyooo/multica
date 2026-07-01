@@ -316,6 +316,39 @@ func TestThreadRecoversBlocksText(t *testing.T) {
 	}
 }
 
+// TestThreadRecoversRichTextBlock: a message whose only body is a Block Kit
+// rich_text block (the shape Slack's rich text input produces) is flattened.
+func TestThreadRecoversRichTextBlock(t *testing.T) {
+	q := &fakeHistoryQueries{binding: groupBinding("50.000000"), inst: activeSlackInstall()}
+	root := slack.Message{Msg: slack.Msg{
+		Username:  "Webhook",
+		BotID:     "B3",
+		Timestamp: "50.000000",
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewRichTextBlock("blk",
+				slack.NewRichTextSection(
+					slack.NewRichTextSectionTextElement("incident opened: ", nil),
+					slack.NewRichTextSectionLinkElement("https://ex.co/i/1", "INC-1", nil),
+				),
+			),
+		}},
+	}}
+	fc := &fakeHistoryClient{repliesMsgs: []slack.Message{root}}
+	h := newTestHistory(q, fc)
+
+	page, err := h.Thread(context.Background(), uid(9), "", channel.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("Thread: %v", err)
+	}
+	got := findByTS(page.Messages, "50.000000")
+	if got == nil {
+		t.Fatalf("rich_text-only message was dropped: %+v", page.Messages)
+	}
+	if got.Text != "incident opened: INC-1" {
+		t.Errorf("root text = %q, want the flattened rich_text", got.Text)
+	}
+}
+
 // TestThreadDropsEmptySystemMarker: a message with no readable body anywhere
 // (a join/leave/system marker) is still dropped — the fallback must not
 // resurrect content-less markers.
