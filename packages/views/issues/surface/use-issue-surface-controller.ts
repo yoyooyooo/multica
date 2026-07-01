@@ -9,10 +9,13 @@ import type {
   IssueAssigneeGroup,
   UpdateIssueRequest,
 } from "@multica/core/types";
-import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { BOARD_STATUSES } from "@multica/core/issues/config";
-import { useUpdateIssue } from "@multica/core/issues/mutations";
+import {
+  useBatchDeleteIssues,
+  useBatchUpdateIssues,
+  useUpdateIssue,
+} from "@multica/core/issues/mutations";
 import {
   childIssueProgressOptions,
   myIssueAssigneeGroupsOptions,
@@ -30,9 +33,26 @@ import {
 } from "@multica/core/issues/surface/scope";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { useModalStore } from "@multica/core/modals";
-import { filterIssues, filterRunningAssigneeGroups, type IssueFilters } from "../utils/filter";
+import {
+  applyIssueFilters,
+  filterRunningAssigneeGroups,
+  type IssueFilterState,
+  type IssueFilters,
+} from "../utils/filter";
 import type { ChildProgress } from "../components/list-row";
 import type { IssueSurfaceMode } from "./types";
+import {
+  useIssueSurfaceActivity,
+  type IssueSurfaceActivity,
+} from "./activity";
+import {
+  type IssueSurfaceActions,
+  type IssueSurfaceMutationOptions,
+} from "./actions-context";
+import {
+  type IssueSurfaceSelection,
+  useCreateIssueSurfaceSelection,
+} from "./selection-context";
 import { useT } from "../../i18n";
 
 const EMPTY_ISSUES: Issue[] = [];
@@ -67,6 +87,9 @@ export interface IssueSurfaceController {
   visibleStatuses: typeof BOARD_STATUSES;
   hiddenStatuses: typeof BOARD_STATUSES;
   activeFilters: Omit<IssueFilters, "statusFilters" | "runningIssueIds">;
+  activity: IssueSurfaceActivity;
+  actions: IssueSurfaceActions;
+  selection: IssueSurfaceSelection;
   childProgressMap: Map<string, ChildProgress>;
   isEmpty: boolean;
   openCreateIssue: () => void;
@@ -137,14 +160,12 @@ export function useIssueSurfaceController({
     [sortBy, sortDirection],
   );
 
-  const { data: snapshot = [] } = useQuery(agentTaskSnapshotOptions(wsId));
-  const runningIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const task of snapshot) {
-      if (task.status === "running" && task.issue_id) ids.add(task.issue_id);
-    }
-    return ids;
-  }, [snapshot]);
+  const activity = useIssueSurfaceActivity(scope);
+  const selection = useCreateIssueSurfaceSelection(scopeKey);
+  const filterContext = useMemo(
+    () => ({ activityByIssueId: activity.activityByIssueId }),
+    [activity.activityByIssueId],
+  );
 
   const usesAssigneeBoard =
     effectiveViewMode === "board" && grouping === "assignee";
@@ -196,22 +217,19 @@ export function useIssueSurfaceController({
   const ganttIssues = ganttIssuesQuery.data ?? EMPTY_ISSUES;
   const projectIssues = usesGantt ? ganttIssues : bucketedIssues;
 
-  const issues = useMemo(
-    () =>
-      filterIssues(projectIssues, {
-        statusFilters,
-        priorityFilters,
-        assigneeFilters,
-        includeNoAssignee,
-        creatorFilters,
-        projectFilters: [],
-        includeNoProject: false,
-        labelFilters,
-        agentRunningFilter,
-        runningIssueIds,
-      }),
+  const baseFilterState = useMemo<IssueFilterState>(
+    () => ({
+      statusFilters,
+      priorityFilters,
+      assigneeFilters,
+      includeNoAssignee,
+      creatorFilters,
+      projectFilters: [],
+      includeNoProject: false,
+      labelFilters,
+      workingOnly: agentRunningFilter,
+    }),
     [
-      projectIssues,
       statusFilters,
       priorityFilters,
       assigneeFilters,
@@ -219,60 +237,44 @@ export function useIssueSurfaceController({
       creatorFilters,
       labelFilters,
       agentRunningFilter,
-      runningIssueIds,
     ],
+  );
+
+  const issues = useMemo(
+    () =>
+      applyIssueFilters(projectIssues, baseFilterState, filterContext),
+    [
+      projectIssues,
+      baseFilterState,
+      filterContext,
+    ],
+  );
+
+  const statuslessFilterState = useMemo<IssueFilterState>(
+    () => ({
+      ...baseFilterState,
+      statusFilters: [],
+    }),
+    [baseFilterState],
   );
 
   const swimlaneIssues = useMemo(
     () =>
-      filterIssues(projectIssues, {
-        statusFilters: [],
-        priorityFilters,
-        assigneeFilters,
-        includeNoAssignee,
-        creatorFilters,
-        projectFilters: [],
-        includeNoProject: false,
-        labelFilters,
-        agentRunningFilter,
-        runningIssueIds,
-      }),
+      applyIssueFilters(projectIssues, statuslessFilterState, filterContext),
     [
       projectIssues,
-      priorityFilters,
-      assigneeFilters,
-      includeNoAssignee,
-      creatorFilters,
-      labelFilters,
-      agentRunningFilter,
-      runningIssueIds,
+      statuslessFilterState,
+      filterContext,
     ],
   );
 
   const filteredGanttIssues = useMemo(
     () =>
-      filterIssues(ganttIssues, {
-        statusFilters,
-        priorityFilters,
-        assigneeFilters,
-        includeNoAssignee,
-        creatorFilters,
-        projectFilters: [],
-        includeNoProject: false,
-        labelFilters,
-        agentRunningFilter,
-        runningIssueIds,
-      }),
+      applyIssueFilters(ganttIssues, baseFilterState, filterContext),
     [
       ganttIssues,
-      statusFilters,
-      priorityFilters,
-      assigneeFilters,
-      includeNoAssignee,
-      creatorFilters,
-      labelFilters,
-      agentRunningFilter,
-      runningIssueIds,
+      baseFilterState,
+      filterContext,
     ],
   );
 
@@ -281,9 +283,9 @@ export function useIssueSurfaceController({
       filterRunningAssigneeGroups(
         assigneeGroupsQuery.data?.groups,
         agentRunningFilter,
-        runningIssueIds,
+        activity.runningIssueIds,
       ),
-    [assigneeGroupsQuery.data?.groups, agentRunningFilter, runningIssueIds],
+    [assigneeGroupsQuery.data?.groups, agentRunningFilter, activity.runningIssueIds],
   );
 
   const { data: childProgressMap = new Map<string, ChildProgress>() } = useQuery(
@@ -324,31 +326,85 @@ export function useIssueSurfaceController({
   );
 
   const updateIssueMutation = useUpdateIssue();
-  const moveIssue = useCallback(
+  const batchUpdateMutation = useBatchUpdateIssues();
+  const batchDeleteMutation = useBatchDeleteIssues();
+
+  const updateIssue = useCallback(
     (
       issueId: string,
-      updates: MoveIssueUpdates,
-      onSettled?: () => void,
+      updates: Partial<UpdateIssueRequest>,
+      options?: IssueSurfaceMutationOptions,
     ) => {
       updateIssueMutation.mutate(
         { id: issueId, ...updates },
         {
-          onError: (err) =>
+          onSuccess: () => options?.onSuccess?.(),
+          onError: (err) => {
             toast.error(
               err instanceof Error && err.message
                 ? err.message
-                : t(($) => $.detail.toast_move_issue_failed),
-            ),
-          onSettled: () => onSettled?.(),
+                : (options?.errorMessage ?? t(($) => $.detail.toast_move_issue_failed)),
+            );
+            options?.onError?.(err);
+          },
+          onSettled: () => options?.onSettled?.(),
         },
       );
     },
     [updateIssueMutation, t],
   );
 
+  const moveIssue = useCallback(
+    (
+      issueId: string,
+      updates: MoveIssueUpdates,
+      onSettled?: () => void,
+    ) => {
+      updateIssue(issueId, updates, {
+        errorMessage: t(($) => $.detail.toast_move_issue_failed),
+        onSettled,
+      });
+    },
+    [updateIssue, t],
+  );
+
   const openCreateIssue = useCallback(() => {
     useModalStore.getState().open("create-issue", resolvedCreateDefaults);
   }, [resolvedCreateDefaults]);
+
+  const actions = useMemo<IssueSurfaceActions>(
+    () => ({
+      isPending:
+        updateIssueMutation.isPending ||
+        batchUpdateMutation.isPending ||
+        batchDeleteMutation.isPending,
+      createIssue: (defaults) => {
+        useModalStore
+          .getState()
+          .open("create-issue", { ...resolvedCreateDefaults, ...defaults });
+      },
+      updateIssue,
+      moveIssue: (issueId, updates, options) =>
+        updateIssue(issueId, updates, {
+          errorMessage: t(($) => $.detail.toast_move_issue_failed),
+          ...options,
+        }),
+      batchUpdate: async (issueIds, updates) => {
+        await batchUpdateMutation.mutateAsync({ ids: issueIds, updates });
+      },
+      batchDelete: async (issueIds) => {
+        await batchDeleteMutation.mutateAsync(issueIds);
+      },
+    }),
+    [
+      batchDeleteMutation,
+      batchUpdateMutation,
+      resolvedCreateDefaults,
+      t,
+      updateIssue,
+      updateIssueMutation.isPending,
+    ],
+  );
 
   return {
     scopeKey,
@@ -371,6 +427,9 @@ export function useIssueSurfaceController({
     visibleStatuses,
     hiddenStatuses,
     activeFilters,
+    activity,
+    actions,
+    selection,
     childProgressMap,
     isEmpty:
       effectiveViewMode !== "gantt" &&

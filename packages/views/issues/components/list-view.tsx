@@ -22,7 +22,6 @@ import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
 import type { IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
 import { useModalStore } from "@multica/core/modals";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
-import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { StatusHeading } from "./status-heading";
 import { ListRow, DraggableListRow, type ChildProgress } from "./list-row";
 import { useDragSettle } from "./use-drag-settle";
@@ -40,6 +39,7 @@ import {
   getMoveUpdates,
 } from "../utils/drag-utils";
 import type { BoardColumnGroup } from "./board-column";
+import { useIssueSurfaceSelection } from "../surface/selection-context";
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
 const EMPTY_IDS: string[] = [];
@@ -383,9 +383,10 @@ function StatusAccordionItem({
   sort?: IssueSortParam;
 }) {
   const { t } = useT("issues");
-  const selectedIds = useIssueSelectionStore((s) => s.selectedIds);
-  const select = useIssueSelectionStore((s) => s.select);
-  const deselect = useIssueSelectionStore((s) => s.deselect);
+  const selection = useIssueSurfaceSelection();
+  const selectedIds = selection.selectedIds;
+  const select = selection.select;
+  const deselect = selection.deselect;
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
     status,
     myIssuesOpts,

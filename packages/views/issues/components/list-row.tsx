@@ -9,7 +9,6 @@ import { AppLink } from "../../navigation";
 import type { Issue } from "@multica/core/types";
 import { formatDateOnly } from "@multica/core/issues/date";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
@@ -20,6 +19,7 @@ import { ProgressRing } from "./progress-ring";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+import { useIssueSurfaceSelection } from "../surface/selection-context";
 
 export interface ChildProgress {
   done: number;
@@ -47,8 +47,9 @@ function ListRowContent({
   containerProps?: Record<string, unknown>;
   checkboxProps?: Pick<React.HTMLAttributes<HTMLDivElement>, "onClick" | "onMouseDown" | "onPointerDown">;
 }) {
-  const selected = useIssueSelectionStore((s) => s.selectedIds.has(issue.id));
-  const toggle = useIssueSelectionStore((s) => s.toggle);
+  const selection = useIssueSurfaceSelection();
+  const selected = selection.selectedIds.has(issue.id);
+  const toggle = selection.toggle;
   const p = useWorkspacePaths();
   const storeProperties = useViewStore((s) => s.cardProperties);
   const wsId = useWorkspaceId();

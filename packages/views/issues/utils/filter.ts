@@ -1,5 +1,6 @@
 import type { Issue, IssueStatus, IssuePriority, IssueAssigneeGroup } from "@multica/core/types";
 import type { ActorFilterValue } from "@multica/core/issues/stores/view-store";
+import type { IssueActivityState } from "../surface/activity";
 
 export interface IssueFilters {
   statusFilters: IssueStatus[];
@@ -18,6 +19,30 @@ export interface IssueFilters {
   runningIssueIds?: ReadonlySet<string>;
 }
 
+export interface IssueFilterState {
+  statusFilters: IssueStatus[];
+  priorityFilters: IssuePriority[];
+  assigneeFilters: ActorFilterValue[];
+  includeNoAssignee: boolean;
+  creatorFilters: ActorFilterValue[];
+  projectFilters: string[];
+  includeNoProject: boolean;
+  labelFilters: string[];
+  workingOnly: boolean;
+}
+
+export interface IssueFilterContext {
+  activityByIssueId?: ReadonlyMap<string, IssueActivityState>;
+  runningIssueIds?: ReadonlySet<string>;
+}
+
+function issueIsWorking(issueId: string, context: IssueFilterContext) {
+  if (context.activityByIssueId) {
+    return context.activityByIssueId.get(issueId)?.isWorking === true;
+  }
+  return context.runningIssueIds?.has(issueId) === true;
+}
+
 /**
  * Filter issues using positive selection model.
  * Empty arrays = no filter (show all). Non-empty = show only matching.
@@ -27,17 +52,21 @@ export interface IssueFilters {
  * - When assigneeFilters has items → show only those assignees' issues
  * - When both → show matching assignees + unassigned
  */
-export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
-  const { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, agentRunningFilter, runningIssueIds } = filters;
+export function applyIssueFilters(
+  issues: Issue[],
+  filters: IssueFilterState,
+  context: IssueFilterContext = {},
+): Issue[] {
+  const { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters, includeNoProject, labelFilters, workingOnly } = filters;
   const hasAssigneeFilter = assigneeFilters.length > 0 || includeNoAssignee;
   const hasProjectFilter = projectFilters.length > 0 || includeNoProject;
   // Empty set passed without `agentRunningFilter` is a no-op. When the
   // filter is on but the set is missing/empty, hide everything — the
   // user opted into "only running" and there is nothing running.
-  const applyAgentRunning = agentRunningFilter === true;
+  const applyWorkingOnly = workingOnly === true;
 
   return issues.filter((issue) => {
-    if (applyAgentRunning && !(runningIssueIds?.has(issue.id) ?? false))
+    if (applyWorkingOnly && !issueIsWorking(issue.id, context))
       return false;
 
     if (statusFilters.length > 0 && !statusFilters.includes(issue.status))
@@ -91,6 +120,24 @@ export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
 
     return true;
   });
+}
+
+export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
+  return applyIssueFilters(
+    issues,
+    {
+      statusFilters: filters.statusFilters,
+      priorityFilters: filters.priorityFilters,
+      assigneeFilters: filters.assigneeFilters,
+      includeNoAssignee: filters.includeNoAssignee,
+      creatorFilters: filters.creatorFilters,
+      projectFilters: filters.projectFilters,
+      includeNoProject: filters.includeNoProject,
+      labelFilters: filters.labelFilters,
+      workingOnly: filters.agentRunningFilter === true,
+    },
+    { runningIssueIds: filters.runningIssueIds },
+  );
 }
 
 export function filterRunningAssigneeGroups(

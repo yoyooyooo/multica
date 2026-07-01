@@ -26,6 +26,7 @@ import type { ChildProgress } from "./list-row";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useT } from "../../i18n";
 
 function formatDate(date: string): string {
@@ -77,8 +78,15 @@ export const BoardCardContent = memo(function BoardCardContent({
   const labels = issue.labels ?? [];
 
   const updateIssueMutation = useUpdateIssue();
+  const surfaceActions = useIssueSurfaceActionsOptional();
   const handleUpdate = useCallback(
     (updates: Partial<UpdateIssueRequest>) => {
+      if (surfaceActions) {
+        surfaceActions.updateIssue(issue.id, updates, {
+          errorMessage: t(($) => $.card.update_failed),
+        });
+        return;
+      }
       updateIssueMutation.mutate(
         { id: issue.id, ...updates },
         {
@@ -91,7 +99,7 @@ export const BoardCardContent = memo(function BoardCardContent({
         },
       );
     },
-    [issue.id, updateIssueMutation, t],
+    [issue.id, surfaceActions, updateIssueMutation, t],
   );
 
   const showPriority = storeProperties.priority;

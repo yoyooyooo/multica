@@ -21,13 +21,23 @@ import type {
 import { useIssueSurfaceController } from "./use-issue-surface-controller";
 
 const updateIssueMutate = vi.hoisted(() => vi.fn());
+const batchUpdateMutateAsync = vi.hoisted(() => vi.fn());
+const batchDeleteMutateAsync = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
 
 vi.mock("@multica/core/issues/mutations", () => ({
-  useUpdateIssue: () => ({ mutate: updateIssueMutate }),
+  useUpdateIssue: () => ({ mutate: updateIssueMutate, isPending: false }),
+  useBatchUpdateIssues: () => ({
+    mutateAsync: batchUpdateMutateAsync,
+    isPending: false,
+  }),
+  useBatchDeleteIssues: () => ({
+    mutateAsync: batchDeleteMutateAsync,
+    isPending: false,
+  }),
 }));
 
 vi.mock("../../i18n", () => ({
@@ -66,6 +76,8 @@ describe("useIssueSurfaceController", () => {
     } as unknown as ApiClient);
     pruneIssueSurfaceViewStates([]);
     updateIssueMutate.mockClear();
+    batchUpdateMutateAsync.mockResolvedValue(undefined);
+    batchDeleteMutateAsync.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -149,5 +161,32 @@ describe("useIssueSurfaceController", () => {
       | undefined;
     options?.onSettled?.();
     expect(onSettled).toHaveBeenCalled();
+  });
+
+  it("exposes surface actions and surface-local selection", async () => {
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "project", projectId: "p1" },
+          modes: ["board", "list", "swimlane", "gantt"],
+        }),
+      { wrapper: makeWrapper(qc, "project:p1") },
+    );
+
+    act(() => {
+      result.current.selection.select(["issue-1"]);
+    });
+    expect(result.current.selection.selectedIds).toEqual(new Set(["issue-1"]));
+
+    await act(async () => {
+      await result.current.actions.batchUpdate(["issue-1"], { status: "done" });
+      await result.current.actions.batchDelete(["issue-2"]);
+    });
+
+    expect(batchUpdateMutateAsync).toHaveBeenCalledWith({
+      ids: ["issue-1"],
+      updates: { status: "done" },
+    });
+    expect(batchDeleteMutateAsync).toHaveBeenCalledWith(["issue-2"]);
   });
 });

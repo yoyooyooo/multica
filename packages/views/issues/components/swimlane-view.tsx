@@ -57,6 +57,7 @@ import { ProjectIcon } from "../../projects/components/project-icon";
 import { ActorAvatar } from "../../common/actor-avatar";
 import type { ChildProgress } from "./list-row";
 import { useT } from "../../i18n";
+import type { IssueActivityState } from "../surface/activity";
 
 const COLUMN_WIDTH = 280;
 const COLUMN_GAP = 16;
@@ -453,6 +454,7 @@ export function SwimLaneView({
   myIssuesFilter,
   sort,
   projectId,
+  activityByIssueId,
 }: {
   issues: Issue[];
   /**
@@ -479,6 +481,7 @@ export function SwimLaneView({
   sort?: IssueSortParam;
   /** Pre-fills `project_id` on the create form for the in-cell "+" button. */
   projectId?: string;
+  activityByIssueId?: ReadonlyMap<string, IssueActivityState>;
 }) {
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
@@ -491,14 +494,24 @@ export function SwimLaneView({
 
   const wsId = useWorkspaceId();
 
-  const { data: snapshot = [] } = useQuery(agentTaskSnapshotOptions(wsId));
+  const { data: snapshot = [] } = useQuery({
+    ...agentTaskSnapshotOptions(wsId),
+    enabled: !activityByIssueId,
+  });
   const runningIssueIds = useMemo(() => {
+    if (activityByIssueId) {
+      const ids = new Set<string>();
+      for (const [issueId, activity] of activityByIssueId) {
+        if (activity.isWorking) ids.add(issueId);
+      }
+      return ids;
+    }
     const ids = new Set<string>();
     for (const t of snapshot) {
       if (t.status === "running" && t.issue_id) ids.add(t.issue_id);
     }
     return ids;
-  }, [snapshot]);
+  }, [activityByIssueId, snapshot]);
 
   const activeFilters = useMemo(() => ({
     // Status is enforced by visible-column rendering, not by filterIssues
