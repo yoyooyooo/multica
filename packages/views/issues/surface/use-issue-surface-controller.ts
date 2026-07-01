@@ -321,7 +321,10 @@ export function useIssueSurfaceController({
   );
 
   const activity = useIssueSurfaceActivity(scope);
-  const selection = useCreateIssueSurfaceSelection(scopeKey);
+  const selection = useCreateIssueSurfaceSelection(
+    scopeKey,
+    `${scopeKey}:${effectiveViewMode}`,
+  );
   const filterContext = useMemo(
     () => ({ activityByIssueId: activity.activityByIssueId }),
     [activity.activityByIssueId],

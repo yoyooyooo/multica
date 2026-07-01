@@ -26,4 +26,19 @@ describe("useCreateIssueSurfaceSelection", () => {
     rerender({ surfaceKey: "project:p2" });
     expect(result.current.selectedIds).toEqual(new Set());
   });
+
+  it("clears selection on reset key change even when the surface key is stable", () => {
+    const { result, rerender } = renderHook(
+      ({ resetKey }) => useCreateIssueSurfaceSelection("my:user-1:assigned", resetKey),
+      { initialProps: { resetKey: "my:user-1:assigned:list" } },
+    );
+
+    act(() => {
+      result.current.select(["i-1"]);
+    });
+    expect(result.current.selectedIds).toEqual(new Set(["i-1"]));
+
+    rerender({ resetKey: "my:user-1:assigned:board" });
+    expect(result.current.selectedIds).toEqual(new Set());
+  });
 });

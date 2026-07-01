@@ -23,6 +23,7 @@ import { useIssueSurfaceController } from "./use-issue-surface-controller";
 const updateIssueMutate = vi.hoisted(() => vi.fn());
 const batchUpdateMutateAsync = vi.hoisted(() => vi.fn());
 const batchDeleteMutateAsync = vi.hoisted(() => vi.fn());
+const openModal = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
@@ -38,6 +39,12 @@ vi.mock("@multica/core/issues/mutations", () => ({
     mutateAsync: batchDeleteMutateAsync,
     isPending: false,
   }),
+}));
+
+vi.mock("@multica/core/modals", () => ({
+  useModalStore: {
+    getState: () => ({ open: openModal }),
+  },
 }));
 
 vi.mock("../../i18n", () => ({
@@ -76,6 +83,7 @@ describe("useIssueSurfaceController", () => {
     } as unknown as ApiClient);
     pruneIssueSurfaceViewStates([]);
     updateIssueMutate.mockClear();
+    openModal.mockClear();
     batchUpdateMutateAsync.mockResolvedValue(undefined);
     batchDeleteMutateAsync.mockResolvedValue(undefined);
   });
@@ -228,6 +236,83 @@ describe("useIssueSurfaceController", () => {
     expect(listIssues).toHaveBeenCalledWith(
       expect.objectContaining({ assignee_id: "agent-1" }),
     );
+  });
+
+  it.each([
+    {
+      name: "project",
+      surfaceKey: "project:p1",
+      scope: { type: "project" as const, projectId: "p1" },
+      expected: { project_id: "p1", status: "todo" },
+    },
+    {
+      name: "my assigned",
+      surfaceKey: "my:user-1:assigned",
+      scope: { type: "my" as const, relation: "assigned" as const, userId: "user-1" },
+      expected: {
+        assignee_type: "member",
+        assignee_id: "user-1",
+        status: "todo",
+      },
+    },
+    {
+      name: "actor assigned",
+      surfaceKey: "actor:agent:agent-1:assigned",
+      scope: {
+        type: "actor" as const,
+        actorType: "agent" as const,
+        actorId: "agent-1",
+        relation: "assigned" as const,
+      },
+      expected: {
+        assignee_type: "agent",
+        assignee_id: "agent-1",
+        status: "todo",
+      },
+    },
+  ])("merges $name create defaults into the create modal payload", ({ scope, surfaceKey, expected }) => {
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope,
+          modes: ["board", "list", "swimlane", "gantt"],
+        }),
+      { wrapper: makeWrapper(qc, surfaceKey) },
+    );
+
+    act(() => {
+      result.current.openCreateIssue({ status: "todo" });
+    });
+
+    expect(openModal).toHaveBeenCalledWith("create-issue", expected);
+  });
+
+  it("clears surface selection when the view mode changes within the same scope", async () => {
+    const store = getIssueSurfaceViewStore("my:user-1:assigned");
+    store.getState().setViewMode("list");
+
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "my", relation: "assigned", userId: "user-1" },
+          modes: ["board", "list", "swimlane"],
+        }),
+      { wrapper: makeWrapper(qc, "my:user-1:assigned") },
+    );
+
+    act(() => {
+      result.current.selection.select(["issue-1"]);
+    });
+    expect(result.current.selection.selectedIds).toEqual(new Set(["issue-1"]));
+
+    act(() => {
+      store.getState().setViewMode("board");
+    });
+
+    await waitFor(() => {
+      expect(result.current.viewMode).toBe("board");
+      expect(result.current.selection.selectedIds).toEqual(new Set());
+    });
   });
 
   it("delegates movement through useUpdateIssue without rewriting the mutation path", () => {

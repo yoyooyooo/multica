@@ -24,12 +24,13 @@ const IssueSurfaceSelectionContext =
 
 export function useCreateIssueSurfaceSelection(
   surfaceKey: string,
+  resetKey = surfaceKey,
 ): IssueSurfaceSelection {
   const [selectedIds, setSelectedIds] = useState(() => new Set<string>());
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [surfaceKey]);
+  }, [resetKey]);
 
   const toggle = useCallback((id: string) => {
     setSelectedIds((current) => {

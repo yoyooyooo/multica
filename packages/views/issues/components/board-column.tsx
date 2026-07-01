@@ -48,6 +48,7 @@ export const BoardColumn = memo(function BoardColumn({
   totalCount,
   footer,
   projectId,
+  onCreateIssue,
   sortLabel,
 }: {
   group: BoardColumnGroup;
@@ -58,6 +59,7 @@ export const BoardColumn = memo(function BoardColumn({
   footer?: ReactNode;
   /** When set, the per-column "+" pre-fills the project on the create form. */
   projectId?: string;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
   sortLabel?: string | null;
 }) {
   const status = group.status;
@@ -112,7 +114,11 @@ export const BoardColumn = memo(function BoardColumn({
                       ...(group.createData ?? {}),
                       ...(projectId ? { project_id: projectId } : {}),
                     };
-                    useModalStore.getState().open("create-issue", data);
+                    if (onCreateIssue) {
+                      onCreateIssue(data);
+                    } else {
+                      useModalStore.getState().open("create-issue", data);
+                    }
                   }}
                 >
                   <Plus className="size-3.5" />

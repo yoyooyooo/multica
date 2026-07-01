@@ -455,6 +455,7 @@ export function SwimLaneView({
   sort,
   projectId,
   activityByIssueId,
+  onCreateIssue,
 }: {
   issues: Issue[];
   /**
@@ -482,6 +483,7 @@ export function SwimLaneView({
   /** Pre-fills `project_id` on the create form for the in-cell "+" button. */
   projectId?: string;
   activityByIssueId?: ReadonlyMap<string, IssueActivityState>;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
 }) {
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
@@ -1186,6 +1188,7 @@ export function SwimLaneView({
                 gridStyle={gridStyle}
                 paths={paths}
                 projectId={projectId}
+                onCreateIssue={onCreateIssue}
               />
             ))}
           <SortableContext
@@ -1210,6 +1213,7 @@ export function SwimLaneView({
                   gridStyle={gridStyle}
                   paths={paths}
                   projectId={projectId}
+                  onCreateIssue={onCreateIssue}
                 />
               ))}
           </SortableContext>
@@ -1269,6 +1273,7 @@ function DraggableSwimLane({
   gridStyle,
   paths,
   projectId,
+  onCreateIssue,
 }: {
   lane: LaneGroup;
   grouping: SwimlaneGrouping;
@@ -1281,6 +1286,7 @@ function DraggableSwimLane({
   gridStyle: React.CSSProperties;
   paths: ReturnType<typeof useWorkspacePaths>;
   projectId?: string;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
 }) {
   const { t } = useT("issues");
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -1378,6 +1384,7 @@ function DraggableSwimLane({
                 status={status}
                 lane={lane}
                 projectId={projectId}
+                onCreateIssue={onCreateIssue}
                 readOnly={lane.isOrphan}
               />
             );
@@ -1396,6 +1403,7 @@ function SwimLaneCell({
   status,
   lane,
   projectId,
+  onCreateIssue,
   readOnly = false,
 }: {
   cellId: string;
@@ -1405,6 +1413,7 @@ function SwimLaneCell({
   status: IssueStatus;
   lane: LaneGroup;
   projectId?: string;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
   /**
    * Display-only cell — the create affordance is suppressed and drag-end
    * upstream refuses to honour drops that would re-anchor a card to this
@@ -1438,8 +1447,12 @@ function SwimLaneCell({
     // Per-page project override takes precedence (e.g. Project Detail
     // pre-fills its own project id regardless of grouping).
     if (projectId) data.project_id = projectId;
-    useModalStore.getState().open("create-issue", data);
-  }, [status, lane, projectId]);
+    if (onCreateIssue) {
+      onCreateIssue(data);
+    } else {
+      useModalStore.getState().open("create-issue", data);
+    }
+  }, [status, lane, projectId, onCreateIssue]);
 
   return (
     <div className={`flex min-h-[120px] flex-col rounded-xl ${cfg?.columnBg ?? "bg-muted/40"} p-2`}>

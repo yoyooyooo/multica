@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { ListTodo, Plus } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -8,7 +8,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 import { getIssueSurfaceViewStore } from "@multica/core/issues/stores/surface-view-store";
 import { issueScopeKey } from "@multica/core/issues/surface/scope";
-import type { Issue } from "@multica/core/types";
+import type { CreateIssueRequest, Issue } from "@multica/core/types";
 import { BoardView } from "../components/board-view";
 import { BatchActionToolbar } from "../components/batch-action-toolbar";
 import { GanttView } from "../components/gantt-view";
@@ -112,6 +112,12 @@ function IssueSurfaceContent({
     () => ({ controller, issues }),
     [controller, issues],
   );
+  const openCreateIssue = useCallback(
+    (defaults?: Record<string, unknown>) => {
+      controller.openCreateIssue(defaults as Partial<CreateIssueRequest>);
+    },
+    [controller],
+  );
   const shouldShowClientEmpty =
     !!clientFilter &&
     issues.length === 0 &&
@@ -176,6 +182,7 @@ function IssueSurfaceContent({
                 myIssuesFilter={controller.loadMoreFilter}
                 sort={controller.sort}
                 projectId={controller.projectId}
+                onCreateIssue={openCreateIssue}
               />
             )}
             {controller.viewMode === "list" && (
@@ -188,6 +195,7 @@ function IssueSurfaceContent({
                 sort={controller.sort}
                 projectId={controller.projectId}
                 onMoveIssue={controller.moveIssue}
+                onCreateIssue={openCreateIssue}
               />
             )}
             {controller.viewMode === "gantt" && (
@@ -207,6 +215,7 @@ function IssueSurfaceContent({
                 sort={controller.sort}
                 projectId={controller.projectId}
                 activityByIssueId={controller.activity.activityByIssueId}
+                onCreateIssue={openCreateIssue}
               />
             )}
           </div>

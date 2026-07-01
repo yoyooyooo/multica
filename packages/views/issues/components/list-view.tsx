@@ -61,6 +61,7 @@ export function ListView({
   myIssuesFilter,
   projectId,
   onMoveIssue,
+  onCreateIssue,
   sort,
 }: {
   issues: Issue[];
@@ -70,6 +71,7 @@ export function ListView({
   myIssuesFilter?: MyIssuesFilter;
   projectId?: string;
   onMoveIssue?: (issueId: string, updates: DragMoveUpdates, onSettled?: () => void) => void;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
   sort?: IssueSortParam;
 }) {
   const listCollapsedStatuses = useViewStore(
@@ -317,6 +319,7 @@ export function ListView({
             childProgressMap={childProgressMap}
             myIssuesOpts={myIssuesOpts}
             projectId={projectId}
+            onCreateIssue={onCreateIssue}
             dragEnabled={dragEnabled}
             isExpanded={isExpanded}
             sortLabel={sortLabel}
@@ -366,6 +369,7 @@ function StatusAccordionItem({
   childProgressMap,
   myIssuesOpts,
   projectId,
+  onCreateIssue,
   dragEnabled,
   isExpanded,
   sortLabel,
@@ -377,6 +381,7 @@ function StatusAccordionItem({
   childProgressMap: Map<string, ChildProgress>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
   projectId?: string;
+  onCreateIssue?: (defaults: Record<string, unknown>) => void;
   dragEnabled: boolean;
   isExpanded: boolean;
   sortLabel: string | null;
@@ -450,11 +455,17 @@ function StatusAccordionItem({
                   variant="ghost"
                   size="icon-sm"
                   className="rounded-full text-muted-foreground opacity-0 group-hover/header:opacity-100 transition-opacity"
-                  onClick={() =>
-                    useModalStore
-                      .getState()
-                      .open("create-issue", { status, ...(projectId ? { project_id: projectId } : {}) })
-                  }
+                  onClick={() => {
+                    const defaults = {
+                      status,
+                      ...(projectId ? { project_id: projectId } : {}),
+                    };
+                    if (onCreateIssue) {
+                      onCreateIssue(defaults);
+                    } else {
+                      useModalStore.getState().open("create-issue", defaults);
+                    }
+                  }}
                 />
               }
             >

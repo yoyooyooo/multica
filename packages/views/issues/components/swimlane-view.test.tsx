@@ -442,6 +442,26 @@ describe("SwimLaneView", () => {
     );
   });
 
+  it("routes add button through the surface create callback when provided", () => {
+    const onCreateIssue = vi.fn();
+    renderWithI18n(
+      <SwimLaneView
+        issues={mockIssues}
+        onMoveIssue={vi.fn()}
+        projectId="proj-42"
+        onCreateIssue={onCreateIssue}
+      />,
+    );
+
+    const addButtons = screen.getAllByRole("button", { name: /add issue/i });
+    fireEvent.click(addButtons[0]!);
+
+    expect(onCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ project_id: "proj-42" }),
+    );
+    expect(mockOpenModal).not.toHaveBeenCalled();
+  });
+
   // A child whose parent isn't in the loaded set — lands in "Other parents".
   const orphanChild: Issue = {
     id: "lonely-child",
