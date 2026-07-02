@@ -30,7 +30,7 @@ type AutopilotService struct {
 	TxStarter TxStarter
 	Bus       *events.Bus
 	TaskSvc   *TaskService
-	IssueSvc  *IssueService
+	issueSvc  *IssueService
 }
 
 // DefaultAutopilotTriggerTimezone is the timezone used to render Autopilot
@@ -40,7 +40,17 @@ type AutopilotService struct {
 const DefaultAutopilotTriggerTimezone = "UTC"
 
 func NewAutopilotService(q *db.Queries, tx TxStarter, bus *events.Bus, taskSvc *TaskService) *AutopilotService {
-	return &AutopilotService{Queries: q, TxStarter: tx, Bus: bus, TaskSvc: taskSvc}
+	return &AutopilotService{
+		Queries:   q,
+		TxStarter: tx,
+		Bus:       bus,
+		TaskSvc:   taskSvc,
+		// nil analytics is deliberate: the autopilot dispatch path captures the
+		// IssueCreated event itself via captureIssueCreatedFromAutopilot (using
+		// TaskSvc.Analytics). Passing nil here keeps IssueService.Create from
+		// also capturing it, avoiding a double count.
+		issueSvc: NewIssueService(q, tx, bus, nil, taskSvc),
+	}
 }
 
 // DispatchAutopilot is the core execution entry point.
@@ -161,8 +171,10 @@ func (s *AutopilotService) DispatchAutopilotForPlan(
 //   - It is in-flight in a state whose downstream side effect is
 //     observable:
 //
-//   - issue_created with a valid issue_id — the issue exists and
-//     the issue-event listener owns task creation from here.
+//   - issue_created with a valid issue_id — the issue exists and its
+//     agent task was enqueued inline by IssueService.Create during
+//     dispatchCreateIssue (an enqueue failure would have flipped the run
+//     to failed before it reached this state).
 //
 //   - running with a valid task_id — the task is queued, the
 //     listener will close the run when the task terminates.
@@ -290,7 +302,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	description := s.buildIssueDescription(ap, *run, triggerTimezone)
 
 	var templateSubs []db.AutopilotSubscriber
-	result, err := s.issueService().Create(ctx, IssueCreateParams{
+	result, err := s.issueSvc.Create(ctx, IssueCreateParams{
 		WorkspaceID:    ap.WorkspaceID,
 		TeamID:         ap.TeamID,
 		Title:          title,
@@ -312,9 +324,8 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		ActorID:          util.UUIDToString(leader.ID),
 		AnalyticsAgentID: util.UUIDToString(leader.ID),
 		Platform:         "autopilot",
-		BroadcastPayload: func(issue db.Issue, _ []db.Attachment) map[string]any {
-			prefix := s.getIssuePrefixForIssue(ctx, issue)
-			return map[string]any{"issue": issueToMap(issue, prefix)}
+		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, teamKey string) map[string]any {
+			return map[string]any{"issue": issueToMap(issue, teamKey)}
 		},
 		BeforeCommit: func(ctx context.Context, qtx *db.Queries, issue db.Issue) error {
 			subs, err := qtx.ListAutopilotSubscribers(ctx, ap.ID)
@@ -370,14 +381,17 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		"leader_id", util.UUIDToString(leader.ID),
 		"run_id", util.UUIDToString(run.ID),
 	)
-	return nil
-}
 
-func (s *AutopilotService) issueService() *IssueService {
-	if s.IssueSvc != nil {
-		return s.IssueSvc
+	// The issue exists and the run is linked to it, but the agent task the run
+	// was supposed to drive was never enqueued. Surface this as a run failure so
+	// it is retried / visible instead of being recorded as a success with no
+	// downstream work. The issue_id stays linked (failRun only flips status), so
+	// the created issue remains discoverable; the message makes the ordering
+	// explicit so operators are not misled into thinking no issue was created.
+	if result.EnqueueErr != nil {
+		return fmt.Errorf("issue created but task enqueue failed: %w", result.EnqueueErr)
 	}
-	return NewIssueService(s.Queries, s.TxStarter, s.Bus, nil, s.TaskSvc)
+	return nil
 }
 
 // notifyAutopilotSubscribersOnCreate writes an inbox_item for each template
@@ -1324,31 +1338,6 @@ func isSupportedIssueTitleVariable(name string) bool {
 		}
 	}
 	return false
-}
-
-func (s *AutopilotService) getIssuePrefix(workspaceID pgtype.UUID) string {
-	team, err := s.Queries.GetDefaultWorkspaceTeam(context.Background(), workspaceID)
-	if err == nil && team.Key != "" {
-		return team.Key
-	}
-	ws, err := s.Queries.GetWorkspace(context.Background(), workspaceID)
-	if err != nil {
-		return ""
-	}
-	return ws.IssuePrefix
-}
-
-func (s *AutopilotService) getIssuePrefixForIssue(ctx context.Context, issue db.Issue) string {
-	if issue.TeamID.Valid {
-		team, err := s.Queries.GetWorkspaceTeam(ctx, db.GetWorkspaceTeamParams{
-			ID:          issue.TeamID,
-			WorkspaceID: issue.WorkspaceID,
-		})
-		if err == nil && team.Key != "" {
-			return team.Key
-		}
-	}
-	return s.getIssuePrefix(issue.WorkspaceID)
 }
 
 // canCreatorAccessPrivateLeader checks whether the autopilot's creator still
