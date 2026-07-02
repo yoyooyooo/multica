@@ -205,6 +205,73 @@ func (h *Handler) replaceInvocationTargets(ctx context.Context, agentID pgtype.U
 	return nil
 }
 
+// permissionInputChangesAgent reports whether the permission fields on an
+// update request would actually CHANGE the agent's current invocation
+// permission (mode or the set of targets). Used to let a non-owner's no-op
+// resubmit through (PATCH-as-PUT that echoes unchanged permission) while
+// rejecting a real change with 403. Invalid/absent permission input counts as
+// "no change" — a non-owner sending garbage should not get a 403 either, it is
+// simply ignored. Fails safe: on a DB error it returns changed=true so a
+// non-owner attempt is rejected rather than silently applied.
+func (h *Handler) permissionInputChangesAgent(ctx context.Context, existing db.Agent, req UpdateAgentRequest, hasPermissionMode, hasTargets bool) (bool, error) {
+	// Legacy-only request: the caller sent ONLY `visibility`, no permission_mode
+	// and no invocation_targets (an old client / PATCH-as-PUT echoing the field
+	// back while editing something else). Compare on the DERIVED legacy
+	// visibility, NOT by expanding "private" into a real private permission.
+	// A member-only public_to agent derives to legacy "private", so an admin
+	// resubmitting visibility:"private" is a NO-OP, not a public_to→private
+	// downgrade. Only a real legacy change (e.g. "workspace") counts. (MUL-3963
+	// review — this is the compatibility fix for PR #4853.)
+	if !hasPermissionMode && !hasTargets {
+		if req.Visibility == nil {
+			return false, nil
+		}
+		current, err := h.Queries.ListAgentInvocationTargets(ctx, existing.ID)
+		if err != nil {
+			return true, err
+		}
+		submitted := "private"
+		if *req.Visibility == "workspace" {
+			submitted = "workspace"
+		}
+		return submitted != deriveLegacyVisibility(existing.PermissionMode, current), nil
+	}
+
+	var targetsDTO []AgentInvocationTargetDTO
+	if req.InvocationTargets != nil {
+		targetsDTO = *req.InvocationTargets
+	}
+	perm, ok, err := parsePermissionInput(existing.WorkspaceID, req.PermissionMode, targetsDTO, hasPermissionMode, hasTargets, req.Visibility)
+	if err != nil || !ok {
+		// Unparseable or effectively no permission fields → treat as no change.
+		return false, nil
+	}
+	if perm.mode != existing.PermissionMode {
+		return true, nil
+	}
+	current, err := h.Queries.ListAgentInvocationTargets(ctx, existing.ID)
+	if err != nil {
+		return true, err
+	}
+	want := make(map[string]struct{}, len(perm.targets))
+	for _, tgt := range perm.targets {
+		want[tgt.targetType+":"+uuidToString(tgt.targetID)] = struct{}{}
+	}
+	have := make(map[string]struct{}, len(current))
+	for _, row := range current {
+		have[row.TargetType+":"+uuidToString(row.TargetID)] = struct{}{}
+	}
+	if len(want) != len(have) {
+		return true, nil
+	}
+	for k := range want {
+		if _, ok := have[k]; !ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // enrichAgentResponseWithTargets loads an agent's invocation targets and
 // applies them to the response (InvocationTargets + derived Visibility). Used
 // by the single-agent detail / create / update responses.
