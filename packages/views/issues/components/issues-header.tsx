@@ -801,6 +801,7 @@ export function IssueDisplayControls({
   const grouping = useViewStore((s) => s.grouping);
   const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
   const cardProperties = useViewStore((s) => s.cardProperties);
+  const showSubIssues = useViewStore((s) => s.showSubIssues);
   const act = useViewStoreApi().getState();
 
   const counts = useIssueCounts(scopedIssues);
@@ -1244,6 +1245,15 @@ export function IssueDisplayControls({
                 )}
               </div>
             </div>
+
+            <label className="flex cursor-pointer items-center justify-between border-b px-3 py-2.5">
+              <span className="text-sm">{t(($) => $.display.show_sub_issues)}</span>
+              <Switch
+                size="sm"
+                checked={showSubIssues}
+                onCheckedChange={() => act.toggleShowSubIssues()}
+              />
+            </label>
 
             <div className="px-3 py-2.5">
               <span className="text-xs font-medium text-muted-foreground">

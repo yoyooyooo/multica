@@ -20,7 +20,7 @@ import type { IssueSurfaceQueryPlan } from "@multica/core/issues/surface/query-p
 import type { IssueStatus } from "@multica/core/types";
 import {
   applyIssueFilters,
-  filterRunningAssigneeGroups,
+  filterAssigneeGroups,
   type IssueFilterState,
   type IssueFilters,
 } from "../utils/filter";
@@ -78,6 +78,7 @@ export function useIssueSurfaceData({
   includeNoProject,
   labelFilters,
   agentRunningFilter,
+  showSubIssues,
   loadProjects,
 }: {
   wsId: string;
@@ -95,6 +96,7 @@ export function useIssueSurfaceData({
   includeNoProject: boolean;
   labelFilters: string[];
   agentRunningFilter: boolean;
+  showSubIssues: boolean;
   loadProjects: boolean;
 }): IssueSurfaceData {
   const activity = useIssueSurfaceActivity();
@@ -168,6 +170,7 @@ export function useIssueSurfaceData({
       includeNoProject,
       labelFilters,
       workingOnly: agentRunningFilter,
+      showSubIssues,
     }),
     [
       agentRunningFilter,
@@ -178,6 +181,7 @@ export function useIssueSurfaceData({
       labelFilters,
       priorityFilters,
       projectFilters,
+      showSubIssues,
       statusFilters,
     ],
   );
@@ -205,17 +209,21 @@ export function useIssueSurfaceData({
     [baseFilterState, filterContext, ganttIssues],
   );
 
+  // The assignee-grouped board renders straight from `groups`, bypassing the
+  // flat applyIssueFilters output — re-apply the client-only display filters
+  // (Show sub-issues + agents-working) per group.
   const filteredAssigneeGroups = useMemo(
     () =>
-      filterRunningAssigneeGroups(
-        assigneeGroupsQuery.data?.groups,
+      filterAssigneeGroups(assigneeGroupsQuery.data?.groups, {
+        showSubIssues,
         agentRunningFilter,
-        activity.runningIssueIds,
-      ),
+        runningIssueIds: activity.runningIssueIds,
+      }),
     [
       activity.runningIssueIds,
       agentRunningFilter,
       assigneeGroupsQuery.data?.groups,
+      showSubIssues,
     ],
   );
 
@@ -253,6 +261,7 @@ export function useIssueSurfaceData({
       includeNoProject,
       labelFilters,
       agentRunningFilter,
+      showSubIssues,
     }),
     [
       agentRunningFilter,
@@ -263,6 +272,7 @@ export function useIssueSurfaceData({
       labelFilters,
       priorityFilters,
       projectFilters,
+      showSubIssues,
     ],
   );
 

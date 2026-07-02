@@ -17,6 +17,11 @@ export interface IssueFilters {
   // free of any data-fetching dependency.
   agentRunningFilter?: boolean;
   runningIssueIds?: ReadonlySet<string>;
+  // "Show sub-issues" display toggle. When explicitly `false`, hide issues
+  // that have a parent so only top-level issues remain. Undefined / true keeps
+  // the default behaviour of showing everything, so existing callers that omit
+  // it (and mobile's positional variant) are unaffected.
+  showSubIssues?: boolean;
 }
 
 export interface IssueFilterState {
@@ -29,6 +34,8 @@ export interface IssueFilterState {
   includeNoProject: boolean;
   labelFilters: string[];
   workingOnly: boolean;
+  /** See IssueFilters.showSubIssues — only an explicit `false` hides. */
+  showSubIssues?: boolean;
 }
 
 export interface IssueFilterContext {
@@ -64,10 +71,13 @@ export function applyIssueFilters(
   // filter is on but the set is missing/empty, hide everything — the
   // user opted into "only running" and there is nothing running.
   const applyWorkingOnly = workingOnly === true;
+  const hideSubIssues = filters.showSubIssues === false;
 
   return issues.filter((issue) => {
     if (applyWorkingOnly && !issueIsWorking(issue.id, context))
       return false;
+
+    if (hideSubIssues && issue.parent_issue_id) return false;
 
     if (statusFilters.length > 0 && !statusFilters.includes(issue.status))
       return false;
@@ -135,26 +145,42 @@ export function filterIssues(issues: Issue[], filters: IssueFilters): Issue[] {
       includeNoProject: filters.includeNoProject,
       labelFilters: filters.labelFilters,
       workingOnly: filters.agentRunningFilter === true,
+      showSubIssues: filters.showSubIssues,
     },
     { runningIssueIds: filters.runningIssueIds },
   );
 }
 
-export function filterRunningAssigneeGroups(
+/**
+ * Re-apply the client-only display filters to a server-grouped response.
+ * The assignee-grouped board renders straight from `groups`, bypassing the
+ * flat `applyIssueFilters` output, so the "Show sub-issues" toggle and the
+ * agents-working quick filter must be applied per group here. Recomputes
+ * each group's total and drops emptied groups. Returns the input by
+ * reference when no client filter is active.
+ */
+export function filterAssigneeGroups(
   groups: IssueAssigneeGroup[] | undefined,
-  agentRunningFilter: boolean,
-  runningIssueIds: ReadonlySet<string>,
+  filters: {
+    showSubIssues?: boolean;
+    agentRunningFilter?: boolean;
+    runningIssueIds?: ReadonlySet<string>;
+  },
 ): IssueAssigneeGroup[] | undefined {
-  if (!groups || !agentRunningFilter) return groups;
+  const applyRunning = filters.agentRunningFilter === true;
+  const hideSubIssues = filters.showSubIssues === false;
+  if (!groups || (!applyRunning && !hideSubIssues)) return groups;
 
+  const { runningIssueIds } = filters;
   return groups
     .map((group) => {
-      const issues = group.issues.filter((issue) => runningIssueIds.has(issue.id));
-      return {
-        ...group,
-        issues,
-        total: issues.length,
-      };
+      const issues = group.issues.filter((issue) => {
+        if (applyRunning && !(runningIssueIds?.has(issue.id) ?? false))
+          return false;
+        if (hideSubIssues && issue.parent_issue_id) return false;
+        return true;
+      });
+      return { ...group, issues, total: issues.length };
     })
     .filter((group) => group.issues.length > 0);
 }

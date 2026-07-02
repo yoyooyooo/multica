@@ -126,6 +126,7 @@ export function useIssueSurfaceController({
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
+  const showSubIssues = useViewStore((s) => s.showSubIssues);
   const cardProperties = useViewStore((s) => s.cardProperties);
   const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
 
@@ -194,6 +195,7 @@ export function useIssueSurfaceController({
     includeNoProject: viewIncludeNoProject,
     labelFilters,
     agentRunningFilter,
+    showSubIssues,
     loadProjects:
       cardProperties.project ||
       (effectiveViewMode === "swimlane" && swimlaneGrouping === "project"),

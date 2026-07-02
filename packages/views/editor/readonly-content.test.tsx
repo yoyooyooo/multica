@@ -394,6 +394,28 @@ describe("ReadonlyContent Mermaid rendering", () => {
       expect(document.querySelector(".mermaid-diagram-lightbox")).toBeNull();
     });
   });
+
+  it("shows the compact error state instead of embedding Mermaid's parser error SVG", async () => {
+    // With suppressErrorRendering enabled, invalid syntax makes render() reject
+    // instead of emitting Mermaid's built-in error graphic.
+    vi.mocked(mermaid.render).mockRejectedValueOnce(
+      new Error("Parse error on line 3"),
+    );
+
+    const chart = "graph LR\n  A -->";
+    const { container } = render(
+      <ReadonlyContent content={["```mermaid", chart, "```"].join("\n")} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".mermaid-diagram-error")).not.toBeNull();
+    });
+
+    expect(container.querySelector(".mermaid-diagram-frame")).toBeNull();
+    expect(container.querySelector(".mermaid-diagram-error code")?.textContent).toBe(
+      chart,
+    );
+  });
 });
 
 describe("ReadonlyContent HTML block rendering", () => {
@@ -512,6 +534,31 @@ describe("ReadonlyContent file-card → AttachmentBlock HTML routing", () => {
     expect(getByText("report.pdf")).toBeTruthy();
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("resolves a markdown image whose src is the response download_url", () => {
+    const href = "https://cdn.example.test/shot.png?Signature=stale";
+    const fresh = "https://cdn.example.test/shot.png?Signature=fresh";
+    const attachment = {
+      id: "11111111-2222-3333-4444-555555555555",
+      url: "https://cdn.example.test/shot.png",
+      download_url: fresh,
+      markdown_url: "/api/attachments/11111111-2222-3333-4444-555555555555/download",
+      filename: "shot.png",
+      content_type: "image/png",
+      size_bytes: 1024,
+    } as any;
+
+    const { container } = renderWithQuery(
+      <ReadonlyContent
+        content={`![](${href})`}
+        attachments={[attachment]}
+      />,
+    );
+
+    const img = container.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(fresh);
+    expect(img?.getAttribute("alt")).toBe("shot.png");
   });
 });
 
