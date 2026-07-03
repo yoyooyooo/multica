@@ -35,11 +35,14 @@ export const SlashCommandExtension = Mention.extend({
     name: "slashCommand",
     level: "inline" as const,
     start(src: string) {
-      return src.search(/\[\/(?:\\.|[^\]])+\]\(slash:\/\/skill\//);
+      // Backslash is excluded from the char class so "\x" runs can only be
+      // consumed by \\. — overlapping alternatives backtrack in 2^n ways
+      // (ReDoS, GitHub #4881).
+      return src.search(/\[\/(?:\\.|[^\]\\])+\]\(slash:\/\/skill\//);
     },
     tokenize(src: string) {
       const match = src.match(
-        /^\[\/((?:\\.|[^\]])+)\]\(slash:\/\/skill\/([^)]+)\)/,
+        /^\[\/((?:\\.|[^\]\\])+)\]\(slash:\/\/skill\/([^)]+)\)/,
       );
       if (!match) return undefined;
       const rawLabel = match[1]?.replace(/\\\[/g, "[").replace(/\\\]/g, "]");

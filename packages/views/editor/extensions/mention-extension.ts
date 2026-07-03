@@ -81,11 +81,13 @@ export const BaseMentionExtension = Mention.extend({
       return findMentionStart(src);
     },
     tokenize(src: string) {
-      // Label accepts escaped chars (\\[ \\]) or any non-] character.
-      // This prevents the label from crossing a ]( Markdown link boundary
-      // while still supporting bracket-containing names like "David\[TF\]".
+      // Label accepts escaped chars (\\[ \\]) or any non-] non-backslash
+      // character. Excluding backslash from the char class keeps the two
+      // alternatives disjoint — otherwise "\x" runs backtrack in 2^n ways
+      // (ReDoS, GitHub #4881) — while still supporting bracket-containing
+      // names like "David\[TF\]".
       const match = src.match(
-        /^\[@?((?:\\.|[^\]])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
+        /^\[@?((?:\\.|[^\]\\])+)\]\(mention:\/\/(\w+)\/([^)]+)\)/,
       );
       if (!match) return undefined;
       // Unescape backslash-escaped brackets that renderMarkdown may produce.

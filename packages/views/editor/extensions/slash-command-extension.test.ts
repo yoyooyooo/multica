@@ -86,4 +86,29 @@ describe("slash command tokenizer", () => {
   it("does not match slash action links", () => {
     expect(tokenize("[/deploy](slash://action/deploy)")).toBeUndefined();
   });
+
+  it("rejects an unterminated slash link with escape-pair runs in linear time", () => {
+    // Each "\a" pair is ambiguous under (?:\\.|[^\]]) — the pre-fix regex
+    // enumerates 2^28 backtrack paths (~10s) before failing. The disjoint
+    // char class must fail fast instead.
+    const src = `[/${"\\a".repeat(28)}](slash://skill/abc`;
+
+    const t0 = performance.now();
+    const token = tokenizeFn(src);
+    const elapsed = performance.now() - t0;
+
+    expect(token).toBeUndefined();
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it("returns -1 fast from start() when escape-pair runs precede no slash link", () => {
+    const src = `[/${"\\a".repeat(28)}] plain text, no slash link`;
+
+    const t0 = performance.now();
+    const start = startFn(src);
+    const elapsed = performance.now() - t0;
+
+    expect(start).toBe(-1);
+    expect(elapsed).toBeLessThan(100);
+  });
 });

@@ -117,4 +117,18 @@ describe("mention tokenizer", () => {
     expect(start).toBe(-1);
     expect(elapsed).toBeLessThan(50);
   });
+
+  it("rejects an unterminated mention with escape-pair runs in linear time", () => {
+    // Each "\a" pair is ambiguous under (?:\\.|[^\]]) — the pre-fix regex
+    // enumerates 2^28 backtrack paths (~10s) before failing. The disjoint
+    // char class must fail fast instead.
+    const src = `[@${"\\a".repeat(28)}](mention://member/abc`;
+
+    const t0 = performance.now();
+    const token = tokenizeFn(src);
+    const elapsed = performance.now() - t0;
+
+    expect(token).toBeUndefined();
+    expect(elapsed).toBeLessThan(100);
+  });
 });
