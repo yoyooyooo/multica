@@ -447,25 +447,30 @@ export function AgentTranscriptDialog({
         : null;
 
   const toolCount = items.filter((i) => i.type === "tool_use").length;
+  const copyTranscriptLabel = copied
+    ? t(($) => $.transcript.copied)
+    : activeFilterKeys.length > 0
+      ? t(($) => $.transcript.copy_filtered)
+      : t(($) => $.transcript.copy_all);
 
   // Status display
   const statusBadge = isLive ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-info/15 px-2 py-0.5 text-xs font-medium text-info">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-info/15 px-2 py-0.5 text-xs font-medium text-info">
       <Loader2 className="h-3 w-3 animate-spin" />
       {t(($) => $.transcript.status_running)}
     </span>
   ) : task.status === "completed" ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
       <CheckCircle2 className="h-3 w-3" />
       {t(($) => $.transcript.status_completed)}
     </span>
   ) : task.status === "failed" ? (
-    <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
       <XCircle className="h-3 w-3" />
       {t(($) => $.transcript.status_failed)}
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground capitalize">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground capitalize">
       {task.status}
     </span>
   );
@@ -481,21 +486,21 @@ export function AgentTranscriptDialog({
         {/* ── Header ─────────────────────────────────────────────── */}
         <div className="border-b px-4 py-3 shrink-0 space-y-2">
           {/* Top row: agent name, status, actions */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="flex min-w-0 items-center gap-2">
               {task.agent_id ? (
                 <ActorAvatar actorType="agent" actorId={task.agent_id} size={24} />
               ) : (
-                <div className="flex items-center justify-center h-6 w-6 rounded-full bg-info/10 text-info">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info/10 text-info">
                   <Bot className="h-3.5 w-3.5" />
                 </div>
               )}
-              <span className="font-medium text-sm">{agentName}</span>
+              <span className="truncate font-medium text-sm">{agentName}</span>
             </div>
 
             {statusBadge}
 
-            <div className="ml-auto flex items-center gap-1">
+            <div className="flex w-full max-w-full flex-wrap items-center justify-end gap-1 sm:ml-auto sm:w-auto">
               {detailSeqs.length > 0 && (
                 <button
                   type="button"
@@ -505,7 +510,7 @@ export function AgentTranscriptDialog({
                       ? t(($) => $.transcript.collapse_visible)
                       : t(($) => $.transcript.expand_visible)
                   }
-                  className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
                   <ChevronRight
                     className={cn(
@@ -534,15 +539,16 @@ export function AgentTranscriptDialog({
               {filterOptions.length > 0 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger
+                    aria-label={t(($) => $.transcript.filter)}
                     className={cn(
-                      "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+                      "flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
                       activeFilterKeys.length > 0
                         ? "text-blue-600 dark:text-blue-400 bg-blue-500/10 hover:bg-blue-500/20"
                         : "text-muted-foreground hover:text-foreground hover:bg-accent",
                     )}
                   >
                     <Filter className="h-3 w-3" />
-                    {t(($) => $.transcript.filter)}
+                    <span className="hidden sm:inline">{t(($) => $.transcript.filter)}</span>
                     {activeFilterKeys.length > 0 && (
                       <span className="ml-0.5 rounded-full bg-blue-500/20 px-1.5 py-0 text-[10px] font-medium">
                         {activeFilterKeys.length}
@@ -586,15 +592,16 @@ export function AgentTranscriptDialog({
               <button
                 type="button"
                 onClick={handleCopyAll}
-                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                aria-label={copyTranscriptLabel}
+                className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
               >
                 {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                {copied ? t(($) => $.transcript.copied) : activeFilterKeys.length > 0 ? t(($) => $.transcript.copy_filtered) : t(($) => $.transcript.copy_all)}
+                <span className="hidden sm:inline">{copyTranscriptLabel}</span>
               </button>
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
-                className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                className="flex shrink-0 items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -753,7 +760,7 @@ function SortDirectionToggle({ value, onChange, labels }: SortDirectionTogglePro
     <div
       role="group"
       aria-label={labels.ariaLabel}
-      className="inline-flex items-center rounded border bg-muted/40 p-0.5 text-xs"
+      className="inline-flex shrink-0 items-center rounded border bg-muted/40 p-0.5 text-xs"
     >
       <button
         type="button"
