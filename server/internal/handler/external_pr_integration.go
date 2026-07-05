@@ -1,0 +1,362 @@
+package handler
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const defaultExternalPRLinkTokenAudience = "external-pr-link"
+
+type externalPullRequestLinkRequest struct {
+	Provider         string `json:"provider"`
+	IssueID          string `json:"issue_id"`
+	WorkspaceID      string `json:"workspace_id"`
+	Workspace        string `json:"workspace"`
+	IssueKey         string `json:"issue_key"`
+	ExternalRepo     string `json:"external_repo"`
+	ExternalNumber   int32  `json:"external_number"`
+	ExternalURL      string `json:"external_url"`
+	MergeProvider    string `json:"merge_provider"`
+	MergeRepo        string `json:"merge_repo"`
+	MergeNumber      int32  `json:"merge_number"`
+	MergeURL         string `json:"merge_url"`
+	MergedSHA        string `json:"merged_sha"`
+	CompletionIntent *bool  `json:"completion_intent,omitempty"`
+	LinkConfidence   string `json:"link_confidence"`
+	State            string `json:"state"`
+	IdempotencyKey   string `json:"idempotency_key"`
+}
+
+type externalCompleteFromPRResponse struct {
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
+	IssueID string `json:"issue_id,omitempty"`
+}
+
+// CreateExternalPRLinkToken mints a short-lived provider-neutral proof that the
+// current task-token actor is bound to the task's real Multica issue. The
+// client may not provide issue identity; the server derives it from the mat_
+// token headers and task row.
+func (h *Handler) CreateExternalPRLinkToken(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "task token required")
+		return
+	}
+	secret := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET"))
+	if secret == "" {
+		writeError(w, http.StatusServiceUnavailable, "external PR link token signing is not configured")
+		return
+	}
+	taskID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Task-ID"), "task id")
+	if !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Workspace-ID"), "workspace id")
+	if !ok {
+		return
+	}
+	task, err := h.Queries.GetAgentTaskInWorkspace(r.Context(), db.GetAgentTaskInWorkspaceParams{ID: taskID, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !task.IssueID.Valid {
+		writeError(w, http.StatusBadRequest, "task has no issue")
+		return
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+	workspace, err := h.Queries.GetWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	prefix := h.getIssuePrefix(r.Context(), workspaceID)
+	issueKey := fmt.Sprintf("%s-%d", prefix, issue.Number)
+	appURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_APP_URL")), "/")
+	issueURL := ""
+	if appURL != "" {
+		issueURL = fmt.Sprintf("%s/%s/issues/%s", appURL, workspace.Slug, issueKey)
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"aud":          externalPRLinkTokenAudience(),
+		"iat":          now.Unix(),
+		"exp":          now.Add(5 * time.Minute).Unix(),
+		"workspace":    workspace.Slug,
+		"workspace_id": uuidToString(workspaceID),
+		"issue_id":     uuidToString(issue.ID),
+		"issue_key":    issueKey,
+		"issue_url":    issueURL,
+		"task_id":      uuidToString(task.ID),
+		"agent_id":     uuidToString(task.AgentID),
+		"source":       "task_token",
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign link token")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"link_token":   token,
+		"workspace":    workspace.Slug,
+		"workspace_id": uuidToString(workspaceID),
+		"issue_id":     uuidToString(issue.ID),
+		"issue_key":    issueKey,
+		"issue_url":    issueURL,
+		"task_id":      uuidToString(task.ID),
+		"agent_id":     uuidToString(task.AgentID),
+	})
+}
+
+func (h *Handler) RegisterExternalPullRequestLink(w http.ResponseWriter, r *http.Request) {
+	if !h.requireExternalPRServiceToken(w, r) {
+		return
+	}
+	var req externalPullRequestLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	}
+	if err := h.upsertExternalPullRequestLink(r.Context(), req); err != nil {
+		slog.Warn("external PR integration: register PR link failed", "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) CompleteIssueFromExternalPR(w http.ResponseWriter, r *http.Request) {
+	if !h.requireExternalPRServiceToken(w, r) {
+		return
+	}
+	var req externalPullRequestLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	}
+	req.State = "merged"
+	completionIntent := true
+	req.CompletionIntent = &completionIntent
+	if strings.TrimSpace(req.LinkConfidence) == "" {
+		req.LinkConfidence = "authoritative"
+	}
+	if err := h.upsertExternalPullRequestLink(r.Context(), req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out := h.completeLeafChildIssueFromExternalPR(r, req)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) requireExternalPRServiceToken(w http.ResponseWriter, r *http.Request) bool {
+	want := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN"))
+	if want == "" {
+		writeError(w, http.StatusServiceUnavailable, "external PR service token is not configured")
+		return false
+	}
+	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		writeError(w, http.StatusUnauthorized, "invalid external PR service token")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externalPullRequestLinkRequest) error {
+	workspaceID, err := parseExternalPRUUID(req.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("invalid workspace_id")
+	}
+	issueID, err := parseExternalPRUUID(req.IssueID)
+	if err != nil {
+		return fmt.Errorf("invalid issue_id")
+	}
+	provider := normalizeExternalPRProvider(req.Provider)
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	if !externalPRProviderAllowed(provider) {
+		return fmt.Errorf("provider %q is not allowed", provider)
+	}
+	if strings.TrimSpace(req.ExternalRepo) == "" || req.ExternalNumber <= 0 {
+		return fmt.Errorf("external_repo and external_number are required")
+	}
+	confidence := strings.TrimSpace(strings.ToLower(req.LinkConfidence))
+	if confidence == "" {
+		confidence = "authoritative"
+	}
+	if confidence != "authoritative" && confidence != "inferred" {
+		return fmt.Errorf("invalid link_confidence")
+	}
+	state := strings.TrimSpace(strings.ToLower(req.State))
+	if state == "" {
+		state = "open"
+	}
+	switch state {
+	case "open", "draft", "closed", "merged":
+	default:
+		return fmt.Errorf("invalid state")
+	}
+	completionIntent := confidence == "authoritative"
+	if req.CompletionIntent != nil {
+		completionIntent = *req.CompletionIntent
+	}
+	mergeProvider := normalizeExternalPRProvider(req.MergeProvider)
+	_, err = h.DB.Exec(ctx, `
+INSERT INTO external_pull_request_link (
+    workspace_id, issue_id, provider, external_repo, external_number, external_url,
+    merge_provider, merge_repo, merge_number, merge_url, merged_sha,
+    link_confidence, completion_intent, state, idempotency_key
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+ON CONFLICT (workspace_id, provider, external_repo, external_number) DO UPDATE SET
+    issue_id = EXCLUDED.issue_id,
+    external_url = EXCLUDED.external_url,
+    merge_provider = COALESCE(EXCLUDED.merge_provider, external_pull_request_link.merge_provider),
+    merge_repo = COALESCE(EXCLUDED.merge_repo, external_pull_request_link.merge_repo),
+    merge_number = COALESCE(EXCLUDED.merge_number, external_pull_request_link.merge_number),
+    merge_url = COALESCE(EXCLUDED.merge_url, external_pull_request_link.merge_url),
+    merged_sha = COALESCE(EXCLUDED.merged_sha, external_pull_request_link.merged_sha),
+    link_confidence = EXCLUDED.link_confidence,
+    completion_intent = EXCLUDED.completion_intent,
+    state = EXCLUDED.state,
+    idempotency_key = COALESCE(EXCLUDED.idempotency_key, external_pull_request_link.idempotency_key),
+    updated_at = now()`, workspaceID, issueID, provider, strings.TrimSpace(req.ExternalRepo), req.ExternalNumber, nilIfBlank(req.ExternalURL), nilIfBlank(mergeProvider), nilIfBlank(req.MergeRepo), nilIfZero(req.MergeNumber), nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state, nilIfBlank(req.IdempotencyKey))
+	return err
+}
+
+func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req externalPullRequestLinkRequest) externalCompleteFromPRResponse {
+	ctx := r.Context()
+	workspaceID, err := parseExternalPRUUID(req.WorkspaceID)
+	if err != nil {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "invalid_workspace_id"}
+	}
+	issueID, err := parseExternalPRUUID(req.IssueID)
+	if err != nil {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "invalid_issue_id"}
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
+	if err != nil {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "issue_not_found", IssueID: req.IssueID}
+	}
+	if strings.EqualFold(req.LinkConfidence, "inferred") || req.CompletionIntent == nil || !*req.CompletionIntent {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "unverified_link", IssueID: req.IssueID}
+	}
+	if issue.Status == "done" {
+		return externalCompleteFromPRResponse{Outcome: "already_done", IssueID: req.IssueID}
+	}
+	if issue.Status == "cancelled" {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "cancelled", IssueID: req.IssueID}
+	}
+	if !issue.ParentIssueID.Valid {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "no_parent", IssueID: req.IssueID}
+	}
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "children_lookup_failed", IssueID: req.IssueID}
+	}
+	if len(children) > 0 {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "has_children", IssueID: req.IssueID}
+	}
+	var openPRs int64
+	if err := h.DB.QueryRow(ctx, `SELECT COUNT(*)::bigint FROM external_pull_request_link WHERE workspace_id=$1 AND issue_id=$2 AND link_confidence='authoritative' AND completion_intent AND state IN ('open','draft')`, workspaceID, issueID).Scan(&openPRs); err != nil {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "open_pr_lookup_failed", IssueID: req.IssueID}
+	}
+	if openPRs > 0 {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "open_pr_exists", IssueID: req.IssueID}
+	}
+	var updatedID pgtype.UUID
+	if err := h.DB.QueryRow(ctx, `
+UPDATE issue SET status='done', updated_at=now()
+WHERE id=$1 AND workspace_id=$2
+  AND status NOT IN ('done','cancelled')
+  AND parent_issue_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
+  AND NOT EXISTS (SELECT 1 FROM external_pull_request_link pr WHERE pr.workspace_id=issue.workspace_id AND pr.issue_id=issue.id AND pr.link_confidence='authoritative' AND pr.completion_intent AND pr.state IN ('open','draft'))
+RETURNING id`, issueID, workspaceID).Scan(&updatedID); err != nil {
+		if err == pgx.ErrNoRows {
+			return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "guard_not_satisfied", IssueID: req.IssueID}
+		}
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "update_failed", IssueID: req.IssueID}
+	}
+	updated, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
+	if err == nil {
+		h.notifyParentOfChildDone(ctx, issue, updated)
+		prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
+		h.publish(protocol.EventIssueUpdated, req.WorkspaceID, "system", "", map[string]any{
+			"issue":          issueToResponse(updated, prefix),
+			"status_changed": true,
+			"prev_status":    issue.Status,
+			"creator_type":   issue.CreatorType,
+			"creator_id":     uuidToString(issue.CreatorID),
+			"source":         "external_pr_merged",
+		})
+	}
+	return externalCompleteFromPRResponse{Outcome: "completed", IssueID: req.IssueID}
+}
+
+func externalPRLinkTokenAudience() string {
+	if audience := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE")); audience != "" {
+		return audience
+	}
+	return defaultExternalPRLinkTokenAudience
+}
+
+func normalizeExternalPRProvider(provider string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(provider)), "/")
+}
+
+func externalPRProviderAllowed(provider string) bool {
+	allowed := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS"))
+	if allowed == "" {
+		return true
+	}
+	for _, part := range strings.Split(allowed, ",") {
+		if normalizeExternalPRProvider(part) == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func parseExternalPRUUID(s string) (pgtype.UUID, error) {
+	var u pgtype.UUID
+	err := u.Scan(strings.TrimSpace(s))
+	return u, err
+}
+
+func nilIfBlank(s string) any {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.TrimSpace(s)
+}
+
+func nilIfZero(n int32) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
