@@ -707,6 +707,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HandleCloudBillingStripeWebhook for the rationale).
 	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
+	// External PR integration callbacks are authenticated by
+	// MULTICA_EXTERNAL_PR_SERVICE_TOKEN inside the handler. They live outside the
+	// regular Auth group because callers are service peers, not Multica
+	// user/session clients. AGS is the first configured provider.
+	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
+	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
 	// flow, and the cookie session is frequently absent (expired session,
@@ -780,6 +787,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/cli-token", h.IssueCliToken)
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
+		// Task-token-only exchange used by external PR clients to bind a new
+		// PR/MR/change to the exact Multica issue that spawned the running agent
+		// task. AGS' gh shim is the first client.
+		r.Post("/api/integrations/external-pr/link-token", h.CreateExternalPRLinkToken)
 
 		// Attachment download — user-scoped (auth-only), NOT
 		// workspace-scoped. The handler self-resolves the workspace
