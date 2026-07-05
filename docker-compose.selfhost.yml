@@ -118,6 +118,15 @@ services:
       # in the database, so this single deployment-wide key is all the operator
       # needs to set here.
       MULTICA_SLACK_SECRET_KEY: ${MULTICA_SLACK_SECRET_KEY:-}
+      # Keep backend outbound Feishu/Lark registration direct by default.
+      # Some local Docker runtimes inject a host proxy into containers; a
+      # stale proxy makes the QR registration request fail with unexpected EOF.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
     restart: unless-stopped
 
   frontend:
