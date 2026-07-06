@@ -81,6 +81,13 @@ services:
       APP_ENV: ${APP_ENV:-production}
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
+      # External PR/MR integration. Leave the two secrets empty to disable the
+      # service-token/link-token endpoints. Set them via .env, shell env, or a
+      # deployment secret manager; do not commit secret values.
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET:-}
+      MULTICA_EXTERNAL_PR_SERVICE_TOKEN: ${MULTICA_EXTERNAL_PR_SERVICE_TOKEN:-}
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE:-external-pr-link}
+      MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS: ${MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}

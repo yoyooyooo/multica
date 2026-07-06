@@ -135,6 +135,51 @@ Content-Type: application/json
 | `MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS` | 否 | 逗号分隔 provider allowlist；为空表示不限制 |
 | `MULTICA_APP_URL` | 否 | 用于生成 `issue_url` |
 
+## Self-hosting / 长期二开运行
+
+长期运行 fork 版本时，不需要使用 `/tmp` override。`docker-compose.selfhost.yml` 已经把 External PR Integration 需要的环境变量透传给 `backend` 容器；实际 secret 值放在本地 `.env`、shell env 或部署 secret manager 中，不提交到 git。
+
+推荐本地 fork `.env` 配置：
+
+```env
+MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET=<random secret shared with AGS>
+MULTICA_EXTERNAL_PR_SERVICE_TOKEN=<random service token shared with AGS>
+MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE=external-pr-link
+MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS=ags
+```
+
+只替换 backend、保留当前 Postgres 和 frontend 的命令：
+
+```bash
+docker compose \
+  -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.build.yml \
+  build backend
+
+docker compose \
+  -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.build.yml \
+  up -d --no-deps --force-recreate backend
+```
+
+关键约束：
+
+- 不要执行 `docker compose down`，避免影响 Postgres volume 和 frontend。
+- `--no-deps` 确保只重建 `backend`，不重启 `postgres` / `frontend`。
+- 切换后 `multica-backend-1` 的 image 应为 `multica-backend:dev`，而 `multica-postgres-1` / `multica-frontend-1` 应保持原样。
+- 新路由检查应返回非 `404`：
+  - `POST /api/integrations/external-pr/link-token`
+  - `POST /api/integrations/external-pr/links`
+  - `POST /api/integrations/external-pr/complete-from-merge`
+
+如果需要回滚到官方 backend，同样只操作 backend：
+
+```bash
+docker compose \
+  -f docker-compose.selfhost.yml \
+  up -d --no-deps --force-recreate backend
+```
+
 ## Provider profile：AGS
 
 AGS 只是第一个 provider。推荐 AGS 配置使用：
