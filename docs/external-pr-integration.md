@@ -148,7 +148,7 @@ MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE=external-pr-link
 MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS=ags
 ```
 
-只替换 backend、保留当前 Postgres 和 frontend 的命令：
+只替换 backend、保留当前 Postgres 和 frontend 的命令。如果 `proxy.golang.org` 偶发 EOF，可在命令前临时设置 `GOPROXY=https://goproxy.cn,direct`；`docker-compose.selfhost.build.yml` 会把它传入 Docker build。
 
 ```bash
 docker compose \
