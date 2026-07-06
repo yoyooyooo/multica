@@ -11,6 +11,7 @@ services:
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-unknown}
         DATE: ${DATE:-unknown}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
 
   frontend:
     image: multica-web:dev
