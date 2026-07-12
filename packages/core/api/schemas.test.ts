@@ -7,8 +7,10 @@ import {
   CreateFeedbackResponseSchema,
   DuplicateIssueErrorBodySchema,
   EMPTY_CREATE_FEEDBACK_RESPONSE,
+  EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE,
   EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_USER,
+  ExternalPullRequestLinksResponseSchema,
   InboxUnreadSummarySchema,
   IssueTriggerPreviewSchema,
   ListIssuesResponseSchema,
@@ -185,6 +187,75 @@ describe("TimelineEntriesSchema", () => {
     ]);
 
     expect(parsed[0]?.source_task_id).toBe("task-1");
+  });
+});
+
+describe("ExternalPullRequestLinksResponseSchema", () => {
+  const ENDPOINT = { endpoint: "GET /api/issues/:id/external-prs" };
+
+  it("parses authoritative and inferred external PR links", () => {
+    const parsed = ExternalPullRequestLinksResponseSchema.parse({
+      external_pull_requests: [
+        {
+          id: "link-1",
+          workspace_id: "ws-1",
+          issue_id: "issue-1",
+          provider: "ags",
+          external_repo: "jackie/ags-team-share",
+          external_number: 4,
+          external_url: "http://mini:6666/jackie/ags-team-share/pull/4",
+          state: "merged",
+          link_confidence: "authoritative",
+          completion_intent: true,
+          merge_provider: "forgejo",
+          merge_repo: "jackie/ags-team-share",
+          merge_number: 4,
+          merge_url: "http://forgejo.local/jackie/ags-team-share/pulls/4",
+          merged_sha: "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb",
+          created_at: "2026-07-07T00:00:00Z",
+          updated_at: "2026-07-07T00:05:00Z",
+        },
+        {
+          id: "link-2",
+          workspace_id: "ws-1",
+          issue_id: "issue-1",
+          provider: "ags",
+          external_repo: "jackie/ags-team-share",
+          external_number: 5,
+          state: "open",
+          link_confidence: "inferred",
+          created_at: "2026-07-07T00:00:00Z",
+          updated_at: "2026-07-07T00:00:00Z",
+        },
+      ],
+    });
+
+    expect(parsed.external_pull_requests[0]).toMatchObject({
+      provider: "ags",
+      external_repo: "jackie/ags-team-share",
+      external_number: 4,
+      state: "merged",
+      link_confidence: "authoritative",
+      completion_intent: true,
+      merged_sha: "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb",
+    });
+    expect(parsed.external_pull_requests[1]).toMatchObject({
+      external_number: 5,
+      external_url: null,
+      completion_intent: false,
+      merge_provider: null,
+      merge_number: null,
+    });
+  });
+
+  it("falls back to an empty list for malformed response shapes", () => {
+    const parsed = parseWithFallback(
+      { external_pull_requests: [{ provider: "ags", external_number: "4" }] },
+      ExternalPullRequestLinksResponseSchema,
+      EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE,
+      ENDPOINT,
+    );
+    expect(parsed).toBe(EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE);
   });
 });
 

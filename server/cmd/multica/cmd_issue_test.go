@@ -373,6 +373,12 @@ func newIssuePullRequestsTestCmd() *cobra.Command {
 	return cmd
 }
 
+func newIssueExternalPRsTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "external-prs"}
+	cmd.Flags().String("output", "table", "")
+	return cmd
+}
+
 func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	var gotPaths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -432,6 +438,76 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	pr, _ := prs[0].(map[string]any)
 	if pr["url"] != "https://github.com/multica-ai/multica/pull/42" || pr["number"] != float64(42) || pr["state"] != "open" || pr["title"] != "MUL-2818 add issue PR CLI" {
 		t.Fatalf("unexpected PR payload: %#v", pr)
+	}
+}
+
+func TestRunIssueExternalPRsListsProviderNeutralLinksAsJSON(t *testing.T) {
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/issues/MINI-379":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":         "issue-uuid",
+				"identifier": "MINI-379",
+				"title":      "External PR smoke",
+			})
+		case "/api/issues/issue-uuid/external-prs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"external_pull_requests": []map[string]any{
+					{
+						"provider":          "ags",
+						"external_repo":     "jackie/ags-team-share",
+						"external_number":   float64(4),
+						"external_url":      "http://mini:6666/jackie/ags-team-share/pull/4",
+						"state":             "merged",
+						"link_confidence":   "authoritative",
+						"completion_intent": true,
+						"merge_provider":    "forgejo",
+						"merge_repo":        "jackie/ags-team-share",
+						"merge_number":      float64(4),
+						"merge_url":         "http://forgejo.local/jackie/ags-team-share/pulls/4",
+						"merged_sha":        "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueExternalPRsTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runIssueExternalPRs(cmd, []string{"MINI-379"})
+	_ = w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("runIssueExternalPRs: %v", err)
+	}
+
+	if want := []string{"/api/issues/MINI-379", "/api/issues/issue-uuid/external-prs"}; fmt.Sprint(gotPaths) != fmt.Sprint(want) {
+		t.Fatalf("paths = %v, want %v", gotPaths, want)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, string(out))
+	}
+	prs, _ := payload["external_pull_requests"].([]any)
+	if len(prs) != 1 {
+		t.Fatalf("external_pull_requests length = %d, want 1", len(prs))
+	}
+	pr, _ := prs[0].(map[string]any)
+	if pr["provider"] != "ags" || pr["external_repo"] != "jackie/ags-team-share" || pr["external_number"] != float64(4) || pr["state"] != "merged" || pr["link_confidence"] != "authoritative" || pr["merged_sha"] != "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb" {
+		t.Fatalf("unexpected external PR payload: %#v", pr)
 	}
 }
 

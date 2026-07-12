@@ -94,6 +94,8 @@ Content-Type: application/json
 }
 ```
 
+写入前会验证 `issue_id` 确实属于提交的 `workspace_id`，跨 workspace 组合会被拒绝且不会写 link/activity；`external_url` 与 `merge_url` 若非空，必须是绝对 `http(s)` URL。
+
 ### Merge 后请求完成
 
 ```http
@@ -103,6 +105,52 @@ Content-Type: application/json
 ```
 
 该接口会先 upsert 外部 PR 链接为 `merged`，然后由 Multica 做 leaf-child-only 原子判断。
+
+### 查询 Issue 关联的 External PR
+
+```http
+GET /api/issues/{issue_id_or_key}/external-prs
+Authorization: Bearer <user or PAT token>
+```
+
+响应使用 provider-neutral 字段，便于 operator 和 agent smoke 不查 DB 也能判断 linked / merged / completion intent。查询严格按当前 Issue 的 `issue_id` 返回，不向父 Issue 聚合子孙 Issue 的 PR；父级若需要查看交付关系，应使用独立的 related/rollup 视图，而不是改变权威归属：
+
+```json
+{
+  "external_pull_requests": [
+    {
+      "provider": "ags",
+      "external_repo": "jackie/ags-team-share",
+      "external_number": 4,
+      "external_url": "http://mini:6666/jackie/ags-team-share/pull/4",
+      "state": "merged",
+      "link_confidence": "authoritative",
+      "completion_intent": true,
+      "merge_provider": "forgejo",
+      "merge_repo": "jackie/ags-team-share",
+      "merge_number": 4,
+      "merge_url": "http://forgejo.local/jackie/ags-team-share/pulls/4",
+      "merged_sha": "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb"
+    }
+  ]
+}
+```
+
+CLI 入口：
+
+```bash
+multica issue external-prs MINI-379 --output json
+```
+
+Issue detail sidebar 会显示 `External PRs` 区块，展示 provider/repo/number、state、authoritative/inferred、external URL、merge provider/URL、merged SHA 和 completion intent。该区块独立于 GitHub-native `pull-requests` 区块，不把 AGS 语义写入 Multica core。
+
+External PR link、merge、auto-complete 记录为 `activity_log` system event：
+
+- `external_pr_linked`
+- `external_pr_merged`
+- `issue_completed_by_external_pr`
+
+这些 event 进入 issue timeline/activity，不写普通 `comment`，也不触发 comment/mention 唤醒。
 
 ## 自动完成安全规则
 
@@ -171,6 +219,7 @@ docker compose \
   - `POST /api/integrations/external-pr/link-token`
   - `POST /api/integrations/external-pr/links`
   - `POST /api/integrations/external-pr/complete-from-merge`
+  - `GET /api/issues/{issue_id_or_key}/external-prs`
 
 如果需要回滚到官方 backend，同样只操作 backend：
 
@@ -202,6 +251,5 @@ AGS 的 gh shim 在 task 环境中检测到 `MULTICA_TOKEN` 且 token 以 `mat_`
 ## Future / Roadmap
 
 - 把当前 raw SQL handler 路径沉淀为 sqlc 生成方法。
-- 在 UI / CLI 中展示 `external_pull_request_link`。
 - 把 GitHub 原有 PR 绑定逻辑逐步收敛到同一张 provider-neutral 表。
 - 支持 provider-specific policy，例如不同 provider 的 completion mode、allowed repo scope、token audience。
