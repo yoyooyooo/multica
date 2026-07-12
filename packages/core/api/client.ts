@@ -121,6 +121,7 @@ import type {
   NotificationPreferenceResponse,
   NotificationPreferences,
   GitHubPullRequest,
+  ListExternalPullRequestLinksResponse,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
   ListLarkInstallationsResponse,
@@ -259,6 +260,8 @@ import {
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_RESOURCE_LABELS_RESPONSE,
+  EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE,
+  ExternalPullRequestLinksResponseSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -2656,6 +2659,16 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  async listIssueExternalPullRequests(issueId: string): Promise<ListExternalPullRequestLinksResponse> {
+    const data = await this.fetch(`/api/issues/${issueId}/external-prs`);
+    return parseWithFallback(
+      data,
+      ExternalPullRequestLinksResponseSchema,
+      EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE,
+      { endpoint: "GET /api/issues/:id/external-prs" },
+    );
   }
 
   // Lark integration
