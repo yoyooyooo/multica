@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -44,6 +47,26 @@ type externalCompleteFromPRResponse struct {
 	Outcome string `json:"outcome"`
 	Reason  string `json:"reason,omitempty"`
 	IssueID string `json:"issue_id,omitempty"`
+}
+
+type externalPullRequestLinkResponse struct {
+	ID               string  `json:"id"`
+	WorkspaceID      string  `json:"workspace_id"`
+	IssueID          string  `json:"issue_id"`
+	Provider         string  `json:"provider"`
+	ExternalRepo     string  `json:"external_repo"`
+	ExternalNumber   int32   `json:"external_number"`
+	ExternalURL      *string `json:"external_url"`
+	State            string  `json:"state"`
+	LinkConfidence   string  `json:"link_confidence"`
+	CompletionIntent bool    `json:"completion_intent"`
+	MergeProvider    *string `json:"merge_provider"`
+	MergeRepo        *string `json:"merge_repo"`
+	MergeNumber      *int32  `json:"merge_number"`
+	MergeURL         *string `json:"merge_url"`
+	MergedSHA        *string `json:"merged_sha"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 // CreateExternalPRLinkToken mints a short-lived provider-neutral proof that the
@@ -142,6 +165,10 @@ func (h *Handler) RegisterExternalPullRequestLink(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.recordExternalPRActivity(r.Context(), "external_pr_linked", req, "")
+	if strings.EqualFold(strings.TrimSpace(req.State), "merged") {
+		h.recordExternalPRActivity(r.Context(), "external_pr_merged", req, "")
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -167,8 +194,27 @@ func (h *Handler) CompleteIssueFromExternalPR(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.recordExternalPRActivity(r.Context(), "external_pr_linked", req, "")
+	h.recordExternalPRActivity(r.Context(), "external_pr_merged", req, "")
 	out := h.completeLeafChildIssueFromExternalPR(r, req)
+	if out.Outcome == "completed" {
+		h.recordExternalPRActivity(r.Context(), "issue_completed_by_external_pr", req, out.Outcome)
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) ListExternalPullRequestsForIssue(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	links, err := h.listExternalPullRequestLinks(r.Context(), issue)
+	if err != nil {
+		slog.Warn("external PR integration: list issue links failed", "error", err, "issue_id", uuidToString(issue.ID))
+		writeError(w, http.StatusInternalServerError, "failed to list external pull requests")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"external_pull_requests": links})
 }
 
 func (h *Handler) requireExternalPRServiceToken(w http.ResponseWriter, r *http.Request) bool {
@@ -185,6 +231,59 @@ func (h *Handler) requireExternalPRServiceToken(w http.ResponseWriter, r *http.R
 	return true
 }
 
+func (h *Handler) listExternalPullRequestLinks(ctx context.Context, issue db.Issue) ([]externalPullRequestLinkResponse, error) {
+	rows, err := h.DB.Query(ctx, `
+SELECT id, workspace_id, issue_id, provider, external_repo, external_number, external_url,
+       state, link_confidence, completion_intent, merge_provider, merge_repo, merge_number,
+       merge_url, merged_sha, created_at, updated_at
+FROM external_pull_request_link
+WHERE workspace_id=$1 AND issue_id=$2
+ORDER BY updated_at DESC, created_at DESC, id DESC`, issue.WorkspaceID, issue.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	links := []externalPullRequestLinkResponse{}
+	for rows.Next() {
+		var (
+			id, workspaceID, issueID                                   pgtype.UUID
+			provider, externalRepo, state, confidence                  string
+			externalNumber                                             int32
+			externalURL, mergeProvider, mergeRepo, mergeURL, mergedSHA pgtype.Text
+			mergeNumber                                                pgtype.Int4
+			completionIntent                                           bool
+			createdAt, updatedAt                                       pgtype.Timestamptz
+		)
+		if err := rows.Scan(&id, &workspaceID, &issueID, &provider, &externalRepo, &externalNumber, &externalURL, &state, &confidence, &completionIntent, &mergeProvider, &mergeRepo, &mergeNumber, &mergeURL, &mergedSHA, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		links = append(links, externalPullRequestLinkResponse{
+			ID:               uuidToString(id),
+			WorkspaceID:      uuidToString(workspaceID),
+			IssueID:          uuidToString(issueID),
+			Provider:         provider,
+			ExternalRepo:     externalRepo,
+			ExternalNumber:   externalNumber,
+			ExternalURL:      textToPtr(externalURL),
+			State:            state,
+			LinkConfidence:   confidence,
+			CompletionIntent: completionIntent,
+			MergeProvider:    textToPtr(mergeProvider),
+			MergeRepo:        textToPtr(mergeRepo),
+			MergeNumber:      int4ToPtr(mergeNumber),
+			MergeURL:         textToPtr(mergeURL),
+			MergedSHA:        textToPtr(mergedSHA),
+			CreatedAt:        timestampToString(createdAt),
+			UpdatedAt:        timestampToString(updatedAt),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return links, nil
+}
+
 func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externalPullRequestLinkRequest) error {
 	workspaceID, err := parseExternalPRUUID(req.WorkspaceID)
 	if err != nil {
@@ -193,6 +292,12 @@ func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externa
 	issueID, err := parseExternalPRUUID(req.IssueID)
 	if err != nil {
 		return fmt.Errorf("invalid issue_id")
+	}
+	if _, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("issue does not belong to workspace")
+		}
+		return fmt.Errorf("verify issue workspace: %w", err)
 	}
 	provider := normalizeExternalPRProvider(req.Provider)
 	if provider == "" {
@@ -203,6 +308,12 @@ func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externa
 	}
 	if strings.TrimSpace(req.ExternalRepo) == "" || req.ExternalNumber <= 0 {
 		return fmt.Errorf("external_repo and external_number are required")
+	}
+	if err := validateExternalPRURL("external_url", req.ExternalURL); err != nil {
+		return err
+	}
+	if err := validateExternalPRURL("merge_url", req.MergeURL); err != nil {
+		return err
 	}
 	confidence := strings.TrimSpace(strings.ToLower(req.LinkConfidence))
 	if confidence == "" {
@@ -245,6 +356,67 @@ ON CONFLICT (workspace_id, provider, external_repo, external_number) DO UPDATE S
     idempotency_key = COALESCE(EXCLUDED.idempotency_key, external_pull_request_link.idempotency_key),
     updated_at = now()`, workspaceID, issueID, provider, strings.TrimSpace(req.ExternalRepo), req.ExternalNumber, nilIfBlank(req.ExternalURL), nilIfBlank(mergeProvider), nilIfBlank(req.MergeRepo), nilIfZero(req.MergeNumber), nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state, nilIfBlank(req.IdempotencyKey))
 	return err
+}
+
+func (h *Handler) recordExternalPRActivity(ctx context.Context, action string, req externalPullRequestLinkRequest, outcome string) {
+	workspaceID, err := parseExternalPRUUID(req.WorkspaceID)
+	if err != nil {
+		slog.Warn("external PR integration: skip activity with invalid workspace_id", "action", action)
+		return
+	}
+	issueID, err := parseExternalPRUUID(req.IssueID)
+	if err != nil {
+		slog.Warn("external PR integration: skip activity with invalid issue_id", "action", action)
+		return
+	}
+	provider := normalizeExternalPRProvider(req.Provider)
+	mergeProvider := normalizeExternalPRProvider(req.MergeProvider)
+	state := strings.TrimSpace(strings.ToLower(req.State))
+	if state == "" {
+		state = "open"
+	}
+	confidence := strings.TrimSpace(strings.ToLower(req.LinkConfidence))
+	if confidence == "" {
+		confidence = "authoritative"
+	}
+	completionIntent := confidence == "authoritative"
+	if req.CompletionIntent != nil {
+		completionIntent = *req.CompletionIntent
+	}
+	details := map[string]any{
+		"provider":          provider,
+		"external_repo":     strings.TrimSpace(req.ExternalRepo),
+		"external_number":   req.ExternalNumber,
+		"external_url":      strings.TrimSpace(req.ExternalURL),
+		"state":             state,
+		"link_confidence":   confidence,
+		"completion_intent": completionIntent,
+		"merge_provider":    mergeProvider,
+		"merge_repo":        strings.TrimSpace(req.MergeRepo),
+		"merge_number":      req.MergeNumber,
+		"merge_url":         strings.TrimSpace(req.MergeURL),
+		"merged_sha":        strings.TrimSpace(req.MergedSHA),
+	}
+	if outcome != "" {
+		details["completion_outcome"] = outcome
+	}
+	payload, err := json.Marshal(details)
+	if err != nil {
+		slog.Warn("external PR integration: marshal activity details failed", "action", action, "error", err)
+		return
+	}
+	if _, err := h.DB.Exec(ctx, `
+INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+SELECT $1, $2, 'system', NULL, $3, $4::jsonb
+WHERE NOT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id=$1 AND issue_id=$2 AND action=$3
+      AND details->>'provider'=$5
+      AND details->>'external_repo'=$6
+      AND details->>'external_number'=$7
+)`, workspaceID, issueID, action, payload, provider, strings.TrimSpace(req.ExternalRepo), fmt.Sprint(req.ExternalNumber)); err != nil {
+		slog.Warn("external PR integration: create activity failed", "action", action, "error", err)
+	}
 }
 
 func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req externalPullRequestLinkRequest) externalCompleteFromPRResponse {
@@ -333,12 +505,25 @@ func externalPRProviderAllowed(provider string) bool {
 	if allowed == "" {
 		return true
 	}
+	provider = normalizeExternalPRProvider(provider)
 	for _, part := range strings.Split(allowed, ",") {
 		if normalizeExternalPRProvider(part) == provider {
 			return true
 		}
 	}
 	return false
+}
+
+func validateExternalPRURL(field, value string) error {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s must be an absolute http(s) URL", field)
+	}
+	return nil
 }
 
 func parseExternalPRUUID(s string) (pgtype.UUID, error) {

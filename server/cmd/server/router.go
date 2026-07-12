@@ -1087,6 +1087,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
+					r.Get("/external-prs", h.ListExternalPullRequestsForIssue)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})
