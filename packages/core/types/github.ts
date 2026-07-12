@@ -60,6 +60,30 @@ export interface GitHubPullRequest {
   changed_files?: number;
 }
 
+export interface ExternalPullRequestLink {
+  id: string;
+  workspace_id: string;
+  issue_id: string;
+  provider: string;
+  external_repo: string;
+  external_number: number;
+  external_url: string | null;
+  state: string;
+  link_confidence: string;
+  completion_intent: boolean;
+  merge_provider: string | null;
+  merge_repo: string | null;
+  merge_number: number | null;
+  merge_url: string | null;
+  merged_sha: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ListExternalPullRequestLinksResponse {
+  external_pull_requests: ExternalPullRequestLink[];
+}
+
 export interface ListGitHubInstallationsResponse {
   installations: GitHubInstallation[];
   /** Whether the deployment has GitHub App credentials configured. When false, the Connect button is hidden / disabled. */
