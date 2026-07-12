@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -104,6 +106,179 @@ func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T)
 	}
 	if systemComments == 0 {
 		t.Fatalf("expected parent child-done system comment")
+	}
+}
+
+func TestListExternalPullRequestsForIssue(t *testing.T) {
+	ctx := context.Background()
+	parent := createExternalPRTestIssue(t, "external-pr list parent", "todo", "", nil)
+	child := createExternalPRTestIssue(t, "external-pr list child", "todo", parent, int32Ptr(1))
+
+	authoritative := externalPRCompletionReq(testWorkspaceID, child, 1101)
+	authoritative.State = "merged"
+	authoritative.MergedSHA = "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb"
+	if err := testHandler.upsertExternalPullRequestLink(ctx, authoritative); err != nil {
+		t.Fatalf("seed authoritative link: %v", err)
+	}
+	inferred := externalPRCompletionReq(testWorkspaceID, child, 1102)
+	inferred.LinkConfidence = "inferred"
+	inferred.State = "open"
+	intent := false
+	inferred.CompletionIntent = &intent
+	if err := testHandler.upsertExternalPullRequestLink(ctx, inferred); err != nil {
+		t.Fatalf("seed inferred link: %v", err)
+	}
+
+	req := withURLParam(newRequest(http.MethodGet, "/api/issues/"+child+"/external-prs", nil), "id", child)
+	rr := httptest.NewRecorder()
+	testHandler.ListExternalPullRequestsForIssue(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		ExternalPullRequests []externalPullRequestLinkResponse `json:"external_pull_requests"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.ExternalPullRequests) != 2 {
+		t.Fatalf("external_pull_requests length = %d, want 2", len(payload.ExternalPullRequests))
+	}
+	var foundAuthoritative, foundInferred bool
+	for _, pr := range payload.ExternalPullRequests {
+		if pr.ExternalNumber == 1101 {
+			foundAuthoritative = pr.Provider == "ags" && pr.ExternalRepo == "handler-tests/external-pr" && pr.State == "merged" && pr.LinkConfidence == "authoritative" && pr.MergedSHA != nil && *pr.MergedSHA == "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb"
+		}
+		if pr.ExternalNumber == 1102 {
+			foundInferred = pr.LinkConfidence == "inferred" && !pr.CompletionIntent
+		}
+	}
+	if !foundAuthoritative || !foundInferred {
+		t.Fatalf("response missing authoritative/inferred coverage: %#v", payload.ExternalPullRequests)
+	}
+
+	parentReq := withURLParam(newRequest(http.MethodGet, "/api/issues/"+parent+"/external-prs", nil), "id", parent)
+	parentRR := httptest.NewRecorder()
+	testHandler.ListExternalPullRequestsForIssue(parentRR, parentReq)
+	if parentRR.Code != http.StatusOK {
+		t.Fatalf("parent status = %d body=%s", parentRR.Code, parentRR.Body.String())
+	}
+	var parentPayload struct {
+		ExternalPullRequests []externalPullRequestLinkResponse `json:"external_pull_requests"`
+	}
+	if err := json.NewDecoder(parentRR.Body).Decode(&parentPayload); err != nil {
+		t.Fatalf("decode parent response: %v", err)
+	}
+	if len(parentPayload.ExternalPullRequests) != 0 {
+		t.Fatalf("parent inherited %d child external PRs, want exact-issue empty list", len(parentPayload.ExternalPullRequests))
+	}
+}
+
+func TestExternalPRWritesRejectCrossWorkspaceIssue(t *testing.T) {
+	ctx := context.Background()
+	var foreignWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, "External PR Foreign Workspace", "external-pr-foreign-"+uuid.New().String()[:8], "Cross-workspace External PR test", "EPF").Scan(&foreignWorkspaceID); err != nil {
+		t.Fatalf("create foreign workspace: %v", err)
+	}
+	var foreignIssueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, number, title, status, position, creator_type, creator_id)
+		VALUES ($1, 1, 'foreign external PR issue', 'todo', 1, 'member', $2)
+		RETURNING id
+	`, foreignWorkspaceID, testUserID).Scan(&foreignIssueID); err != nil {
+		t.Fatalf("create foreign issue: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id=$1`, foreignIssueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM external_pull_request_link WHERE issue_id=$1`, foreignIssueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, foreignIssueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, foreignWorkspaceID)
+	})
+
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "test-external-pr-token")
+	cases := []struct {
+		name   string
+		path   string
+		number int32
+		call   func(http.ResponseWriter, *http.Request)
+	}{
+		{name: "register", path: "/api/integrations/external-pr/links", number: 1104, call: testHandler.RegisterExternalPullRequestLink},
+		{name: "complete", path: "/api/integrations/external-pr/complete-from-merge", number: 1105, call: testHandler.CompleteIssueFromExternalPR},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := externalPRCompletionReq(testWorkspaceID, foreignIssueID, tc.number)
+			req := newRequest(http.MethodPost, tc.path, body)
+			req.Header.Set("Authorization", "Bearer test-external-pr-token")
+			rr := httptest.NewRecorder()
+			tc.call(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want 400", rr.Code, rr.Body.String())
+			}
+		})
+	}
+
+	var linkCount, activityCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pull_request_link WHERE issue_id=$1`, foreignIssueID).Scan(&linkCount); err != nil {
+		t.Fatalf("count cross-workspace links: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action LIKE 'external_pr_%'`, foreignIssueID).Scan(&activityCount); err != nil {
+		t.Fatalf("count cross-workspace activity: %v", err)
+	}
+	if linkCount != 0 || activityCount != 0 {
+		t.Fatalf("cross-workspace write leaked link/activity: links=%d activity=%d", linkCount, activityCount)
+	}
+}
+
+func TestUpsertExternalPRRejectsUnsafeURLs(t *testing.T) {
+	issueID := createExternalPRTestIssue(t, "external-pr unsafe URL", "todo", "", nil)
+	req := externalPRCompletionReq(testWorkspaceID, issueID, 1106)
+	req.ExternalURL = "javascript:alert(1)"
+	if err := testHandler.upsertExternalPullRequestLink(context.Background(), req); err == nil {
+		t.Fatal("upsert accepted unsafe external_url")
+	}
+	req.ExternalURL = "https://ags.example/repo/pull/1106"
+	req.MergeURL = "data:text/html,unsafe"
+	if err := testHandler.upsertExternalPullRequestLink(context.Background(), req); err == nil {
+		t.Fatal("upsert accepted unsafe merge_url")
+	}
+}
+
+func TestCompleteIssueFromExternalPRWritesActivityNotIssueComments(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "test-external-pr-token")
+	parent := createExternalPRTestIssue(t, "external-pr activity parent", "todo", "", nil)
+	child := createExternalPRTestIssue(t, "external-pr activity child", "todo", parent, int32Ptr(1))
+	reqBody := externalPRCompletionReq(testWorkspaceID, child, 1103)
+
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", reqBody)
+	req.Header.Set("Authorization", "Bearer test-external-pr-token")
+	rr := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var childComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1`, child).Scan(&childComments); err != nil {
+		t.Fatalf("count child comments: %v", err)
+	}
+	if childComments != 0 {
+		t.Fatalf("external PR complete wrote %d child comments, want 0", childComments)
+	}
+
+	for _, action := range []string{"external_pr_linked", "external_pr_merged", "issue_completed_by_external_pr"} {
+		var count int
+		if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action=$2 AND actor_type='system'`, child, action).Scan(&count); err != nil {
+			t.Fatalf("count activity %s: %v", action, err)
+		}
+		if count != 1 {
+			t.Fatalf("activity %s count = %d, want 1", action, count)
+		}
 	}
 }
 
