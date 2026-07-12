@@ -1028,6 +1028,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
+					r.Get("/external-prs", h.ListExternalPullRequestsForIssue)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})
