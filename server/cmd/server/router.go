@@ -840,9 +840,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
 
-		// Task-token-only exchange used by external PR clients to bind a new
-		// PR/MR/change to the exact Multica issue that spawned the running agent
-		// task. AGS' gh shim is the first client.
+		// Task-token-only assertions bind external integrations to the exact
+		// server-derived workload that spawned the running agent task. The
+		// external-PR route remains as a compatibility wrapper.
+		r.Post("/api/integrations/workload-assertions", h.CreateWorkloadAssertion)
 		r.Post("/api/integrations/external-pr/link-token", h.CreateExternalPRLinkToken)
 
 		// Note (MUL-4309): the generic OpenAI-compatible passthrough endpoints
