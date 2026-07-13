@@ -243,6 +243,7 @@ func normalizeWorkloadAssertionTarget(target workloadAssertionTarget) (workloadA
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return workloadAssertionTarget{}, fmt.Errorf("target repository must be owner/name")
 	}
+	target.Repository = strings.TrimSpace(parts[0]) + "/" + strings.TrimSpace(parts[1])
 	return target, nil
 }
 

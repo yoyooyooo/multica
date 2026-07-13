@@ -107,6 +107,21 @@ func TestCreateWorkloadAssertionExternalPRUsesServerTaskContext(t *testing.T) {
 	}
 }
 
+func TestNormalizeWorkloadAssertionTargetTrimsRepositorySegments(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS", "ags")
+	target, err := normalizeWorkloadAssertionTarget(workloadAssertionTarget{
+		Provider:   " AGS ",
+		Instance:   " mini ",
+		Repository: " jackie / agent-kit ",
+	})
+	if err != nil {
+		t.Fatalf("normalize target: %v", err)
+	}
+	if target.Provider != "ags" || target.Instance != "mini" || target.Repository != "jackie/agent-kit" {
+		t.Fatalf("target = %#v", target)
+	}
+}
+
 func TestCreateWorkloadAssertionRejectsExternalPRCapabilities(t *testing.T) {
 	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "workload-assertion-secret")
 	req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
