@@ -11,10 +11,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -67,85 +65,6 @@ type externalPullRequestLinkResponse struct {
 	MergedSHA        *string `json:"merged_sha"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
-}
-
-// CreateExternalPRLinkToken mints a short-lived provider-neutral proof that the
-// current task-token actor is bound to the task's real Multica issue. The
-// client may not provide issue identity; the server derives it from the mat_
-// token headers and task row.
-func (h *Handler) CreateExternalPRLinkToken(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Actor-Source") != "task_token" {
-		writeError(w, http.StatusForbidden, "task token required")
-		return
-	}
-	secret := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET"))
-	if secret == "" {
-		writeError(w, http.StatusServiceUnavailable, "external PR link token signing is not configured")
-		return
-	}
-	taskID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Task-ID"), "task id")
-	if !ok {
-		return
-	}
-	workspaceID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Workspace-ID"), "workspace id")
-	if !ok {
-		return
-	}
-	task, err := h.Queries.GetAgentTaskInWorkspace(r.Context(), db.GetAgentTaskInWorkspaceParams{ID: taskID, WorkspaceID: workspaceID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
-		return
-	}
-	if !task.IssueID.Valid {
-		writeError(w, http.StatusBadRequest, "task has no issue")
-		return
-	}
-	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
-	}
-	workspace, err := h.Queries.GetWorkspace(r.Context(), workspaceID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "workspace not found")
-		return
-	}
-	prefix := h.getIssuePrefix(r.Context(), workspaceID)
-	issueKey := fmt.Sprintf("%s-%d", prefix, issue.Number)
-	appURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_APP_URL")), "/")
-	issueURL := ""
-	if appURL != "" {
-		issueURL = fmt.Sprintf("%s/%s/issues/%s", appURL, workspace.Slug, issueKey)
-	}
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"aud":          externalPRLinkTokenAudience(),
-		"iat":          now.Unix(),
-		"exp":          now.Add(5 * time.Minute).Unix(),
-		"workspace":    workspace.Slug,
-		"workspace_id": uuidToString(workspaceID),
-		"issue_id":     uuidToString(issue.ID),
-		"issue_key":    issueKey,
-		"issue_url":    issueURL,
-		"task_id":      uuidToString(task.ID),
-		"agent_id":     uuidToString(task.AgentID),
-		"source":       "task_token",
-	}
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to sign link token")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"link_token":   token,
-		"workspace":    workspace.Slug,
-		"workspace_id": uuidToString(workspaceID),
-		"issue_id":     uuidToString(issue.ID),
-		"issue_key":    issueKey,
-		"issue_url":    issueURL,
-		"task_id":      uuidToString(task.ID),
-		"agent_id":     uuidToString(task.AgentID),
-	})
 }
 
 func (h *Handler) RegisterExternalPullRequestLink(w http.ResponseWriter, r *http.Request) {
