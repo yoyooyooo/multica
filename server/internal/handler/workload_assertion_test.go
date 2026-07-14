@@ -107,13 +107,95 @@ func TestCreateWorkloadAssertionExternalPRUsesServerTaskContext(t *testing.T) {
 	}
 }
 
+func TestCreateWorkloadAssertionSessionExchangeUsesDistinctAudienceAndSignedScope(t *testing.T) {
+	const (
+		secret   = "workload-session-assertion-secret"
+		issuer   = "https://multica.test"
+		keyID    = "current-key"
+		audience = "urn:ags:workload-session-exchange:v1"
+	)
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", secret)
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", issuer)
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_KEY_ID", keyID)
+
+	issueID := createExternalPRTestIssue(t, "session assertion issue", "todo", "", nil)
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
+	agentID := createHandlerTestAgent(t, "session-assertion-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+
+	requestBody := map[string]any{
+		"purpose":                "ags_session_exchange",
+		"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
+		"requested_capabilities": []string{"repo:read"},
+	}
+	issue := func() (string, jwt.MapClaims) {
+		req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", requestBody)
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Task-ID", taskID)
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		rr := httptest.NewRecorder()
+		testHandler.CreateWorkloadAssertion(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+		}
+		var response workloadAssertionResponse
+		if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Purpose != "ags_session_exchange" || response.Assertion == "" {
+			t.Fatalf("response = %#v", response)
+		}
+		claims := jwt.MapClaims{}
+		token, err := jwt.ParseWithClaims(response.Assertion, claims, func(*jwt.Token) (any, error) { return []byte(secret), nil }, jwt.WithAudience(audience), jwt.WithIssuer(issuer), jwt.WithExpirationRequired())
+		if err != nil || !token.Valid {
+			t.Fatalf("parse assertion: valid=%v err=%v", token != nil && token.Valid, err)
+		}
+		return response.Assertion, claims
+	}
+
+	firstToken, first := issue()
+	secondToken, second := issue()
+	if firstToken == secondToken || first["jti"] == second["jti"] {
+		t.Fatal("each session assertion must be a distinct token instance")
+	}
+	if first["purpose"] != "ags_session_exchange" || first["aud"] != audience || first["source"] != "task_token" {
+		t.Fatalf("unexpected session claims: %#v", first)
+	}
+	capabilities, ok := first["requested_capabilities"].([]any)
+	if !ok || len(capabilities) != 1 || capabilities[0] != "repo:read" {
+		t.Fatalf("capabilities = %#v", first["requested_capabilities"])
+	}
+	target, ok := first["target"].(map[string]any)
+	if !ok || target["provider"] != "ags" || target["instance"] != "mini" || target["repository"] != "jackie/agent-kit" {
+		t.Fatalf("target = %#v", first["target"])
+	}
+}
+
+func TestCreateWorkloadAssertionSessionExchangeRejectsIncompleteScope(t *testing.T) {
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "workload-session-assertion-secret")
+	cases := []map[string]any{
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{"repo:read"}},
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "forgejo", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{"repo:read"}},
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{}},
+	}
+	for index, body := range cases {
+		req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", body)
+		req.Header.Set("X-Actor-Source", "task_token")
+		rr := httptest.NewRecorder()
+		testHandler.CreateWorkloadAssertion(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("case %d status=%d body=%s", index, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestNormalizeWorkloadAssertionTargetTrimsRepositorySegments(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS", "ags")
 	target, err := normalizeWorkloadAssertionTarget(workloadAssertionTarget{
 		Provider:   " AGS ",
 		Instance:   " mini ",
 		Repository: " jackie / agent-kit ",
-	})
+	}, workloadAssertionPurposeExternalPR)
 	if err != nil {
 		t.Fatalf("normalize target: %v", err)
 	}
