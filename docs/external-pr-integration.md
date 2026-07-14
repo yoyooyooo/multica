@@ -68,13 +68,28 @@ Content-Type: application/json
 - `task_id`
 - `agent_id` / `agent_name`
 
-`external_pr_link` assertion 是五分钟 HS256 JWT，使用固定 audience：
+Canonical issuer 支持两个严格分离的 purpose：
 
-```text
-urn:multica:external-pr-link:v1
+| purpose | audience | target / capabilities |
+| --- | --- | --- |
+| `external_pr_link` | `urn:multica:external-pr-link:v1` | 外部 provider + repository；`requested_capabilities` 必须为空；Issue 必需 |
+| `ags_session_exchange` | `urn:ags:workload-session-exchange:v1` | provider 必须为 `ags`，instance/repository 必需，`requested_capabilities` 非空；Issue 可选 |
+
+Session assertion 请求示例：
+
+```json
+{
+  "purpose": "ags_session_exchange",
+  "target": {
+    "provider": "ags",
+    "instance": "mini",
+    "repository": "jackie/agent-kit"
+  },
+  "requested_capabilities": ["repo:read"]
+}
 ```
 
-JWT 同时包含 `ver`、`iss`、`sub`、`jti`、`purpose`、`source=task_token`、server-derived `workload` 和 signed `target`，header 包含 `typ` 与 `kid`。Multica 对 target 签名但不决定 AGS repo authorization；AGS 必须校验 target 与实际 PR repository 一致。
+每次请求都签发独立的五分钟 HS256 JWT；即使 task 和 target 相同，External PR 与 session exchange 也使用不同 audience、JTI 和 token instance。JWT 包含 `ver`、`iss`、`sub`、`jti`、`purpose`、`source=task_token`、server-derived `workload`、signed `target` 与 signed capabilities，header 包含 `typ` 与 `kid`。Multica 只证明 workload 和签名请求边界，不决定 AGS principal、repo grant 或 session capability；AGS 必须独立裁决。
 
 Legacy endpoint 继续作为迁移期 compatibility wrapper：
 
@@ -83,7 +98,7 @@ POST /api/integrations/external-pr/link-token
 Authorization: Bearer <mat_ task token>
 ```
 
-它保留原 `link_token` response 和 `external-pr-link` audience。Canonical 与 legacy token 不能用于 AGS session exchange。
+它保留原 `link_token` response 和 `external-pr-link` audience。Legacy token 不能用于 AGS session exchange；canonical `external_pr_link` assertion 也不能被 AGS 当作 session proof。
 
 ### 注册外部 PR 链接
 

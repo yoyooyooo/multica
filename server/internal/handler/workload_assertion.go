@@ -14,14 +14,16 @@ import (
 )
 
 const (
-	workloadAssertionType               = "urn:multica:workload-assertion:jwt:v1"
-	workloadAssertionJWTType            = "multica-workload-assertion+jwt"
-	workloadAssertionVersion            = 1
-	workloadAssertionPurposeExternalPR  = "external_pr_link"
-	workloadAssertionExternalPRAudience = "urn:multica:external-pr-link:v1"
-	defaultWorkloadAssertionIssuer      = "multica"
-	defaultWorkloadAssertionKeyID       = "multica-workload-assertion-v1"
-	workloadAssertionTTL                = 5 * time.Minute
+	workloadAssertionType                    = "urn:multica:workload-assertion:jwt:v1"
+	workloadAssertionJWTType                 = "multica-workload-assertion+jwt"
+	workloadAssertionVersion                 = 1
+	workloadAssertionPurposeExternalPR       = "external_pr_link"
+	workloadAssertionPurposeSessionExchange  = "ags_session_exchange"
+	workloadAssertionExternalPRAudience      = "urn:multica:external-pr-link:v1"
+	workloadAssertionSessionExchangeAudience = "urn:ags:workload-session-exchange:v1"
+	defaultWorkloadAssertionIssuer           = "multica"
+	defaultWorkloadAssertionKeyID            = "multica-workload-assertion-v1"
+	workloadAssertionTTL                     = 5 * time.Minute
 )
 
 type workloadAssertionRequest struct {
@@ -74,20 +76,35 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req.Purpose = strings.TrimSpace(req.Purpose)
-	if req.Purpose != workloadAssertionPurposeExternalPR {
+	audience := ""
+	requireIssue := false
+	switch req.Purpose {
+	case workloadAssertionPurposeExternalPR:
+		audience = workloadAssertionExternalPRAudience
+		requireIssue = true
+		if len(req.RequestedCapabilities) != 0 {
+			writeError(w, http.StatusBadRequest, "external PR link assertions do not accept requested capabilities")
+			return
+		}
+		req.RequestedCapabilities = []string{}
+	case workloadAssertionPurposeSessionExchange:
+		audience = workloadAssertionSessionExchangeAudience
+		capabilities, err := normalizeRequestedCapabilities(req.RequestedCapabilities)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.RequestedCapabilities = capabilities
+	default:
 		writeError(w, http.StatusBadRequest, "unsupported workload assertion purpose")
 		return
 	}
-	if len(req.RequestedCapabilities) != 0 {
-		writeError(w, http.StatusBadRequest, "external PR link assertions do not accept requested capabilities")
-		return
-	}
-	target, err := normalizeWorkloadAssertionTarget(req.Target)
+	target, err := normalizeWorkloadAssertionTarget(req.Target, req.Purpose)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resolved, ok := h.resolveTaskWorkload(w, r)
+	resolved, ok := h.resolveTaskWorkload(w, r, requireIssue)
 	if !ok {
 		return
 	}
@@ -104,17 +121,17 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	claims := jwt.MapClaims{
 		"ver":                    workloadAssertionVersion,
 		"iss":                    issuer,
-		"aud":                    workloadAssertionExternalPRAudience,
+		"aud":                    audience,
 		"sub":                    fmt.Sprintf("urn:multica:workload:%s:%s", resolved.Workload.WorkspaceID, resolved.Workload.TaskID),
 		"jti":                    uuid.NewString(),
 		"iat":                    now.Unix(),
 		"nbf":                    now.Unix(),
 		"exp":                    expiresAt.Unix(),
-		"purpose":                workloadAssertionPurposeExternalPR,
+		"purpose":                req.Purpose,
 		"source":                 "task_token",
 		"workload":               resolved.Workload,
 		"target":                 target,
-		"requested_capabilities": []string{},
+		"requested_capabilities": req.RequestedCapabilities,
 	}
 	assertion, err := signAssertionJWT(claims, secret, workloadAssertionJWTType, keyID)
 	if err != nil {
@@ -124,7 +141,7 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, workloadAssertionResponse{
 		Assertion:     assertion,
 		AssertionType: workloadAssertionType,
-		Purpose:       workloadAssertionPurposeExternalPR,
+		Purpose:       req.Purpose,
 		ExpiresAt:     expiresAt.Format(time.RFC3339),
 		Workload:      resolved.Workload,
 	})
@@ -138,7 +155,7 @@ func (h *Handler) CreateExternalPRLinkToken(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, "task token required")
 		return
 	}
-	resolved, ok := h.resolveTaskWorkload(w, r)
+	resolved, ok := h.resolveTaskWorkload(w, r, true)
 	if !ok {
 		return
 	}
@@ -178,7 +195,7 @@ func (h *Handler) CreateExternalPRLinkToken(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request) (resolvedTaskWorkload, bool) {
+func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, requireIssue bool) (resolvedTaskWorkload, bool) {
 	taskID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Task-ID"), "task id")
 	if !ok {
 		return resolvedTaskWorkload{}, false
@@ -192,13 +209,8 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request) (r
 		writeError(w, http.StatusNotFound, "task not found")
 		return resolvedTaskWorkload{}, false
 	}
-	if !task.IssueID.Valid {
+	if requireIssue && !task.IssueID.Valid {
 		writeError(w, http.StatusBadRequest, "task has no issue")
-		return resolvedTaskWorkload{}, false
-	}
-	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
 		return resolvedTaskWorkload{}, false
 	}
 	workspace, err := h.Queries.GetWorkspace(r.Context(), workspaceID)
@@ -211,32 +223,41 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request) (r
 		writeError(w, http.StatusNotFound, "agent not found")
 		return resolvedTaskWorkload{}, false
 	}
-	prefix := h.getIssuePrefix(r.Context(), workspaceID)
-	issueKey := fmt.Sprintf("%s-%d", prefix, issue.Number)
-	issueURL := ""
-	if appURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_APP_URL")), "/"); appURL != "" {
-		issueURL = fmt.Sprintf("%s/%s/issues/%s", appURL, workspace.Slug, issueKey)
+	workload := workloadAssertionWorkload{
+		Workspace: workspace.Slug, WorkspaceID: uuidToString(workspaceID), AgentID: uuidToString(task.AgentID),
+		AgentName: agent.Name, TaskID: uuidToString(task.ID),
 	}
-	return resolvedTaskWorkload{Workload: workloadAssertionWorkload{
-		Workspace:   workspace.Slug,
-		WorkspaceID: uuidToString(workspaceID),
-		AgentID:     uuidToString(task.AgentID),
-		AgentName:   agent.Name,
-		TaskID:      uuidToString(task.ID),
-		IssueID:     uuidToString(issue.ID),
-		IssueKey:    issueKey,
-		IssueURL:    issueURL,
-	}}, true
+	if task.IssueID.Valid {
+		issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "issue not found")
+			return resolvedTaskWorkload{}, false
+		}
+		prefix := h.getIssuePrefix(r.Context(), workspaceID)
+		workload.IssueID = uuidToString(issue.ID)
+		workload.IssueKey = fmt.Sprintf("%s-%d", prefix, issue.Number)
+		if appURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_APP_URL")), "/"); appURL != "" {
+			workload.IssueURL = fmt.Sprintf("%s/%s/issues/%s", appURL, workspace.Slug, workload.IssueKey)
+		}
+	}
+	return resolvedTaskWorkload{Workload: workload}, true
 }
 
-func normalizeWorkloadAssertionTarget(target workloadAssertionTarget) (workloadAssertionTarget, error) {
+func normalizeWorkloadAssertionTarget(target workloadAssertionTarget, purpose string) (workloadAssertionTarget, error) {
 	target.Provider = normalizeExternalPRProvider(target.Provider)
 	target.Instance = strings.TrimSpace(target.Instance)
 	target.Repository = strings.Trim(strings.TrimSpace(target.Repository), "/")
 	if target.Provider == "" {
 		return workloadAssertionTarget{}, fmt.Errorf("target provider is required")
 	}
-	if !externalPRProviderAllowed(target.Provider) {
+	if purpose == workloadAssertionPurposeSessionExchange {
+		if target.Provider != "ags" {
+			return workloadAssertionTarget{}, fmt.Errorf("session exchange target provider must be ags")
+		}
+		if target.Instance == "" {
+			return workloadAssertionTarget{}, fmt.Errorf("session exchange target instance is required")
+		}
+	} else if !externalPRProviderAllowed(target.Provider) {
 		return workloadAssertionTarget{}, fmt.Errorf("target provider %q is not allowed", target.Provider)
 	}
 	parts := strings.Split(target.Repository, "/")
@@ -245,6 +266,26 @@ func normalizeWorkloadAssertionTarget(target workloadAssertionTarget) (workloadA
 	}
 	target.Repository = strings.TrimSpace(parts[0]) + "/" + strings.TrimSpace(parts[1])
 	return target, nil
+}
+
+func normalizeRequestedCapabilities(input []string) ([]string, error) {
+	if len(input) == 0 {
+		return nil, fmt.Errorf("session exchange requires requested capabilities")
+	}
+	seen := make(map[string]struct{}, len(input))
+	out := make([]string, 0, len(input))
+	for _, raw := range input {
+		capability := strings.ToLower(strings.TrimSpace(raw))
+		if capability == "" {
+			return nil, fmt.Errorf("requested capabilities must not contain empty values")
+		}
+		if _, duplicate := seen[capability]; duplicate {
+			return nil, fmt.Errorf("requested capabilities must not contain duplicates")
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	return out, nil
 }
 
 func signAssertionJWT(claims jwt.MapClaims, secret, typ, keyID string) (string, error) {
