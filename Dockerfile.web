@@ -20,8 +20,9 @@ ENV COREPACK_NPM_REGISTRY=$NPM_REGISTRY
 RUN corepack enable && \
     PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" && \
     corepack prepare "$PNPM_VERSION" --activate
-RUN --mount=type=cache,id=multica-pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+# The cache target is container-internal; each Docker builder keeps its own cache.
+RUN --mount=type=cache,id=multica-pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm/store
 
 # --- Build ---
 FROM node:22-alpine AS builder
@@ -45,8 +46,10 @@ COPY package.json turbo.json pnpm-workspace.yaml ./
 COPY apps/web/ apps/web/
 COPY packages/ packages/
 
-# Re-link after source overlay (fixes any symlinks overwritten by COPY)
-RUN pnpm install --frozen-lockfile --offline
+# Re-link after source overlay (fixes any symlinks overwritten by COPY).
+# Mount the same store path used by the dependency stage so pnpm can stay offline.
+RUN --mount=type=cache,id=multica-pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --offline --store-dir=/pnpm/store
 
 # Set build-time env: tells Next.js rewrites to proxy API calls to the backend service
 ARG REMOTE_API_URL=http://backend:8080
