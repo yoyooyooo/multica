@@ -422,6 +422,109 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 }
 
+func newIssueRerunTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "rerun"}
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("task-id", "", "")
+	return cmd
+}
+
+func TestRunIssueRerunSendsSourceTaskID(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode rerun body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	_ = cmd.Flags().Set("task-id", taskID)
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["task_id"]; got != taskID {
+		t.Fatalf("task_id = %#v, want %q", got, taskID)
+	}
+}
+
+func TestRunIssueRerunResolvesShortSourceTaskIDWithinIssue(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/task-runs":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": taskID}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode rerun body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	_ = cmd.Flags().Set("task-id", taskID[:8])
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["task_id"]; got != taskID {
+		t.Fatalf("task_id = %#v, want resolved task %q", got, taskID)
+	}
+}
+
+func TestRunIssueRerunWithoutSourceTaskKeepsCurrentAssigneeMode(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode rerun body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	if err := runIssueRerun(newIssueRerunTestCmd(), []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("rerun body = %#v, want empty current-assignee request", body)
+	}
+}
+
 func newIssueCreateTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "create"}
 	cmd.Flags().String("title", "", "")

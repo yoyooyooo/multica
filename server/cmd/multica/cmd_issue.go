@@ -343,9 +343,11 @@ var issueUsageCmd = &cobra.Command{
 
 var issueRerunCmd = &cobra.Command{
 	Use:   "rerun <id>",
-	Short: "Re-enqueue an issue's current agent assignment as a fresh task",
-	Args:  exactArgs(1),
-	RunE:  runIssueRerun,
+	Short: "Re-enqueue an issue assignment as a fresh task",
+	Long: "Re-enqueue an issue assignment as a fresh task. By default this targets the current assignee. " +
+		"Pass --task-id to rerun the actor and trigger provenance of an exact execution row.",
+	Args: exactArgs(1),
+	RunE: runIssueRerun,
 }
 
 var issueCancelTaskCmd = &cobra.Command{
@@ -538,6 +540,7 @@ func init() {
 
 	// issue rerun
 	issueRerunCmd.Flags().String("output", "json", "Output format: table or json")
+	issueRerunCmd.Flags().String("task-id", "", "Source task UUID or prefix; preserves its actor and trigger comment on the fresh rerun")
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
@@ -2281,8 +2284,17 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 
+	body := map[string]any{}
+	if taskInput, _ := cmd.Flags().GetString("task-id"); strings.TrimSpace(taskInput) != "" {
+		taskRef, err := resolveTaskRunID(ctx, client, issueRef.ID, taskInput)
+		if err != nil {
+			return fmt.Errorf("resolve source task run: %w", err)
+		}
+		body["task_id"] = taskRef.ID
+	}
+
 	var task map[string]any
-	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", map[string]any{}, &task); err != nil {
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", body, &task); err != nil {
 		return fmt.Errorf("rerun issue: %w", err)
 	}
 
