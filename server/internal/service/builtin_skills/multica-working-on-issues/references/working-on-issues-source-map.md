@@ -118,7 +118,7 @@ and is hidden from the PR list.
 | `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:344,543` |
 | CLI resolves a full task UUID or issue-scoped unique prefix and selects the dedicated fail-closed endpoint | `server/cmd/multica/cmd_issue.go:2258,2286`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
 | Server registers the separate `/rerun-fresh` route | `server/cmd/server/router.go:1020` |
-| Legacy retry and fresh-provenance handlers share issue visibility and dispatch through the runtime branch's fresh rerun service | `server/internal/handler/task_lifecycle.go:100,109,116,120` |
+| Legacy retry and fresh-provenance handlers share issue visibility and dispatch through the runtime branch's fresh rerun service | `server/internal/handler/task_lifecycle.go:100,117,124,128` |
 | Fresh service requires an exact source, then preserves source agent/role/trigger while setting `force_fresh_session=true` | `server/internal/service/task.go:2441,2448,2598`; proof `server/cmd/server/rerun_session_test.go:574` |
 | Claim layer returns no prior session or workdir for the branch's `force_fresh_session` row shape | proof `server/internal/handler/daemon_test.go:3247` |
 | CLI fails closed against a server without `/rerun-fresh` | `server/cmd/multica/cmd_issue_test.go:576` |

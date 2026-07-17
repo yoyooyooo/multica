@@ -105,6 +105,14 @@ type RerunIssueRequest struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 
+func decodeRerunIssueRequest(body io.Reader) (RerunIssueRequest, error) {
+	var req RerunIssueRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil && err != io.EOF {
+		return RerunIssueRequest{}, err
+	}
+	return req, nil
+}
+
 // RerunIssue preserves the mini-runtime branch's existing behavior. An empty
 // body targets the current assignee; task_id targets the exact historical
 // agent. Both forms already set force_fresh_session and reuse no prior context.
@@ -126,12 +134,12 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 		return
 	}
 
-	var req RerunIssueRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
+	// Decode regardless of ContentLength: HTTP/2 and chunked callers may use
+	// an unknown length (-1). EOF is the valid legacy empty-body request.
+	req, err := decodeRerunIssueRequest(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
 	}
 	if requireSource && req.TaskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id is required for a fresh provenance rerun")
@@ -168,7 +176,6 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 	}
 
 	var task *db.AgentTaskQueue
-	var err error
 	if requireSource {
 		task, err = h.TaskService.RerunIssueFresh(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
 	} else {
