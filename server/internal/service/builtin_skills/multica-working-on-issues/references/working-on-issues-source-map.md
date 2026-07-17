@@ -111,6 +111,22 @@ the PR list); `Closes MUL-2759` links **and** records close intent; a bare body
 mention with no title/branch ref and no closing keyword links as `reference_only`
 and is hidden from the PR list.
 
+## Fresh rerun with source-task provenance
+
+| Behavior | File:line |
+|---|---|
+| `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:337,532` |
+| CLI resolves a full task UUID or issue-scoped unique prefix, then sends `task_id` | `server/cmd/multica/cmd_issue.go:2216`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
+| API request accepts optional `task_id` | `server/internal/handler/task_lifecycle.go:103,122` |
+| Source task selects the original actor and rejects cross-issue tasks | `server/cmd/server/rerun_session_test.go:428,509` |
+| Source task inherits `trigger_comment_id` while rerun remains force-fresh | `server/cmd/server/rerun_session_test.go:395,573` |
+
+Without `--task-id`, the CLI sends the legacy empty request and reruns the current
+assignee. With `--task-id`, the server uses the selected issue execution as the
+provenance source: actor/leader role and trigger comment come from that row, while
+the new task still has `force_fresh_session=true`. The server, not the CLI, is the
+final cross-issue ownership gate.
+
 ## Status side effects (enqueue contracts)
 
 | Behavior | File:line | Drifted from |
@@ -172,4 +188,6 @@ grep -n 'extractIdentifiers(\|extractClosingIdentifiers(\|derivePRState(' intern
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
 grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
 grep -n 'func notifyParentOfChildDone'       internal/handler/issue_child_done.go
+grep -n 'issueRerunCmd\|func runIssueRerun'   cmd/multica/cmd_issue.go
+grep -n 'type RerunIssueRequest\|func (h \*Handler) RerunIssue' internal/handler/task_lifecycle.go
 ```

@@ -1,6 +1,6 @@
 ---
 name: multica-working-on-issues
-description: "Use when working on a Multica issue after the runtime has provided the trigger context — to apply the product contracts the runtime brief does not encode: how PR linking differs from close intent, how to read a linked PR's real state via the pull-requests CLI, which metadata keys are high-signal, what status changes trigger on the server, and how sub-issue create status (todo vs backlog) controls whether assigned agents start immediately."
+description: "Use when working on a Multica issue after the runtime has provided the trigger context — to apply the product contracts the runtime brief does not encode: how PR linking differs from close intent, how to read a linked PR's real state via the pull-requests CLI, which metadata keys are high-signal, how to preserve trigger provenance on a fresh rerun, what status changes trigger on the server, and how sub-issue create status (todo vs backlog) controls whether assigned agents start immediately."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -163,6 +163,29 @@ on it. These are the contracts, not advice:
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going (MUL-4465). To stop a running task,
   cancel the task itself.
+
+## Fresh reruns: preserve the source execution when provenance matters
+
+`multica issue rerun <issue-id>` targets the issue's current assignee and forces a
+fresh session. It does not identify a source execution, so it cannot inherit that
+execution's trigger comment.
+
+When replacing a resumed/reused or otherwise invalid execution and the replacement
+must remain linked to the same trigger, pass the exact source execution row:
+
+```bash
+multica issue rerun <issue-id> --task-id <task-id>
+```
+
+`--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
+server verifies that the source task belongs to the issue, reruns that task's actor
+(and leader/worker role), inherits its `trigger_comment_id`, and still forces a fresh
+session. Read back the new run and daemon receipt; the command invocation alone is
+not proof that the actor, trigger, `resume_session=false`, and
+`reuse_workdir=false` gates passed.
+
+Do not use raw API calls to add `task_id`. Use the CLI flag so the operation remains
+reviewable and issue-scoped.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
