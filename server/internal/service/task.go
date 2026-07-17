@@ -3401,6 +3401,16 @@ var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke
 // @-mention agent) are left alone — rerun must not collateral-cancel
 // them.
 //
+// RerunIssueFresh requires an exact source task while preserving the current
+// actor and invoke-authority gates. A convergence follow-up adapts its execution
+// context semantics to the newer exact-source workdir reuse model.
+func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	if !sourceTaskID.Valid {
+		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
+	}
+	return s.RerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, canInvoke)
+}
+
 // canInvoke re-validates that the current operator may invoke the RESOLVED
 // target agent, keyed on the historical agent for a task_id rerun and on the
 // current assignee/leader otherwise (MUL-4525). It runs AFTER the target is
