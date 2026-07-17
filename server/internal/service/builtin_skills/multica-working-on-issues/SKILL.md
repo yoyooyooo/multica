@@ -180,12 +180,14 @@ multica issue rerun <issue-id> --task-id <task-id>
 `--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
 CLI uses the dedicated fresh-provenance endpoint; a server without that contract
 fails closed instead of silently choosing a legacy retry mode. The server verifies
-that the source task belongs to the issue, revalidates the current operator's
-invoke authority before cancellation, reruns the source agent (and leader/worker
-role), inherits its `trigger_comment_id`, and sets `force_fresh_session=true`.
-The new run uses the current human operator—not the source comment author—as its
-originator and connected-app authority. On this mini-runtime line manual reruns
-store no source-context lineage, so the claim handler returns no prior session or
+that the source task belongs to the issue, revalidates the current authenticated
+operator's invoke authority before cancellation, reruns the source agent (and
+leader/worker role), inherits its `trigger_comment_id`, and sets
+`force_fresh_session=true`. Client-supplied legacy agent/task headers cannot
+promote a member request; only server-bound task-token provenance may carry an
+agent chain. The new run uses the current human operator—not the source comment
+author—as its originator and connected-app authority. On this mini-runtime line,
+manual reruns store no source-context lineage, so the claim handler returns no prior session or
 workdir.
 
 Read back the new run and daemon receipt; the command invocation alone is not proof

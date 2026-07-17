@@ -150,7 +150,14 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 		return
 	}
 	workspaceID := uuidToString(issue.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	// Rerun can cancel work and mint a new task with user-scoped connected-app
+	// authority. Treat client-supplied legacy X-Agent-ID/X-Task-ID as member
+	// metadata here; only the auth middleware's server-bound task_token marker
+	// may elevate this request to an agent actor.
+	actorType, actorID := "member", userID
+	if r.Header.Get("X-Actor-Source") == "task_token" {
+		actorType, actorID = h.resolveActor(r, userID, workspaceID)
+	}
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
 	actorUserID, _ := util.ParseUUID(originatorUserID)
 	canInvoke := func(agent db.Agent) bool {

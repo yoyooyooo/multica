@@ -2409,8 +2409,12 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	return &child, nil
 }
 
-// RerunIssue creates a fresh queued task for an agent on the issue. Used by
-// the manual rerun endpoint.
+// ErrRerunInvokeNotAllowed reports that the current authenticated actor cannot
+// invoke the rerun target agent.
+var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke target agent")
+
+// RerunIssueFresh creates a source-task-bound fresh queued task for an agent on
+// the issue. It delegates to RerunIssue after requiring an exact source.
 //
 // Target agent resolution:
 //   - sourceTaskID Valid: rerun the agent that ran that task (and reuse its
@@ -2444,8 +2448,6 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 // The dedicated endpoint below therefore delegates to this established path
 // after requiring an exact source task, preserving actor/trigger provenance
 // while remaining session- and workdir-fresh.
-var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke target agent")
-
 func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	if !sourceTaskID.Valid {
 		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
@@ -2453,6 +2455,8 @@ func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, 
 	return s.RerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, canInvoke)
 }
 
+// RerunIssue creates a fresh queued task using either an exact source task or
+// the issue's current assignee, after validating target authority and viability.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
@@ -2565,9 +2569,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 
 // promoteNewestSurvivingComment repairs a manual rerun whose original trigger
 // was deleted (the FK clears trigger_comment_id while the UUID-array plan
-// survives). Promoting before enqueue lets the normal enqueue path recompute
-// originator and user-scoped connected-app capabilities from the real comment,
-// rather than carrying the deleted trigger's stale security context.
+// survives). Promoting before enqueue repairs prompt provenance; rerun enqueue
+// still uses the current authenticated operator as originator and connected-app
+// authority rather than carrying the source comment's stale security context.
 func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []pgtype.UUID) (pgtype.UUID, []pgtype.UUID, error) {
 	type survivingComment struct {
 		id        pgtype.UUID

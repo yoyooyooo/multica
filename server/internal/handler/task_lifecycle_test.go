@@ -13,7 +13,7 @@ func TestRerunIssueFreshPrivateAgentDeniedBeforeMutation(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	agentID, _, memberID := privateAgentTestFixture(t)
+	agentID, ownerID, memberID := privateAgentTestFixture(t)
 	ctx := context.Background()
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
@@ -39,12 +39,12 @@ func TestRerunIssueFreshPrivateAgentDeniedBeforeMutation(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_task_queue (
 			agent_id, runtime_id, issue_id, status, priority,
-			started_at, completed_at, failure_reason
+			started_at, completed_at, failure_reason, originator_user_id
 		)
-		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error'
+		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3
 		FROM agent WHERE id = $1
 		RETURNING id
-	`, agentID, issueID).Scan(&sourceTaskID); err != nil {
+	`, agentID, issueID, ownerID).Scan(&sourceTaskID); err != nil {
 		t.Fatalf("create source task: %v", err)
 	}
 	if err := testPool.QueryRow(ctx, `
@@ -56,6 +56,10 @@ func TestRerunIssueFreshPrivateAgentDeniedBeforeMutation(t *testing.T) {
 	}
 
 	req := newRequestAs(memberID, http.MethodPost, "/api/issues/"+issueID+"/rerun-fresh", map[string]any{"task_id": sourceTaskID})
+	// A normal member can observe these IDs in execution history. Supplying a
+	// valid pair must not turn the request into the historical task's owner.
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", sourceTaskID)
 	req = withURLParam(req, "id", issueID)
 	w := httptest.NewRecorder()
 	testHandler.RerunIssueFresh(w, req)
@@ -69,6 +73,72 @@ func TestRerunIssueFreshPrivateAgentDeniedBeforeMutation(t *testing.T) {
 	}
 	if status != "queued" {
 		t.Fatalf("existing task status = %q, want queued", status)
+	}
+}
+
+func TestRerunIssueFreshMemberHeadersDoNotBorrowSourceOriginator(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	memberID := createPlainMember(t, "rerun-current-member@multica.test")
+	agentID := createHandlerTestAgent(t, "rerun-current-member-agent", nil)
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, status, priority, creator_type, creator_id,
+			assignee_type, assignee_id, number
+		)
+		VALUES (
+			$1, 'Current rerun originator fixture', 'in_progress', 'none', 'member', $2,
+			'agent', $3,
+			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1)
+		)
+		RETURNING id
+	`, testWorkspaceID, memberID, agentID).Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	var sourceTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			started_at, completed_at, failure_reason, originator_user_id
+		)
+		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3
+		FROM agent WHERE id = $1
+		RETURNING id
+	`, agentID, issueID, testUserID).Scan(&sourceTaskID); err != nil {
+		t.Fatalf("create source task: %v", err)
+	}
+
+	req := newRequestAs(memberID, http.MethodPost, "/api/issues/"+issueID+"/rerun-fresh", map[string]any{"task_id": sourceTaskID})
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", sourceTaskID)
+	req = withURLParam(req, "id", issueID)
+	w := httptest.NewRecorder()
+	testHandler.RerunIssueFresh(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	var originatorUserID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT originator_user_id::text
+		FROM agent_task_queue
+		WHERE issue_id = $1 AND id <> $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, issueID, sourceTaskID).Scan(&originatorUserID); err != nil {
+		t.Fatalf("read rerun originator: %v", err)
+	}
+	if originatorUserID != memberID {
+		t.Fatalf("rerun originator = %q, want current member %q", originatorUserID, memberID)
 	}
 }
 
