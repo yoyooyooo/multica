@@ -3876,6 +3876,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
+		TaskID:                           task.ID,
 		IssueID:                          task.IssueID,
 		TriggerCommentID:                 task.TriggerCommentID,
 		TriggerThreadID:                  task.TriggerThreadID,
@@ -4114,6 +4115,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// conversation Codex will silently restart from scratch.
 	if reused {
 		gateCodexResumeToRolloutPresence(&task, &taskCtx, provider, env.CodexHome, taskLog)
+	}
+	taskCtx.WorkDirReused = reused
+	if err := execenv.WriteTaskContextReceipt(env.WorkDir, taskCtx); err != nil {
+		return TaskResult{}, fmt.Errorf("write daemon task context receipt: %w", err)
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
