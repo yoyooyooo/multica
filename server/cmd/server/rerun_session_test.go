@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -563,14 +564,11 @@ func TestRerunIssueRejectsCrossIssueTask(t *testing.T) {
 	}
 }
 
-// TestRerunIssueInheritsTriggerCommentFromSourceTask locks the trigger
-// provenance contract: a per-row rerun of a comment- or mention-triggered
-// task must carry the original trigger_comment_id through to the new task.
-// Otherwise the daemon's buildCommentPrompt path (which keys on
-// TriggerCommentID) is skipped and the rerun degrades into a generic
-// issue run that has lost the original comment context — see MUL-2457
-// review feedback.
-func TestRerunIssueInheritsTriggerCommentFromSourceTask(t *testing.T) {
+// TestRerunIssueFreshPreservesProvenanceWithoutReuseLineage locks the fresh
+// source-provenance contract: the exact source actor and trigger remain
+// auditable, while rerun_of_task_id stays NULL so no claim handler enters
+// session/workdir reuse.
+func TestRerunIssueFreshPreservesProvenanceWithoutReuseLineage(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")
 	}
@@ -615,7 +613,7 @@ func TestRerunIssueInheritsTriggerCommentFromSourceTask(t *testing.T) {
 	bus := events.New()
 	taskService := service.NewTaskService(queries, nil, hub, bus)
 
-	task, err := taskService.RerunIssue(
+	task, err := taskService.RerunIssueFresh(
 		ctx,
 		pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
 		pgtype.UUID{Bytes: parseUUIDBytes(sourceTaskID), Valid: true},
@@ -624,16 +622,28 @@ func TestRerunIssueInheritsTriggerCommentFromSourceTask(t *testing.T) {
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("RerunIssue failed: %v", err)
+		t.Fatalf("RerunIssueFresh failed: %v", err)
 	}
 	if task == nil {
-		t.Fatal("RerunIssue returned nil task")
+		t.Fatal("RerunIssueFresh returned nil task")
+	}
+	if !task.ForceFreshSession {
+		t.Fatal("fresh provenance rerun must set force_fresh_session=true")
+	}
+	if task.RerunOfTaskID.Valid {
+		t.Fatalf("fresh provenance rerun must not stamp context-reuse lineage; got rerun_of_task_id=%s", util.UUIDToString(task.RerunOfTaskID))
 	}
 	if !task.TriggerCommentID.Valid {
-		t.Fatal("expected per-row rerun to inherit trigger_comment_id from source task, got NULL")
+		t.Fatal("expected fresh provenance rerun to inherit trigger_comment_id from source task, got NULL")
 	}
 	if got := util.UUIDToString(task.TriggerCommentID); got != triggerCommentID {
 		t.Fatalf("trigger_comment_id mismatch: got %s, want %s", got, triggerCommentID)
+	}
+	if !task.TriggerEvidenceKind.Valid || task.TriggerEvidenceKind.String != string(attribution.EvidenceRerun) {
+		t.Fatalf("trigger evidence kind = %q, want %q", task.TriggerEvidenceKind.String, attribution.EvidenceRerun)
+	}
+	if got := util.UUIDToString(task.TriggerEvidenceRefID); got != sourceTaskID {
+		t.Fatalf("trigger evidence ref = %s, want source task %s", got, sourceTaskID)
 	}
 }
 

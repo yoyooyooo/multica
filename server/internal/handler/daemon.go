@@ -1966,9 +1966,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.TriggerCommentContent = "The newest triggering comment is no longer available. Address every earlier comment included below."
 		}
 
-		// Resolve the prior agent session / workdir to resume.
+		// Resolve the prior agent session / workdir to resume. A dedicated
+		// fresh-provenance rerun has force_fresh_session=true but deliberately
+		// leaves rerun_of_task_id NULL, so it skips both branches and cannot
+		// reuse source context even on an older claim handler.
 		if task.RerunOfTaskID.Valid {
-			// Manual retry: resume precisely from the source task the user
+			// Execution-log retry: resume precisely from the source task the user
 			// clicked, NOT the most-recent (agent, issue) row — a parallel task
 			// on the same issue must never hijack the resume (MUL-4869). The
 			// workdir is ALWAYS reused when it still exists; the session is

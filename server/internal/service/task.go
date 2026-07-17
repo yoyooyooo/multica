@@ -969,10 +969,10 @@ func (s *TaskService) ResolveIssueReviewSHAParam(ctx context.Context, issueID pg
 }
 
 func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID)
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, pgtype.UUID{})
 }
 
-func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID, provenanceSourceTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -1008,6 +1008,10 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	if provenanceSourceTaskID.Valid {
+		attrEvidenceKind = pgtype.Text{String: string(attribution.EvidenceRerun), Valid: true}
+		attrEvidenceRef = provenanceSourceTaskID
+	}
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:              issue.AssigneeID,
 		RuntimeID:            agent.RuntimeID,
@@ -1092,10 +1096,10 @@ func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoff(ctx context.Context, 
 }
 
 func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, pgtype.UUID{})
 }
 
-func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID, provenanceSourceTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("mention task enqueue failed: agent not found", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -1125,6 +1129,10 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	if provenanceSourceTaskID.Valid {
+		attrEvidenceKind = pgtype.Text{String: string(attribution.EvidenceRerun), Valid: true}
+		attrEvidenceRef = provenanceSourceTaskID
+	}
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
@@ -3244,22 +3252,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 //     or squad leader). This preserves the CLI / API contract for callers
 //     that have an issue ID but no specific task to target.
 //
-// A retry ALWAYS reuses the source task's workdir when it still exists on
-// disk (MUL-4869): a transient failure — network, provider 5xx/rate-limit,
-// runtime_offline, timeout, or an auth/quota/config error the user has since
-// fixed — should not throw away the work already done. Only the agent SESSION
-// is conditionally resumed, and that decision is made later by the daemon claim
-// handler from the SOURCE task (via rerun_of_task_id), NOT baked into this row.
-// enqueueRerunTask pins force_fresh_session=true so an old claim handler during
-// a rolling deploy degrades to a clean start rather than resuming a different
-// execution; the new claim handler ignores the flag for reruns and resumes the
-// session only when the source failure did not poison the conversation (see
-// service.ResumeUnsafeFailure) and the source ran on the same runtime. When the
-// dir is objectively unreusable (GC'd, absent on the claiming runtime, or never
-// recorded) the daemon falls back to a fresh workdir. Auto-retry of an orphaned
-// mid-flight failure (HandleFailedTasks → MaybeRetryFailedTask →
-// CreateRetryTask) takes its own path, so MUL-1128's mid-flight resume contract
-// is preserved.
+// A standard execution-log retry reuses the source task's workdir when it still
+// exists on disk (MUL-4869). Only its agent session is conditionally resumed,
+// and that decision is made later by the claim handler from rerun_of_task_id.
+// RerunIssueFresh is intentionally different: it copies the actor, squad role,
+// and trigger comment, records the source task as rerun evidence, leaves
+// rerun_of_task_id NULL, and sets force_fresh_session=true. That representation
+// makes both old and new claim handlers return no source session or workdir.
+// Auto-retry of an orphaned mid-flight failure (HandleFailedTasks →
+// MaybeRetryFailedTask → CreateRetryTask) takes its own path, so MUL-1128's
+// mid-flight resume contract is preserved.
 //
 // ErrRerunInvokeNotAllowed signals that RerunIssue refused to rerun because the
 // current operator may not invoke the resolved target agent. The handler maps it
@@ -3279,6 +3281,22 @@ var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke
 // rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
 // from trusted internal callers (tests, backfill) that have already gated.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	return s.rerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, false, canInvoke)
+}
+
+// RerunIssueFresh preserves the selected source task's actor, squad role, and
+// trigger-comment provenance without reusing its agent session or workdir. It
+// intentionally does not stamp rerun_of_task_id: both old and new claim handlers
+// therefore honor force_fresh_session instead of entering source-context reuse.
+// The source row remains durable audit evidence through trigger_evidence_kind=rerun.
+func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	if !sourceTaskID.Valid {
+		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
+	}
+	return s.rerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, true, canInvoke)
+}
+
+func (s *TaskService) rerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, freshContext bool, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("load issue: %w", err)
@@ -3374,10 +3392,11 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 
 	// A manual rerun is a NEW direct_human trigger attributed to the rerunning
 	// member, not the original run's human (MUL-4302 §5); actorUserID carries them.
-	// sourceTaskID is the rerun lineage: it rides the CreateAgentTask insert
-	// (rerun_of_task_id) so the queued event / daemon claim never sees a NULL
-	// lineage, and it stays distinct from system-retry's retry_of_task_id (§5).
-	task, err := s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID)
+	// Standard execution-log retry records sourceTaskID as rerun_of_task_id and
+	// reuses its context. Fresh-provenance rerun records the source as rerun
+	// evidence instead, leaving rerun_of_task_id NULL so rolling-deploy claim
+	// handlers cannot accidentally resume or reuse the source execution.
+	task, err := s.enqueueRerunTask(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, actorUserID, sourceTaskID, freshContext)
 	if err != nil {
 		return nil, err
 	}
@@ -3386,6 +3405,7 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		"issue_id", util.UUIDToString(issueID),
 		"agent_id", util.UUIDToString(agentID),
 		"source_task_id", util.UUIDToString(sourceTaskID),
+		"fresh_context", freshContext,
 		"is_leader", isLeader,
 		"cancelled_prior", len(cancelled),
 	)
@@ -3448,20 +3468,24 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 // stays in sync; otherwise (squad member, prior assignee that has since been
 // reassigned, mention agent) we use the mention path.
 //
-// force_fresh_session is pinned to true on every rerun row on purpose. It is
-// the rollback-safe legacy signal: an OLD claim handler (mid rolling deploy)
-// gates the whole resume lookup on !force_fresh_session, so it starts clean
-// instead of resuming via the (agent, issue) most-recent query — which could
-// pick a different execution than the one the user clicked. The NEW claim
-// handler ignores this flag for reruns and instead reads the exact source task
-// (rerun_of_task_id) to reuse its workdir and, when the failure did not poison
-// the conversation, resume its session (MUL-4869).
-func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+// force_fresh_session is pinned to true on every rerun row. Standard
+// execution-log retry also stamps rerun_of_task_id; the claim handler uses that
+// exact lineage to reuse the source workdir and, when safe, its session
+// (MUL-4869). Fresh-provenance rerun deliberately leaves rerun_of_task_id NULL
+// and records the source row as rerun evidence. Old and new claim handlers then
+// both follow force_fresh_session and return neither prior session nor workdir.
+func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, sourceTaskID pgtype.UUID, freshContext bool) (db.AgentTaskQueue, error) {
+	rerunOfTaskID := sourceTaskID
+	provenanceSourceTaskID := pgtype.UUID{}
+	if freshContext {
+		rerunOfTaskID = pgtype.UUID{}
+		provenanceSourceTaskID = sourceTaskID
+	}
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
-		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID)
+		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, provenanceSourceTaskID)
 	}
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, provenanceSourceTaskID)
 }
 
 // HandleFailedTasks runs the post-failure side effects for a batch of

@@ -204,14 +204,18 @@ multica issue rerun <issue-id> --task-id <task-id>
 ```
 
 `--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
-server verifies that the source task belongs to the issue, reruns that task's actor
-(and leader/worker role), inherits its `trigger_comment_id`, and still forces a fresh
-session. Read back the new run and daemon receipt; the command invocation alone is
-not proof that the actor, trigger, `resume_session=false`, and
-`reuse_workdir=false` gates passed.
+CLI uses the dedicated fresh-provenance endpoint; an older server fails closed
+instead of silently falling back to the context-reusing execution-log retry path.
+The server verifies that the source task belongs to the issue, reruns that task's
+actor (and leader/worker role), inherits its `trigger_comment_id`, records the source
+row as `rerun` evidence, and creates no `rerun_of_task_id` context-reuse lineage.
+Both old and new claim handlers therefore return no prior session or workdir.
 
-Do not use raw API calls to add `task_id`. Use the CLI flag so the operation remains
-reviewable and issue-scoped.
+Read back the new run and daemon receipt; the command invocation alone is not proof
+that the actor, trigger, `resume_session=false`, and `reuse_workdir=false` gates
+passed. Do not use raw API calls to add `task_id`, and do not substitute the Web or
+desktop execution-log retry endpoint: that path may intentionally reuse source
+context.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 

@@ -3654,6 +3654,57 @@ func TestClaimTask_ManualRetryReusesWorkdir(t *testing.T) {
 	})
 }
 
+// TestClaimTask_FreshProvenanceRerunSkipsSourceContext proves the rolling-deploy
+// safety shape used by RerunIssueFresh. The source task is durable rerun evidence,
+// not rerun_of_task_id lineage, so even a claim handler that knows nothing about
+// the new endpoint follows force_fresh_session and returns no prior context.
+func TestClaimTask_FreshProvenanceRerunSkipsSourceContext(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
+		VALUES ($1, 'fresh-provenance-rerun fixture', 'in_progress', 'none', $2, 'member', 81212, 0)
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("setup: create issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	var sourceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			failure_reason, session_id, work_dir
+		)
+		VALUES ($1, $2, $3, 'failed', 0, 'timeout', 'must-not-resume', '/tmp/must-not-reuse')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&sourceID); err != nil {
+		t.Fatalf("setup: insert source task: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			force_fresh_session, trigger_evidence_kind, trigger_evidence_ref_id
+		)
+		VALUES ($1, $2, $3, 'queued', 0, TRUE, 'rerun', $4)
+	`, agentID, runtimeID, issueID, sourceID); err != nil {
+		t.Fatalf("setup: insert fresh provenance task: %v", err)
+	}
+
+	task := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+	if task.PriorSessionID != "" {
+		t.Fatalf("PriorSessionID = %q, want empty", task.PriorSessionID)
+	}
+	if task.PriorWorkDir != "" {
+		t.Fatalf("PriorWorkDir = %q, want empty", task.PriorWorkDir)
+	}
+}
+
 func TestClaimTask_ChatPriorSessionRuntimeGuard(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
