@@ -2285,7 +2285,11 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 	}
 
 	body := map[string]any{}
-	if taskInput, _ := cmd.Flags().GetString("task-id"); strings.TrimSpace(taskInput) != "" {
+	taskInput, err := cmd.Flags().GetString("task-id")
+	if err != nil {
+		return fmt.Errorf("read task-id flag: %w", err)
+	}
+	if taskInput = strings.TrimSpace(taskInput); taskInput != "" {
 		taskRef, err := resolveTaskRunID(ctx, client, issueRef.ID, taskInput)
 		if err != nil {
 			return fmt.Errorf("resolve source task run: %w", err)
