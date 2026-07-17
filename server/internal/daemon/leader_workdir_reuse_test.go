@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,6 +39,8 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	if firstResult.SessionID == "" || firstResult.WorkDir == "" {
 		t.Fatalf("first result missing resume state: %+v", firstResult)
 	}
+	assertDaemonTaskReceipt(t, firstResult.WorkDir, "task-first", "", false, false)
+	assertBackendObservedTaskReceipt(t, argsFile, "task-first")
 	// Simulate the race window: the successor is claimed before the prior
 	// task's handler writes .gc_meta.json. The Prepare-time provenance is the
 	// only reuse signal available.
@@ -46,6 +49,7 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	}
 
 	second := leaderReuseTestTask("task-second")
+	second.TriggerCommentID = "comment-second"
 	second.PriorSessionID = firstResult.SessionID
 	second.PriorWorkDir = firstResult.WorkDir
 	secondResult, err := d.runTask(context.Background(), second, "claude", 0, d.logger)
@@ -55,6 +59,8 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	if secondResult.WorkDir != firstResult.WorkDir {
 		t.Fatalf("second WorkDir = %q, want reused leader workdir %q", secondResult.WorkDir, firstResult.WorkDir)
 	}
+	assertDaemonTaskReceipt(t, secondResult.WorkDir, "task-second", "comment-second", true, true)
+	assertBackendObservedTaskReceipt(t, argsFile, "task-second")
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatalf("read claude args: %v", err)
@@ -62,6 +68,35 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	if !strings.Contains(string(args), "--resume\nsession-leader-reuse\n") {
 		t.Fatalf("second claude invocation did not resume prior session; args:\n%s", args)
 	}
+
+	third := leaderReuseTestTask("task-third")
+	third.TriggerCommentID = "comment-third"
+	third.PriorWorkDir = firstResult.WorkDir
+	thirdResult, err := d.runTask(context.Background(), third, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("third runTask: %v", err)
+	}
+	if thirdResult.WorkDir != firstResult.WorkDir {
+		t.Fatalf("third WorkDir = %q, want reused leader workdir %q", thirdResult.WorkDir, firstResult.WorkDir)
+	}
+	assertDaemonTaskReceipt(t, thirdResult.WorkDir, "task-third", "comment-third", false, true)
+	assertBackendObservedTaskReceipt(t, argsFile, "task-third")
+}
+
+func TestRunTaskFreshCommentWritesReceiptBeforeBackend(t *testing.T) {
+	t.Parallel()
+
+	d, argsFile, cleanup := newLeaderReuseTestDaemon(t)
+	defer cleanup()
+
+	task := leaderReuseTestTask("task-fresh-comment")
+	task.TriggerCommentID = "comment-fresh"
+	result, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	assertDaemonTaskReceipt(t, result.WorkDir, "task-fresh-comment", "comment-fresh", false, false)
+	assertBackendObservedTaskReceipt(t, argsFile, "task-fresh-comment")
 }
 
 func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
@@ -82,6 +117,7 @@ func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
 	if result.WorkDir == externalWorkDir {
 		t.Fatalf("leader reused external workdir %q without a local-directory lock", externalWorkDir)
 	}
+	assertDaemonTaskReceipt(t, result.WorkDir, "task-external", "", false, false)
 }
 
 // TestShouldReusePriorWorkdirNonLeaderReusesUnchanged locks the refactor's
@@ -247,6 +283,49 @@ func TestShouldReusePriorWorkdirSquadLeaderRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func assertDaemonTaskReceipt(t *testing.T, workDir, taskID, triggerCommentID string, resumeSession, reuseWorkdir bool) {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(workDir, execenv.TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatalf("read daemon task receipt: %v", err)
+	}
+	var receipt struct {
+		Schema           string `json:"schema"`
+		ManagedBy        string `json:"managed_by"`
+		TaskID           string `json:"task_id"`
+		AgentID          string `json:"agent_id"`
+		IssueID          string `json:"issue_id"`
+		TriggerCommentID string `json:"trigger_comment_id"`
+		ResumeSession    bool   `json:"resume_session"`
+		ReuseWorkdir     bool   `json:"reuse_workdir"`
+	}
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		t.Fatalf("unmarshal daemon task receipt: %v\n%s", err, string(data))
+	}
+	if receipt.Schema != execenv.TaskContextReceiptSchema || receipt.ManagedBy != execenv.TaskContextMarkerManagedBy {
+		t.Fatalf("receipt authority = schema %q managed_by %q", receipt.Schema, receipt.ManagedBy)
+	}
+	if receipt.TaskID != taskID || receipt.AgentID != "agent-leader" || receipt.IssueID != "issue-leader" {
+		t.Fatalf("receipt provenance = task %q agent %q issue %q", receipt.TaskID, receipt.AgentID, receipt.IssueID)
+	}
+	if receipt.TriggerCommentID != triggerCommentID || receipt.ResumeSession != resumeSession || receipt.ReuseWorkdir != reuseWorkdir {
+		t.Fatalf("receipt execution = trigger %q resume %t reuse %t; want trigger %q resume %t reuse %t", receipt.TriggerCommentID, receipt.ResumeSession, receipt.ReuseWorkdir, triggerCommentID, resumeSession, reuseWorkdir)
+	}
+}
+
+func assertBackendObservedTaskReceipt(t *testing.T, captureFile, taskID string) {
+	t.Helper()
+
+	data, err := os.ReadFile(captureFile)
+	if err != nil {
+		t.Fatalf("read backend receipt capture: %v", err)
+	}
+	if !strings.Contains(string(data), `"task_id": "`+taskID+`"`) {
+		t.Fatalf("backend did not observe receipt for task %q before launch; capture:\n%s", taskID, data)
+	}
+}
+
 func newLeaderReuseTestDaemon(t *testing.T) (*Daemon, string, func()) {
 	t.Helper()
 
@@ -255,7 +334,9 @@ func newLeaderReuseTestDaemon(t *testing.T) (*Daemon, string, func()) {
 	argsFile := filepath.Join(testDir, "claude-args.txt")
 	script := `#!/bin/sh
 printf '%s\n' "$@" >> "` + argsFile + `"
-printf '%s\n' '--invocation-end--' >> "` + argsFile + `"
+printf '%s\n' '--receipt-start--' >> "` + argsFile + `"
+cat "$PWD/.multica/daemon_task_context.json" >> "` + argsFile + `"
+printf '\n%s\n' '--invocation-end--' >> "` + argsFile + `"
 IFS= read -r _
 printf '%s\n' '{"type":"system","session_id":"session-leader-reuse"}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-leader-reuse","result":"done"}'
