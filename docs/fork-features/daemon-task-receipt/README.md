@@ -2,8 +2,8 @@
 
 ## Status
 
-- Fork state: source implementation tracked by `MINI-692`; consult that Issue for the current replacement PR.
-- Repair tracking: `MINI-691`; source child: `MINI-692`.
+- Fork state: source accepted by replacement PR 46 at `main@5e8661b8efb30c0728fb515ea7fa9a9b631a0c02`; mini-runtime projection is tracked by `MINI-693`.
+- Repair tracking: `MINI-691`; source child: `MINI-692`; apply child: `MINI-693`.
 - Portability: general upstream candidate. The capability is independent of MATT Loop and AGS.
 - Claim limit: source tests do not prove mini deployment or a successful live Agent self-check.
 
@@ -92,12 +92,12 @@ Agents consuming the receipt still fail closed when the task, actor, Issue, trig
   - root-marker compatibility, exact safe field set, assignment/comment and resume/reuse cases.
 - `server/internal/daemon/daemon_test.go`
   - effective resume/workdir gate coverage.
-- `server/internal/daemon/leader_workdir_reuse_test.go`
-  - runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, conservative fresh-fallback semantics, and backend-visible ordering proof.
+- `server/internal/daemon/task_context_receipt_run_test.go`
+  - mini-runtime runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, conservative fresh-fallback semantics, and backend-visible ordering proof.
 
 ## Verification
 
-Source verification for the current MINI-692 replacement PR includes:
+Source verification for accepted MINI-692 replacement PR 46 includes:
 
 - full Go test suite;
 - daemon package and execenv focused tests;
