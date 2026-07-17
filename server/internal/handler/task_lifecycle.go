@@ -2,12 +2,15 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -104,8 +107,18 @@ type RerunIssueRequest struct {
 }
 
 func decodeRerunIssueRequest(body io.Reader) (RerunIssueRequest, error) {
+	decoder := json.NewDecoder(body)
 	var req RerunIssueRequest
-	if err := json.NewDecoder(body).Decode(&req); err != nil && err != io.EOF {
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
+		return RerunIssueRequest{}, err
+	}
+	// A rerun request is exactly one JSON document. Reject concatenated values
+	// and trailing garbage rather than acting on a valid first object.
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return RerunIssueRequest{}, errors.New("multiple JSON values")
+		}
 		return RerunIssueRequest{}, err
 	}
 	return req, nil
@@ -132,6 +145,18 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 		return
 	}
 
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
+	actorUserID, _ := util.ParseUUID(originatorUserID)
+	canInvoke := func(agent db.Agent) bool {
+		return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
+	}
+
 	// Decode regardless of ContentLength: HTTP/2 and chunked callers may use
 	// an unknown length (-1). EOF is the valid legacy empty-body request.
 	req, err := decodeRerunIssueRequest(r.Body)
@@ -155,9 +180,13 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 
 	var task *db.AgentTaskQueue
 	if requireSource {
-		task, err = h.TaskService.RerunIssueFresh(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{})
+		task, err = h.TaskService.RerunIssueFresh(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
 	} else {
-		task, err = h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{})
+		task, err = h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	}
+	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
+		writeError(w, http.StatusForbidden, "cannot rerun private agent")
+		return
 	}
 	if err != nil {
 		slog.Warn("issue rerun failed", "issue_id", id, "fresh_provenance", requireSource, "error", err)

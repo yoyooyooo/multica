@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -407,7 +408,7 @@ func TestRerunIssueSetsForceFreshSession(t *testing.T) {
 	bus := events.New()
 	taskService := service.NewTaskService(queries, nil, hub, bus)
 
-	task, err := taskService.RerunIssue(ctx, pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true}, pgtype.UUID{}, pgtype.UUID{})
+	task, err := taskService.RerunIssue(ctx, pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true}, pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}, nil)
 	if err != nil {
 		t.Fatalf("RerunIssue failed: %v", err)
 	}
@@ -482,6 +483,8 @@ func TestRerunIssueTargetsSourceTaskAgent(t *testing.T) {
 		pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
 		pgtype.UUID{Bytes: parseUUIDBytes(sourceTaskID), Valid: true},
 		pgtype.UUID{},
+		pgtype.UUID{},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("RerunIssue failed: %v", err)
@@ -553,6 +556,8 @@ func TestRerunIssueRejectsCrossIssueTask(t *testing.T) {
 		pgtype.UUID{Bytes: parseUUIDBytes(issueAID), Valid: true},
 		pgtype.UUID{Bytes: parseUUIDBytes(crossTaskID), Valid: true},
 		pgtype.UUID{},
+		pgtype.UUID{},
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected RerunIssue to reject a source task from a different issue")
@@ -561,7 +566,7 @@ func TestRerunIssueRejectsCrossIssueTask(t *testing.T) {
 
 func TestRerunIssueFreshRequiresSource(t *testing.T) {
 	taskService := &service.TaskService{}
-	if _, err := taskService.RerunIssueFresh(context.Background(), pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}); err == nil {
+	if _, err := taskService.RerunIssueFresh(context.Background(), pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}, pgtype.UUID{}, nil); err == nil {
 		t.Fatal("expected fresh provenance rerun without a source task to fail")
 	}
 }
@@ -581,14 +586,16 @@ func TestRerunIssueFreshPreservesTriggerAndForcesFresh(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create a comment to stand in as the original mention / reply trigger.
+	// Create a trigger from a different workspace member. The fresh rerun must
+	// retain this comment while attributing connected-app authority to the
+	// current operator instead of the original commenter.
+	sourceCommentUserID := createWorkspaceMember(t, "rerun-source")
 	var triggerCommentID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
-		SELECT $1, $2, 'member', m.user_id, 'please retry this', 'comment'
-		FROM member m WHERE m.workspace_id = $2 LIMIT 1
+		VALUES ($1, $2, 'member', $3, 'please retry this', 'comment')
 		RETURNING id
-	`, issueID, testWorkspaceID).Scan(&triggerCommentID); err != nil {
+	`, issueID, testWorkspaceID, sourceCommentUserID).Scan(&triggerCommentID); err != nil {
 		t.Fatalf("insert trigger comment: %v", err)
 	}
 	t.Cleanup(func() {
@@ -621,6 +628,8 @@ func TestRerunIssueFreshPreservesTriggerAndForcesFresh(t *testing.T) {
 		pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
 		pgtype.UUID{Bytes: parseUUIDBytes(sourceTaskID), Valid: true},
 		pgtype.UUID{},
+		util.MustParseUUID(testUserID),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("RerunIssueFresh failed: %v", err)
@@ -639,6 +648,116 @@ func TestRerunIssueFreshPreservesTriggerAndForcesFresh(t *testing.T) {
 	}
 	if got := util.UUIDToString(task.TriggerCommentID); got != triggerCommentID {
 		t.Fatalf("trigger_comment_id mismatch: got %s, want %s", got, triggerCommentID)
+	}
+	if got := util.UUIDToString(task.OriginatorUserID); got != testUserID {
+		t.Fatalf("originator_user_id = %s, want current operator %s (source commenter was %s)", got, testUserID, sourceCommentUserID)
+	}
+}
+
+func TestRerunIssueDeniedBeforeMutation(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	issueID, agentID, runtimeID := setupRerunTestFixture(t)
+	t.Cleanup(func() { cleanupRerunFixture(t, issueID) })
+	ctx := context.Background()
+
+	var sourceTaskID, queuedTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			started_at, completed_at, failure_reason
+		)
+		VALUES ($1, $2, $3, 'failed', 0, now(), now(), 'agent_error')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&sourceTaskID); err != nil {
+		t.Fatalf("insert source task: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, $2, $3, 'queued', 0)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&queuedTaskID); err != nil {
+		t.Fatalf("insert existing queued task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	hub := realtime.NewHub()
+	go hub.Run()
+	taskService := service.NewTaskService(queries, nil, hub, events.New())
+	_, err := taskService.RerunIssueFresh(
+		ctx,
+		util.MustParseUUID(issueID),
+		util.MustParseUUID(sourceTaskID),
+		pgtype.UUID{},
+		util.MustParseUUID(testUserID),
+		func(db.Agent) bool { return false },
+	)
+	if !errors.Is(err, service.ErrRerunInvokeNotAllowed) {
+		t.Fatalf("error = %v, want ErrRerunInvokeNotAllowed", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, queuedTaskID).Scan(&status); err != nil {
+		t.Fatalf("read existing task: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("existing task status = %q, want queued (permission denial must not mutate)", status)
+	}
+}
+
+func TestRerunIssueFreshPreservesHistoricalSquadRoleAfterDirectReassignment(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	issueID, agentID, runtimeID := setupRerunTestFixture(t)
+	ctx := context.Background()
+	var squadID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+		VALUES ($1, 'Rerun role fixture', '', $2, $3)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("create squad: %v", err)
+	}
+	// Register squad cleanup first so issue/task cleanup runs before it.
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	t.Cleanup(func() { cleanupRerunFixture(t, issueID) })
+
+	var sourceTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			started_at, completed_at, failure_reason, is_leader_task, squad_id
+		)
+		VALUES ($1, $2, $3, 'failed', 0, now(), now(), 'agent_error', TRUE, $4)
+		RETURNING id
+	`, agentID, runtimeID, issueID, squadID).Scan(&sourceTaskID); err != nil {
+		t.Fatalf("insert leader source task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	hub := realtime.NewHub()
+	go hub.Run()
+	taskService := service.NewTaskService(queries, nil, hub, events.New())
+	task, err := taskService.RerunIssueFresh(
+		ctx,
+		util.MustParseUUID(issueID),
+		util.MustParseUUID(sourceTaskID),
+		pgtype.UUID{},
+		util.MustParseUUID(testUserID),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("RerunIssueFresh failed: %v", err)
+	}
+	if !task.IsLeaderTask {
+		t.Fatal("fresh rerun lost source leader role after direct reassignment")
+	}
+	if got := util.UUIDToString(task.SquadID); got != squadID {
+		t.Fatalf("squad_id = %s, want historical squad %s", got, squadID)
 	}
 }
 

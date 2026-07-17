@@ -118,8 +118,8 @@ and is hidden from the PR list.
 | `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:344,543` |
 | CLI resolves a full task UUID or issue-scoped unique prefix and selects the dedicated fail-closed endpoint | `server/cmd/multica/cmd_issue.go:2258,2286`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
 | Server registers the separate `/rerun-fresh` route | `server/cmd/server/router.go:1020` |
-| Legacy retry and fresh-provenance handlers share issue visibility and dispatch through the runtime branch's fresh rerun service | `server/internal/handler/task_lifecycle.go:100,117,124,128` |
-| Fresh service requires an exact source, then preserves source agent/role/trigger while setting `force_fresh_session=true` | `server/internal/service/task.go:2441,2448,2598`; proof `server/cmd/server/rerun_session_test.go:574` |
+| Legacy retry and fresh-provenance handlers share issue visibility, current-actor resolution, and private-agent invoke gating | `server/internal/handler/task_lifecycle.go:103,130,137,141,187`; 403/no-mutation proof `server/internal/handler/task_lifecycle_test.go:11` |
+| Fresh service requires an exact source, gates before cancellation, uses the current human for originator/connected-app authority, and preserves source role/trigger with `force_fresh_session=true` | `server/internal/service/task.go:2449,2456,2622`; proofs `server/cmd/server/rerun_session_test.go:579,657,710` |
 | Claim layer returns no prior session or workdir for the branch's `force_fresh_session` row shape | proof `server/internal/handler/daemon_test.go:3247` |
 | CLI fails closed against a server without `/rerun-fresh` | `server/cmd/multica/cmd_issue_test.go:576` |
 
@@ -128,9 +128,12 @@ assignee. With `--task-id`, it calls the dedicated fresh-provenance route. This
 mini-runtime line predates execution-log context reuse: both manual rerun paths
 already omit source-context lineage and set `force_fresh_session=true`. The new
 route adds a required exact source and fail-closed capability boundary while
-preserving the source agent, leader/worker role, and trigger comment. The server
-remains the final cross-issue gate; acceptance still requires daemon readback of
-the actor, trigger, `resume_session=false`, and `reuse_workdir=false`.
+preserving the source agent, leader/worker role, and trigger comment. Before any
+cancellation, the server revalidates the current actor's invoke authority; the new
+run uses that actor's human originator for connected-app authority rather than the
+source comment author. The server remains the final cross-issue and private-agent
+gate; acceptance still requires daemon readback of the actor, trigger,
+`resume_session=false`, and `reuse_workdir=false`.
 
 ## Status side effects (enqueue contracts)
 
