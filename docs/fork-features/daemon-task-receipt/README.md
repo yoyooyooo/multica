@@ -93,7 +93,7 @@ Agents consuming the receipt still fail closed when the task, actor, Issue, trig
 - `server/internal/daemon/daemon_test.go`
   - effective resume/workdir gate coverage.
 - `server/internal/daemon/leader_workdir_reuse_test.go`
-  - runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, and backend-visible ordering proof.
+  - runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, conservative fresh-fallback semantics, and backend-visible ordering proof.
 
 ## Verification
 

@@ -83,6 +83,47 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	assertBackendObservedTaskReceipt(t, argsFile, "task-third")
 }
 
+func TestRunTaskResumeFallbackKeepsConservativeReceipt(t *testing.T) {
+	t.Parallel()
+
+	d, captureFile, cleanup := newLeaderReuseTestDaemonWithResumeFailure(t, true)
+	defer cleanup()
+
+	first := leaderReuseTestTask("task-before-fallback")
+	firstResult, err := d.runTask(context.Background(), first, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("first runTask: %v", err)
+	}
+
+	second := leaderReuseTestTask("task-resume-fallback")
+	second.TriggerCommentID = "comment-resume-fallback"
+	second.PriorSessionID = firstResult.SessionID
+	second.PriorWorkDir = firstResult.WorkDir
+	secondResult, err := d.runTask(context.Background(), second, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("fallback runTask: %v", err)
+	}
+	if secondResult.Status != "completed" || secondResult.SessionID == "" {
+		t.Fatalf("fallback result = %+v, want completed fresh session", secondResult)
+	}
+
+	data, err := os.ReadFile(captureFile)
+	if err != nil {
+		t.Fatalf("read fallback capture: %v", err)
+	}
+	capture := string(data)
+	if got := strings.Count(capture, `"task_id": "task-resume-fallback"`); got != 2 {
+		t.Fatalf("fallback backend observed task receipt %d times, want 2; capture:\n%s", got, capture)
+	}
+	if got := strings.Count(capture, `"resume_session": true`); got != 2 {
+		t.Fatalf("fallback receipt exposed resume_session=true %d times, want 2 conservative observations; capture:\n%s", got, capture)
+	}
+	if !strings.Contains(capture, "--has-resume=yes") || !strings.Contains(capture, "--has-resume=no") {
+		t.Fatalf("capture does not prove resumed first launch plus fresh fallback:\n%s", capture)
+	}
+	assertDaemonTaskReceipt(t, secondResult.WorkDir, "task-resume-fallback", "comment-resume-fallback", true, true)
+}
+
 func TestRunTaskFreshCommentWritesReceiptBeforeBackend(t *testing.T) {
 	t.Parallel()
 
@@ -328,16 +369,36 @@ func assertBackendObservedTaskReceipt(t *testing.T, captureFile, taskID string) 
 
 func newLeaderReuseTestDaemon(t *testing.T) (*Daemon, string, func()) {
 	t.Helper()
+	return newLeaderReuseTestDaemonWithResumeFailure(t, false)
+}
+
+func newLeaderReuseTestDaemonWithResumeFailure(t *testing.T, failResume bool) (*Daemon, string, func()) {
+	t.Helper()
 
 	testDir := t.TempDir()
 	fakeBin := filepath.Join(testDir, "claude")
 	argsFile := filepath.Join(testDir, "claude-args.txt")
+	failResumeValue := "no"
+	if failResume {
+		failResumeValue = "yes"
+	}
 	script := `#!/bin/sh
+has_resume=no
+for arg in "$@"; do
+  if [ "$arg" = "--resume" ]; then
+    has_resume=yes
+  fi
+done
 printf '%s\n' "$@" >> "` + argsFile + `"
+printf '%s\n' "--has-resume=$has_resume" >> "` + argsFile + `"
 printf '%s\n' '--receipt-start--' >> "` + argsFile + `"
 cat "$PWD/.multica/daemon_task_context.json" >> "` + argsFile + `"
 printf '\n%s\n' '--invocation-end--' >> "` + argsFile + `"
 IFS= read -r _
+if [ "` + failResumeValue + `" = "yes" ] && [ "$has_resume" = "yes" ]; then
+  printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"resume failed"}'
+  exit 0
+fi
 printf '%s\n' '{"type":"system","session_id":"session-leader-reuse"}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-leader-reuse","result":"done"}'
 `
