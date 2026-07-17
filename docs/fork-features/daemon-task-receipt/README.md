@@ -2,7 +2,7 @@
 
 ## Status
 
-- Fork state: source implementation under review in `yoyooyooo/multica` PR 45.
+- Fork state: source implementation tracked by `MINI-692`; consult that Issue for the current replacement PR.
 - Repair tracking: `MINI-691`; source child: `MINI-692`.
 - Portability: general upstream candidate. The capability is independent of MATT Loop and AGS.
 - Claim limit: source tests do not prove mini deployment or a successful live Agent self-check.
@@ -42,14 +42,19 @@ For assignment-triggered tasks, `trigger_comment_id` is present as an empty stri
 
 The workspace-root marker used by daemon-managed CLI fail-closed discovery is unchanged in meaning and continues to contain only `managed_by`.
 
-## Effective-state semantics
+## Preflight launch-provenance semantics
 
-The booleans describe the execution that will actually start:
+The booleans record the daemon's effective state after all preflight gates and before the first backend launch:
 
-- a successful session continuation in the same managed workdir reports `true/true`;
+- `reuse_workdir` states whether the selected execution directory is the prior managed workdir;
+- `resume_session` states whether the daemon passes a prior provider session to the first backend launch;
 - a fresh task reports `false/false`;
-- if Multica finds a prior workdir but drops an unavailable provider session, the receipt reports the resulting effective values rather than the claim-time intent;
-- task-specific fields are written before backend launch, so the Agent cannot race a partially initialized receipt.
+- a resumed task in the same managed workdir reports `true/true`;
+- reuse without resume reports `false/true`;
+- if the prior workdir is unavailable, Multica drops the prior session before launch and reports `false/false`;
+- if a provider later rejects a resume and falls back to a fresh thread, the receipt deliberately remains `resume_session=true`. This conservative provenance records that the run attempted resume and prevents it from being reclassified as clean fresh evidence.
+
+Task-specific fields are atomically complete before backend launch, so the Agent cannot race a partially initialized receipt. The receipt does not claim that a provider-side resume ultimately succeeded.
 
 ## Authority and security
 
@@ -86,11 +91,13 @@ Agents consuming the receipt still fail closed when the task, actor, Issue, trig
 - `server/internal/daemon/execenv/context_marker_test.go`
   - root-marker compatibility, exact safe field set, assignment/comment and resume/reuse cases.
 - `server/internal/daemon/daemon_test.go`
-  - existing effective resume/workdir gate coverage.
+  - effective resume/workdir gate coverage.
+- `server/internal/daemon/leader_workdir_reuse_test.go`
+  - runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, and backend-visible ordering proof.
 
 ## Verification
 
-Source verification for PR 45 includes:
+Source verification for the current MINI-692 replacement PR includes:
 
 - full Go test suite;
 - daemon package and execenv focused tests;

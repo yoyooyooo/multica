@@ -124,7 +124,8 @@ func TestWriteTaskContextReceipt(t *testing.T) {
 		{name: "fresh comment dispatch", triggerCommentID: "comment-1"},
 		{name: "fresh assignment dispatch", triggerCommentID: ""},
 		{name: "resumed reused dispatch", triggerCommentID: "comment-2", resumeSession: true, reuseWorkdir: true},
-		{name: "effective dropped resume", triggerCommentID: "comment-3", resumeSession: false, reuseWorkdir: false},
+		{name: "dropped resume after workdir miss", triggerCommentID: "comment-3", resumeSession: false, reuseWorkdir: false},
+		{name: "dropped provider rollout in reused workdir", triggerCommentID: "comment-4", resumeSession: false, reuseWorkdir: true},
 	}
 
 	for _, tt := range tests {

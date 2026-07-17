@@ -239,10 +239,12 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 }
 
 // WriteTaskContextReceipt atomically promotes the daemon-owned context marker
-// into an evidence-grade, task-scoped receipt after resume/workdir gating and
-// before the backend starts. It intentionally exposes only stable provenance
-// and booleans; session IDs, paths, credentials, environment values, and cache
-// material never enter this schema.
+// into an evidence-grade, task-scoped receipt after resume/workdir preflight
+// gates and before the first backend launch. ResumeSession is conservative
+// launch provenance: a later provider fallback never reclassifies an attempted
+// resume as fresh evidence. The receipt intentionally exposes only stable
+// provenance and booleans; session IDs, paths, credentials, environment values,
+// and cache material never enter this schema.
 func WriteTaskContextReceipt(workDir string, ctx TaskContextForEnv) error {
 	if strings.TrimSpace(workDir) == "" {
 		return errors.New("execenv: task receipt workdir is required")
