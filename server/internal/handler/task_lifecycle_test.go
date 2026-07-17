@@ -123,8 +123,8 @@ func TestRerunIssueFreshMemberHeadersDoNotBorrowSourceOriginator(t *testing.T) {
 	req = withURLParam(req, "id", issueID)
 	w := httptest.NewRecorder()
 	testHandler.RerunIssueFresh(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
 	}
 
 	var originatorUserID string
