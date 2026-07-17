@@ -40,7 +40,7 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 		t.Fatalf("first result missing resume state: %+v", firstResult)
 	}
 	assertDaemonTaskReceipt(t, firstResult.WorkDir, "task-first", "", false, false)
-	assertBackendObservedTaskReceipt(t, argsFile, "task-first")
+	assertBackendObservedTaskReceipt(t, argsFile, "task-first", "", false, false)
 	// Simulate the race window: the successor is claimed before the prior
 	// task's handler writes .gc_meta.json. The Prepare-time provenance is the
 	// only reuse signal available.
@@ -60,7 +60,7 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 		t.Fatalf("second WorkDir = %q, want reused leader workdir %q", secondResult.WorkDir, firstResult.WorkDir)
 	}
 	assertDaemonTaskReceipt(t, secondResult.WorkDir, "task-second", "comment-second", true, true)
-	assertBackendObservedTaskReceipt(t, argsFile, "task-second")
+	assertBackendObservedTaskReceipt(t, argsFile, "task-second", "comment-second", true, true)
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatalf("read claude args: %v", err)
@@ -80,7 +80,7 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 		t.Fatalf("third WorkDir = %q, want reused leader workdir %q", thirdResult.WorkDir, firstResult.WorkDir)
 	}
 	assertDaemonTaskReceipt(t, thirdResult.WorkDir, "task-third", "comment-third", false, true)
-	assertBackendObservedTaskReceipt(t, argsFile, "task-third")
+	assertBackendObservedTaskReceipt(t, argsFile, "task-third", "comment-third", false, true)
 }
 
 func TestRunTaskResumeFallbackKeepsConservativeReceipt(t *testing.T) {
@@ -112,11 +112,8 @@ func TestRunTaskResumeFallbackKeepsConservativeReceipt(t *testing.T) {
 		t.Fatalf("read fallback capture: %v", err)
 	}
 	capture := string(data)
-	if got := strings.Count(capture, `"task_id": "task-resume-fallback"`); got != 2 {
-		t.Fatalf("fallback backend observed task receipt %d times, want 2; capture:\n%s", got, capture)
-	}
-	if got := strings.Count(capture, `"resume_session": true`); got != 2 {
-		t.Fatalf("fallback receipt exposed resume_session=true %d times, want 2 conservative observations; capture:\n%s", got, capture)
+	if got := assertBackendObservedTaskReceipt(t, captureFile, "task-resume-fallback", "comment-resume-fallback", true, true); got != 2 {
+		t.Fatalf("fallback backend observed matching task receipt %d times, want 2; capture:\n%s", got, capture)
 	}
 	if !strings.Contains(capture, "--has-resume=yes") || !strings.Contains(capture, "--has-resume=no") {
 		t.Fatalf("capture does not prove resumed first launch plus fresh fallback:\n%s", capture)
@@ -137,7 +134,7 @@ func TestRunTaskFreshCommentWritesReceiptBeforeBackend(t *testing.T) {
 		t.Fatalf("runTask: %v", err)
 	}
 	assertDaemonTaskReceipt(t, result.WorkDir, "task-fresh-comment", "comment-fresh", false, false)
-	assertBackendObservedTaskReceipt(t, argsFile, "task-fresh-comment")
+	assertBackendObservedTaskReceipt(t, argsFile, "task-fresh-comment", "comment-fresh", false, false)
 }
 
 func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
@@ -159,7 +156,7 @@ func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
 		t.Fatalf("leader reused external workdir %q without a local-directory lock", externalWorkDir)
 	}
 	assertDaemonTaskReceipt(t, result.WorkDir, "task-external", "", false, false)
-	assertBackendObservedTaskReceipt(t, captureFile, "task-external")
+	assertBackendObservedTaskReceipt(t, captureFile, "task-external", "", false, false)
 	capture, err := os.ReadFile(captureFile)
 	if err != nil {
 		t.Fatalf("read dropped-workdir capture: %v", err)
@@ -363,16 +360,43 @@ func assertDaemonTaskReceipt(t *testing.T, workDir, taskID, triggerCommentID str
 	}
 }
 
-func assertBackendObservedTaskReceipt(t *testing.T, captureFile, taskID string) {
+func assertBackendObservedTaskReceipt(t *testing.T, captureFile, taskID, triggerCommentID string, resumeSession, reuseWorkdir bool) int {
 	t.Helper()
 
 	data, err := os.ReadFile(captureFile)
 	if err != nil {
 		t.Fatalf("read backend receipt capture: %v", err)
 	}
-	if !strings.Contains(string(data), `"task_id": "`+taskID+`"`) {
+	found := 0
+	for _, chunk := range strings.Split(string(data), "--receipt-start--\n")[1:] {
+		end := strings.Index(chunk, "\n--invocation-end--")
+		if end < 0 {
+			t.Fatalf("backend receipt capture is missing invocation terminator:\n%s", data)
+		}
+		var receipt struct {
+			Schema           string `json:"schema"`
+			ManagedBy        string `json:"managed_by"`
+			TaskID           string `json:"task_id"`
+			TriggerCommentID string `json:"trigger_comment_id"`
+			ResumeSession    bool   `json:"resume_session"`
+			ReuseWorkdir     bool   `json:"reuse_workdir"`
+		}
+		if err := json.Unmarshal([]byte(chunk[:end]), &receipt); err != nil {
+			t.Fatalf("unmarshal backend-observed daemon task receipt: %v\n%s", err, chunk[:end])
+		}
+		if receipt.TaskID != taskID {
+			continue
+		}
+		found++
+		if receipt.Schema != execenv.TaskContextReceiptSchema || receipt.ManagedBy != execenv.TaskContextMarkerManagedBy ||
+			receipt.TriggerCommentID != triggerCommentID || receipt.ResumeSession != resumeSession || receipt.ReuseWorkdir != reuseWorkdir {
+			t.Fatalf("backend-observed receipt for task %q = schema %q managed_by %q trigger %q resume %t reuse %t; want schema %q managed_by %q trigger %q resume %t reuse %t", taskID, receipt.Schema, receipt.ManagedBy, receipt.TriggerCommentID, receipt.ResumeSession, receipt.ReuseWorkdir, execenv.TaskContextReceiptSchema, execenv.TaskContextMarkerManagedBy, triggerCommentID, resumeSession, reuseWorkdir)
+		}
+	}
+	if found == 0 {
 		t.Fatalf("backend did not observe receipt for task %q before launch; capture:\n%s", taskID, data)
 	}
+	return found
 }
 
 func newLeaderReuseTestDaemon(t *testing.T) (*Daemon, string, func()) {
