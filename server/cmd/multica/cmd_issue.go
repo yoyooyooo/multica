@@ -345,7 +345,7 @@ var issueRerunCmd = &cobra.Command{
 	Use:   "rerun <id>",
 	Short: "Re-enqueue an issue assignment as a fresh task",
 	Long: "Re-enqueue an issue assignment as a fresh task. By default this targets the current assignee. " +
-		"Pass --task-id to rerun the actor and trigger provenance of an exact execution row.",
+		"Pass --task-id to preserve the actor and trigger provenance of an exact execution row while starting with no prior session or workdir.",
 	Args: exactArgs(1),
 	RunE: runIssueRerun,
 }
@@ -2270,6 +2270,7 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 	}
 
 	body := map[string]any{}
+	endpoint := "/api/issues/" + issueRef.ID + "/rerun"
 	taskInput, err := cmd.Flags().GetString("task-id")
 	if err != nil {
 		return fmt.Errorf("read task-id flag: %w", err)
@@ -2280,10 +2281,13 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("resolve source task run: %w", err)
 		}
 		body["task_id"] = taskRef.ID
+		// A dedicated route is intentional: an older server returns 404 instead
+		// of silently accepting task_id with context-reusing retry semantics.
+		endpoint = "/api/issues/" + issueRef.ID + "/rerun-fresh"
 	}
 
 	var task map[string]any
-	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", body, &task); err != nil {
+	if err := client.PostJSON(ctx, endpoint, body, &task); err != nil {
 		return fmt.Errorf("rerun issue: %w", err)
 	}
 

@@ -115,17 +115,22 @@ and is hidden from the PR list.
 
 | Behavior | File:line |
 |---|---|
-| `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:337,532` |
-| CLI resolves a full task UUID or issue-scoped unique prefix, then sends `task_id` | `server/cmd/multica/cmd_issue.go:2216`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
-| API request accepts optional `task_id` | `server/internal/handler/task_lifecycle.go:103,122` |
-| Source task selects the original actor and rejects cross-issue tasks | `server/cmd/server/rerun_session_test.go:428,509` |
-| Source task inherits `trigger_comment_id` while rerun remains force-fresh | `server/cmd/server/rerun_session_test.go:395,573` |
+| `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:344,543` |
+| CLI resolves a full task UUID or issue-scoped unique prefix and selects the dedicated fail-closed endpoint | `server/cmd/multica/cmd_issue.go:2258,2286`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
+| Server registers the separate `/rerun-fresh` route | `server/cmd/server/router.go:1020` |
+| Legacy retry and fresh-provenance handlers share issue visibility and dispatch through the runtime branch's fresh rerun service | `server/internal/handler/task_lifecycle.go:100,109,116,120` |
+| Fresh service requires an exact source, then preserves source agent/role/trigger while setting `force_fresh_session=true` | `server/internal/service/task.go:2441,2448,2598`; proof `server/cmd/server/rerun_session_test.go:574` |
+| Claim layer returns no prior session or workdir for the branch's `force_fresh_session` row shape | proof `server/internal/handler/daemon_test.go:3247` |
+| CLI fails closed against a server without `/rerun-fresh` | `server/cmd/multica/cmd_issue_test.go:576` |
 
 Without `--task-id`, the CLI sends the legacy empty request and reruns the current
-assignee. With `--task-id`, the server uses the selected issue execution as the
-provenance source: actor/leader role and trigger comment come from that row, while
-the new task still has `force_fresh_session=true`. The server, not the CLI, is the
-final cross-issue ownership gate.
+assignee. With `--task-id`, it calls the dedicated fresh-provenance route. This
+mini-runtime line predates execution-log context reuse: both manual rerun paths
+already omit source-context lineage and set `force_fresh_session=true`. The new
+route adds a required exact source and fail-closed capability boundary while
+preserving the source agent, leader/worker role, and trigger comment. The server
+remains the final cross-issue gate; acceptance still requires daemon readback of
+the actor, trigger, `resume_session=false`, and `reuse_workdir=false`.
 
 ## Status side effects (enqueue contracts)
 
@@ -189,5 +194,8 @@ grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/githu
 grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
 grep -n 'func notifyParentOfChildDone'       internal/handler/issue_child_done.go
 grep -n 'issueRerunCmd\|func runIssueRerun'   cmd/multica/cmd_issue.go
-grep -n 'type RerunIssueRequest\|func (h \*Handler) RerunIssue' internal/handler/task_lifecycle.go
+grep -n 'rerun-fresh'                         cmd/server/router.go cmd/multica/cmd_issue.go
+grep -n 'type RerunIssueRequest\|func (h \*Handler) RerunIssue\|func (h \*Handler) rerunIssue' internal/handler/task_lifecycle.go
+grep -n 'func (s \*TaskService) RerunIssue\|func (s \*TaskService) enqueueRerunTask' internal/service/task.go
+grep -n 'if !task.ForceFreshSession'          internal/handler/daemon.go
 ```
