@@ -143,7 +143,7 @@ func TestRunTaskFreshCommentWritesReceiptBeforeBackend(t *testing.T) {
 func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
 	t.Parallel()
 
-	d, _, cleanup := newLeaderReuseTestDaemon(t)
+	d, captureFile, cleanup := newLeaderReuseTestDaemon(t)
 	defer cleanup()
 
 	externalWorkDir := t.TempDir()
@@ -159,6 +159,14 @@ func TestRunTaskSquadLeaderDoesNotReuseExternalPriorWorkdir(t *testing.T) {
 		t.Fatalf("leader reused external workdir %q without a local-directory lock", externalWorkDir)
 	}
 	assertDaemonTaskReceipt(t, result.WorkDir, "task-external", "", false, false)
+	assertBackendObservedTaskReceipt(t, captureFile, "task-external")
+	capture, err := os.ReadFile(captureFile)
+	if err != nil {
+		t.Fatalf("read dropped-workdir capture: %v", err)
+	}
+	if !strings.Contains(string(capture), "--has-resume=no") || strings.Contains(string(capture), "--has-resume=yes") {
+		t.Fatalf("dropped-workdir backend received a resume argument; capture:\n%s", capture)
+	}
 }
 
 // TestShouldReusePriorWorkdirNonLeaderReusesUnchanged locks the refactor's
@@ -392,7 +400,9 @@ done
 printf '%s\n' "$@" >> "` + argsFile + `"
 printf '%s\n' "--has-resume=$has_resume" >> "` + argsFile + `"
 printf '%s\n' '--receipt-start--' >> "` + argsFile + `"
-cat "$PWD/.multica/daemon_task_context.json" >> "` + argsFile + `"
+if ! cat "$PWD/.multica/daemon_task_context.json" >> "` + argsFile + `"; then
+  exit 97
+fi
 printf '\n%s\n' '--invocation-end--' >> "` + argsFile + `"
 IFS= read -r _
 if [ "` + failResumeValue + `" = "yes" ] && [ "$has_resume" = "yes" ]; then
