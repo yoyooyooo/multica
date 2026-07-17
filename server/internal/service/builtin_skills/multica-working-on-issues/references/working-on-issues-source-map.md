@@ -118,19 +118,26 @@ and is hidden from the PR list.
 | `issue rerun <id>` command and `--task-id` flag | `server/cmd/multica/cmd_issue.go:344,543` |
 | CLI resolves a full task UUID or issue-scoped unique prefix and selects the dedicated fail-closed endpoint | `server/cmd/multica/cmd_issue.go:2258,2286`; resolver `server/cmd/multica/cmd_id_resolver.go:276` |
 | Server registers the separate `/rerun-fresh` route | `server/cmd/server/router.go:1020` |
-| Legacy retry and fresh-provenance handlers share issue visibility and dispatch through the runtime branch's fresh rerun service | `server/internal/handler/task_lifecycle.go:100,117,124,128` |
-| Fresh service requires an exact source, then preserves source agent/role/trigger while setting `force_fresh_session=true` | `server/internal/service/task.go:2441,2448,2598`; proof `server/cmd/server/rerun_session_test.go:574` |
-| Claim layer returns no prior session or workdir for the branch's `force_fresh_session` row shape | proof `server/internal/handler/daemon_test.go:3247` |
-| CLI fails closed against a server without `/rerun-fresh` | `server/cmd/multica/cmd_issue_test.go:576` |
+| Legacy retry and source-bound handlers share issue visibility, current-actor resolution, and private-agent invoke gating | `server/internal/handler/task_lifecycle.go` (`rerunIssue`); 403/no-mutation proof `server/internal/handler/task_lifecycle_test.go` |
+| Source-bound rerun requires an exact task, gates target authority and viability before cancellation, uses the current human for attribution, preserves source role/trigger, and stores `rerun_of_task_id` | `server/internal/service/task.go` (`RerunIssueFresh`, `RerunIssue`, `enqueueRerunTask`); proofs `server/cmd/server/rerun_session_test.go` |
+| Claim resolves `rerun_of_task_id` before the legacy fresh flag: it offers the exact source workdir and resumes only a safe same-runtime source session | `server/internal/handler/daemon.go` (`task.RerunOfTaskID` branch); matrix proof `server/internal/handler/daemon_test.go` (`TestClaimTask_ManualRetryReusesWorkdir`) |
+| CLI fails closed against a server without `/rerun-fresh` | `server/cmd/multica/cmd_issue_test.go` |
 
-Without `--task-id`, the CLI sends the legacy empty request and reruns the current
-assignee. With `--task-id`, it calls the dedicated fresh-provenance route. This
-mini-runtime line predates execution-log context reuse: both manual rerun paths
-already omit source-context lineage and set `force_fresh_session=true`. The new
-route adds a required exact source and fail-closed capability boundary while
-preserving the source agent, leader/worker role, and trigger comment. The server
-remains the final cross-issue gate; acceptance still requires daemon readback of
-the actor, trigger, `resume_session=false`, and `reuse_workdir=false`.
+Without `--task-id`, the CLI sends the legacy empty request, reruns the current
+assignee, and stores no source lineage. With `--task-id`, it calls the dedicated
+source-bound route, which requires an exact source and preserves its agent,
+leader/worker role, trigger comment, and rerun lineage. Before any cancellation,
+the server revalidates the current actor's invoke authority and target viability;
+the new run uses that actor's human originator for connected-app authority rather
+than the source comment author.
+
+Every manual rerun row keeps `force_fresh_session=true` as a rollback-safe signal
+for an older claim handler. The current claim handler gives `rerun_of_task_id`
+priority: it reuses the exact source workdir when available, resumes the source
+session only when safe and on the same runtime, and otherwise falls back to a
+fresh session or fresh workdir. Acceptance therefore requires daemon receipt
+readback of the actual actor, trigger, `resume_session`, and `reuse_workdir`
+outcomes rather than assuming fixed booleans.
 
 ## Status side effects (enqueue contracts)
 

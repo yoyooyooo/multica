@@ -106,23 +106,34 @@ type RerunIssueRequest struct {
 }
 
 func decodeRerunIssueRequest(body io.Reader) (RerunIssueRequest, error) {
+	decoder := json.NewDecoder(body)
 	var req RerunIssueRequest
-	if err := json.NewDecoder(body).Decode(&req); err != nil && err != io.EOF {
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
+		return RerunIssueRequest{}, err
+	}
+	// A rerun request is exactly one JSON document. Reject concatenated values
+	// and trailing garbage rather than acting on a valid first object.
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return RerunIssueRequest{}, errors.New("multiple JSON values")
+		}
 		return RerunIssueRequest{}, err
 	}
 	return req, nil
 }
 
-// RerunIssue preserves the mini-runtime branch's existing behavior. An empty
-// body targets the current assignee; task_id targets the exact historical
-// agent. Both forms already set force_fresh_session and reuse no prior context.
+// RerunIssue accepts the legacy empty request and the execution-log task_id
+// form. An empty body targets the current assignee with no source lineage;
+// task_id targets the exact historical agent and preserves that source row for
+// the daemon's guarded session/workdir reuse policy.
 func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	h.rerunIssue(w, r, false)
 }
 
 // RerunIssueFresh is the fail-closed endpoint used by CLI --task-id. It
-// requires a source task while retaining this runtime branch's established
-// no-session/no-workdir rerun semantics.
+// requires an exact source task; the service stores that lineage and the daemon
+// decides whether to reuse its workdir and resume its session safely.
 func (h *Handler) RerunIssueFresh(w http.ResponseWriter, r *http.Request) {
 	h.rerunIssue(w, r, true)
 }

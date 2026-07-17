@@ -3402,8 +3402,8 @@ var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke
 // them.
 //
 // RerunIssueFresh requires an exact source task while preserving the current
-// actor and invoke-authority gates. A convergence follow-up adapts its execution
-// context semantics to the newer exact-source workdir reuse model.
+// actor and invoke-authority gates. RerunIssue stores that source as lineage so
+// the daemon can apply its exact-source workdir and session reuse policy.
 func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	if !sourceTaskID.Valid {
 		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
@@ -3479,19 +3479,22 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		}
 	}
 
-	// Re-validate invoke permission on the RESOLVED target before mutating
-	// anything (MUL-4525). For a task_id rerun this gates the historical agent,
-	// so a since-reassigned issue can't be used to re-fire a private agent the
-	// operator may only view. A block fails closed: no prior task is cancelled,
-	// no new task is created.
-	if canInvoke != nil {
-		targetAgent, err := s.Queries.GetAgent(ctx, agentID)
-		if err != nil {
-			return nil, fmt.Errorf("load target agent: %w", err)
-		}
-		if !canInvoke(targetAgent) {
-			return nil, ErrRerunInvokeNotAllowed
-		}
+	// Re-validate invoke permission and target viability on the RESOLVED target
+	// before mutating anything (MUL-4525). For a task_id rerun this gates the
+	// historical agent, so a since-reassigned issue cannot cancel work or re-fire
+	// a private, archived, or runtime-less agent through a visible issue.
+	targetAgent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("load target agent: %w", err)
+	}
+	if canInvoke != nil && !canInvoke(targetAgent) {
+		return nil, ErrRerunInvokeNotAllowed
+	}
+	if targetAgent.ArchivedAt.Valid {
+		return nil, fmt.Errorf("target agent is archived")
+	}
+	if !targetAgent.RuntimeID.Valid {
+		return nil, fmt.Errorf("target agent has no runtime")
 	}
 
 	// Cancel only the target agent's active/queued tasks on this issue.
@@ -3597,8 +3600,12 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 // (rerun_of_task_id) to reuse its workdir and, when the failure did not poison
 // the conversation, resume its session (MUL-4869).
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	// Use the assignee shortcut only for a plain direct-agent source. A former
+	// squad leader or worker may now also be the direct assignee; routing that
+	// source through the shortcut would erase its role and squad provenance.
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
-		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
+		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) &&
+		!isLeader && !squadID.Valid {
 		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID)
 	}
 	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)

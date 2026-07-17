@@ -204,18 +204,26 @@ multica issue rerun <issue-id> --task-id <task-id>
 ```
 
 `--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
-CLI uses the dedicated fresh-provenance endpoint; a server without that contract
-fails closed instead of silently choosing a legacy retry mode. The server verifies
-that the source task belongs to the issue, reruns that task's actor (and
-leader/worker role), inherits its `trigger_comment_id`, and sets
-`force_fresh_session=true`. On this mini-runtime line manual reruns store no
-source-context lineage, so the claim handler returns no prior session or workdir.
+CLI uses the dedicated source-bound endpoint; a server without that contract fails
+closed instead of silently choosing a legacy retry mode. The server verifies that
+the source task belongs to the issue, revalidates the current operator's invoke
+authority before cancellation, reruns the source agent (and leader/worker role),
+inherits its `trigger_comment_id`, and stores the source as `rerun_of_task_id`.
+The new run uses the current human operator—not the source comment author—as its
+originator and connected-app authority.
+
+The daemon reuses the exact source workdir when it remains available. It resumes
+the exact source session only when the failure is resume-safe and the source ran
+on the claiming runtime; otherwise it starts a fresh session, and a missing or
+unusable workdir falls back to fresh preparation. `force_fresh_session=true`
+remains a rollback-safe signal for older claim handlers and is not the current
+handler's final reuse decision.
 
 Read back the new run and daemon receipt; the command invocation alone is not proof
-that the actor, trigger, `resume_session=false`, and `reuse_workdir=false` gates
-passed. Do not use raw API calls to add `task_id`, and do not substitute the Web or
-desktop execution-log retry endpoint: that path may intentionally reuse source
-context.
+of the actor, trigger, `resume_session`, or `reuse_workdir` outcome. Do not use raw
+API calls to add `task_id`. The Web/desktop execution-log path can also carry exact
+source lineage, but only the CLI's dedicated endpoint provides the required
+fail-closed source-task capability boundary.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
