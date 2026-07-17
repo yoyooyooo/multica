@@ -441,7 +441,7 @@ func TestRunIssueRerunSendsSourceTaskID(t *testing.T) {
 			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
 				t.Errorf("encode issue response: %v", err)
 			}
-		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun-fresh":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode rerun body: %v", err)
 				return
@@ -485,7 +485,7 @@ func TestRunIssueRerunResolvesShortSourceTaskIDWithinIssue(t *testing.T) {
 			if err := json.NewEncoder(w).Encode([]map[string]any{{"id": taskID}}); err != nil {
 				t.Errorf("encode task runs response: %v", err)
 			}
-		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun-fresh":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode rerun body: %v", err)
 				return
@@ -543,6 +543,40 @@ func TestRunIssueRerunWithoutSourceTaskKeepsCurrentAssigneeMode(t *testing.T) {
 	}
 	if len(body) != 0 {
 		t.Fatalf("rerun body = %#v, want empty current-assignee request", body)
+	}
+}
+
+func TestRunIssueRerunWithSourceTaskFailsClosedOnLegacyEndpoint(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	legacyPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			legacyPosts++
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	if err := cmd.Flags().Set("task-id", taskID); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
+	if err := runIssueRerun(cmd, []string{issueID}); err == nil {
+		t.Fatal("expected a legacy server without rerun-fresh to fail closed")
+	}
+	if legacyPosts != 0 {
+		t.Fatalf("legacy rerun endpoint received %d posts, want 0", legacyPosts)
 	}
 }
 

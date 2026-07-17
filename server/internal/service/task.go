@@ -2432,6 +2432,19 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 // Tasks owned by other agents on the same issue (e.g. a parallel
 // @-mention agent) are left alone — rerun must not collateral-cancel
 // them.
+//
+// This mini-runtime branch predates execution-log context reuse: RerunIssue
+// already sets force_fresh_session without storing source-task resume lineage.
+// The dedicated endpoint below therefore delegates to this established path
+// after requiring an exact source task, preserving actor/trigger provenance
+// while remaining session- and workdir-fresh.
+func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID) (*db.AgentTaskQueue, error) {
+	if !sourceTaskID.Valid {
+		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
+	}
+	return s.RerunIssue(ctx, issueID, sourceTaskID, triggerCommentID)
+}
+
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID) (*db.AgentTaskQueue, error) {
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {

@@ -95,43 +95,45 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// RerunIssueRequest is the optional body of POST /api/issues/{id}/rerun.
-// All fields are optional; an empty body keeps the legacy "rerun the issue's
-// current assignee" behaviour used by the CLI.
+// RerunIssueRequest is the body shared by the legacy rerun endpoint and the
+// dedicated fresh-provenance endpoint.
 type RerunIssueRequest struct {
-	// TaskID identifies the execution-log row the user clicked retry on.
-	// When set, the rerun targets the agent that ran that specific task
-	// (and reuses its leader/worker role) rather than the issue's current
-	// assignee — so clicking retry on row that belonged to a now-displaced
-	// agent re-fires that same agent, not the new assignee.
+	// TaskID identifies the exact execution row whose agent, squad role, and
+	// trigger-comment provenance should be preserved.
 	TaskID string `json:"task_id,omitempty"`
 }
 
-// RerunIssue manually re-enqueues an agent run for the issue. By default it
-// targets the issue's current assignee (agent or squad leader); if the
-// request body carries task_id, the rerun targets the agent that ran that
-// specific past task instead. The new task is flagged force_fresh_session=true:
-// the daemon claim handler skips the (agent_id, issue_id) session-resume
-// lookup so the agent starts a clean session. A user clicking rerun has just
-// judged the prior output bad — replaying the same conversation would replay
-// the same poisoned state. (Automatic retry, by contrast, intentionally
-// inherits the session — that path handles infrastructure failures, not bad
-// output.)
+// RerunIssue preserves the mini-runtime branch's existing behavior. An empty
+// body targets the current assignee; task_id targets the exact historical
+// agent. Both forms already set force_fresh_session and reuse no prior context.
 func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
+	h.rerunIssue(w, r, false)
+}
+
+// RerunIssueFresh is the fail-closed endpoint used by CLI --task-id. It
+// requires a source task while retaining this runtime branch's established
+// no-session/no-workdir rerun semantics.
+func (h *Handler) RerunIssueFresh(w http.ResponseWriter, r *http.Request) {
+	h.rerunIssue(w, r, true)
+}
+
+func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSource bool) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
 		return
 	}
 
-	// Body is optional. A zero-length body or `{}` keeps the legacy
-	// assignee-driven rerun behaviour the CLI relies on.
 	var req RerunIssueRequest
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
+	}
+	if requireSource && req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id is required for a fresh provenance rerun")
+		return
 	}
 
 	var sourceTaskID pgtype.UUID
@@ -143,9 +145,15 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		sourceTaskID = parsed
 	}
 
-	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{})
+	var task *db.AgentTaskQueue
+	var err error
+	if requireSource {
+		task, err = h.TaskService.RerunIssueFresh(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{})
+	} else {
+		task, err = h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{})
+	}
 	if err != nil {
-		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
+		slog.Warn("issue rerun failed", "issue_id", id, "fresh_provenance", requireSource, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
