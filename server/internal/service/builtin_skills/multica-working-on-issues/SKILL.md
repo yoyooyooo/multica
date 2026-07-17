@@ -206,11 +206,13 @@ multica issue rerun <issue-id> --task-id <task-id>
 `--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
 CLI uses the dedicated source-bound endpoint; a server without that contract fails
 closed instead of silently choosing a legacy retry mode. The server verifies that
-the source task belongs to the issue, revalidates the current operator's invoke
-authority before cancellation, reruns the source agent (and leader/worker role),
-inherits its `trigger_comment_id`, and stores the source as `rerun_of_task_id`.
-The new run uses the current human operator—not the source comment author—as its
-originator and connected-app authority.
+the source task belongs to the issue, revalidates the current authenticated
+actor's invoke authority before cancellation, reruns the source agent (and
+leader/worker role), inherits its `trigger_comment_id`, and stores the source as
+`rerun_of_task_id`. Client-supplied legacy agent/task headers cannot promote a
+member request; only server-bound task-token provenance may carry an agent chain.
+The new run derives human attribution and connected-app authority from that
+authenticated actor chain—not from the source comment author.
 
 The daemon reuses the exact source workdir when it remains available. It resumes
 the exact source session only when the failure is resume-safe and the source ran

@@ -174,7 +174,14 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSour
 		return
 	}
 	workspaceID := uuidToString(issue.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	// Rerun can cancel work and mint a task with user-scoped connected-app
+	// authority. Legacy X-Agent-ID/X-Task-ID are untrusted member metadata here;
+	// only the auth middleware's server-bound task_token marker may carry an
+	// agent actor chain into this mutation.
+	actorType, actorID := "member", userID
+	if r.Header.Get("X-Actor-Source") == "task_token" {
+		actorType, actorID = h.resolveActor(r, userID, workspaceID)
+	}
 	actorUserID := memberActorUserID(actorType, actorID)
 
 	// Re-validate the operator's invoke permission on the resolved target agent

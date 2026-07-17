@@ -3357,8 +3357,8 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	return &child, nil
 }
 
-// RerunIssue creates a fresh queued task for an agent on the issue. Used by
-// the manual rerun endpoint.
+// RerunIssueFresh creates a source-task-bound fresh queued task for an agent on
+// the issue. It delegates to RerunIssue after requiring an exact source.
 //
 // Target agent resolution:
 //   - sourceTaskID Valid: rerun the agent that ran that task (and reuse its
@@ -3411,13 +3411,10 @@ func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, 
 	return s.RerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, canInvoke)
 }
 
-// canInvoke re-validates that the current operator may invoke the RESOLVED
-// target agent, keyed on the historical agent for a task_id rerun and on the
-// current assignee/leader otherwise (MUL-4525). It runs AFTER the target is
-// resolved but BEFORE any prior task is cancelled or a new one is created, so a
-// caller who can see the issue but cannot invoke its private agent cannot use
-// rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
-// from trusted internal callers (tests, backfill) that have already gated.
+// RerunIssue creates a queued task using either an exact source task or the
+// issue's current assignee. canInvoke re-validates the current authenticated
+// actor against the resolved historical/current target before any cancellation;
+// nil is reserved for trusted internal callers that already performed the gate.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
@@ -3537,9 +3534,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 
 // promoteNewestSurvivingComment repairs a manual rerun whose original trigger
 // was deleted (the FK clears trigger_comment_id while the UUID-array plan
-// survives). Promoting before enqueue lets the normal enqueue path recompute
-// originator and user-scoped connected-app capabilities from the real comment,
-// rather than carrying the deleted trigger's stale security context.
+// survives). Promoting before enqueue repairs prompt provenance; rerun enqueue
+// still uses the current authenticated operator as originator and connected-app
+// authority rather than carrying the source comment's stale security context.
 func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []pgtype.UUID) (pgtype.UUID, []pgtype.UUID, error) {
 	type survivingComment struct {
 		id        pgtype.UUID
