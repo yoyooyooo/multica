@@ -438,12 +438,17 @@ func TestRunIssueRerunSendsSourceTaskID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode rerun body: %v", err)
+				t.Errorf("decode rerun body: %v", err)
+				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -453,7 +458,9 @@ func TestRunIssueRerunSendsSourceTaskID(t *testing.T) {
 	setCLITestServerEnv(t, srv.URL)
 
 	cmd := newIssueRerunTestCmd()
-	_ = cmd.Flags().Set("task-id", taskID)
+	if err := cmd.Flags().Set("task-id", "  "+taskID+"  "); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
 	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
 		t.Fatalf("runIssueRerun: %v", err)
 	}
@@ -471,14 +478,21 @@ func TestRunIssueRerunResolvesShortSourceTaskIDWithinIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/task-runs":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": taskID}})
+			if err := json.NewEncoder(w).Encode([]map[string]any{{"id": taskID}}); err != nil {
+				t.Errorf("encode task runs response: %v", err)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode rerun body: %v", err)
+				t.Errorf("decode rerun body: %v", err)
+				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -488,7 +502,9 @@ func TestRunIssueRerunResolvesShortSourceTaskIDWithinIssue(t *testing.T) {
 	setCLITestServerEnv(t, srv.URL)
 
 	cmd := newIssueRerunTestCmd()
-	_ = cmd.Flags().Set("task-id", taskID[:8])
+	if err := cmd.Flags().Set("task-id", taskID[:8]); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
 	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
 		t.Fatalf("runIssueRerun: %v", err)
 	}
@@ -503,12 +519,17 @@ func TestRunIssueRerunWithoutSourceTaskKeepsCurrentAssigneeMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode rerun body: %v", err)
+				t.Errorf("decode rerun body: %v", err)
+				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"})
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
