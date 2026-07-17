@@ -22,10 +22,19 @@ const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 // treating TaskContextMarkerRelPath as daemon-owned.
 const TaskContextMarkerManagedBy = "multica-daemon-task"
 
+// TaskContextReceiptSchema identifies the task-scoped, non-secret execution
+// receipt written immediately before the agent backend starts.
+const TaskContextReceiptSchema = "multica.daemon-task-receipt.v1"
+
 type taskContextMarkerFile struct {
-	ManagedBy string `json:"managed_by"`
-	AgentID   string `json:"agent_id,omitempty"`
-	IssueID   string `json:"issue_id,omitempty"`
+	Schema           string  `json:"schema,omitempty"`
+	ManagedBy        string  `json:"managed_by"`
+	TaskID           string  `json:"task_id,omitempty"`
+	AgentID          string  `json:"agent_id,omitempty"`
+	IssueID          string  `json:"issue_id,omitempty"`
+	TriggerCommentID *string `json:"trigger_comment_id,omitempty"`
+	ResumeSession    *bool   `json:"resume_session,omitempty"`
+	ReuseWorkdir     *bool   `json:"reuse_workdir,omitempty"`
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at
@@ -78,40 +87,39 @@ func EnsureWorkspacesRootMarker(workspacesRoot string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create workspaces root marker dir: %w", err)
 	}
-	if err := writeWorkspacesRootMarkerAtomic(path, data); err != nil {
+	if err := writeTaskContextMarkerAtomic(path, data); err != nil {
 		return fmt.Errorf("write workspaces root marker: %w", err)
 	}
 	return nil
 }
 
-// writeWorkspacesRootMarkerAtomic writes data to path via a same-directory temp
-// file plus a rename, so a concurrent reader observes either the old file or the
-// complete new one — never a partial write. Mirrors the daemon-id / CLI-config
-// write idiom (see writeDaemonIDFile). Perm is 0644 because the CLI's upward
-// walk must be able to read the marker from a subprocess that may run under a
-// different uid; the payload is non-secret.
-func writeWorkspacesRootMarkerAtomic(path string, data []byte) error {
+// writeTaskContextMarkerAtomic writes data to path via a same-directory temp
+// file plus a rename, so a concurrent reader observes either the old bytes or
+// the complete new receipt — never partial JSON. Perm is 0644 because the CLI
+// and the running agent may execute under a different uid; the payload is
+// deliberately non-secret.
+func writeTaskContextMarkerAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".daemon_task_context-*.json.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp workspaces root marker: %w", err)
+		return fmt.Errorf("create temp task context marker: %w", err)
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write temp workspaces root marker: %w", err)
+		return fmt.Errorf("write temp task context marker: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("close temp workspaces root marker: %w", err)
+		return fmt.Errorf("close temp task context marker: %w", err)
 	}
 	if err := os.Chmod(tmpPath, 0o644); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("chmod temp workspaces root marker: %w", err)
+		return fmt.Errorf("chmod temp task context marker: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("rename workspaces root marker: %w", err)
+		return fmt.Errorf("rename task context marker: %w", err)
 	}
 	return nil
 }
@@ -225,7 +233,7 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 			if json.Unmarshal(existing, &marker) != nil || marker.ManagedBy != TaskContextMarkerManagedBy {
 				return fmt.Errorf("write task context marker: %w", err)
 			}
-			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+			if writeErr := writeTaskContextMarkerAtomic(path, data); writeErr != nil {
 				return fmt.Errorf("refresh task context marker: %w", writeErr)
 			}
 			if manifest != nil {
@@ -234,6 +242,52 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 			return nil
 		}
 		return fmt.Errorf("write task context marker: %w", err)
+	}
+	return nil
+}
+
+// WriteTaskContextReceipt atomically promotes the daemon-owned context marker
+// into an evidence-grade, task-scoped receipt after resume/workdir gating and
+// before the backend starts. It intentionally exposes only stable provenance
+// and booleans; session IDs, paths, credentials, environment values, and cache
+// material never enter this schema.
+func WriteTaskContextReceipt(workDir string, ctx TaskContextForEnv) error {
+	if strings.TrimSpace(workDir) == "" {
+		return errors.New("execenv: task receipt workdir is required")
+	}
+	if strings.TrimSpace(ctx.TaskID) == "" {
+		return errors.New("execenv: task receipt task id is required")
+	}
+
+	path := filepath.Join(workDir, TaskContextMarkerRelPath)
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task context marker: %w", err)
+	}
+	var owner taskContextMarkerFile
+	if json.Unmarshal(existing, &owner) != nil || owner.ManagedBy != TaskContextMarkerManagedBy {
+		return fmt.Errorf("foreign file at task context marker path %s; refusing to overwrite", path)
+	}
+
+	triggerCommentID := ctx.TriggerCommentID
+	resumeSession := ctx.PriorSessionResumed
+	reuseWorkdir := ctx.WorkDirReused
+	payload := taskContextMarkerFile{
+		Schema:           TaskContextReceiptSchema,
+		ManagedBy:        TaskContextMarkerManagedBy,
+		TaskID:           ctx.TaskID,
+		AgentID:          ctx.AgentID,
+		IssueID:          ctx.IssueID,
+		TriggerCommentID: &triggerCommentID,
+		ResumeSession:    &resumeSession,
+		ReuseWorkdir:     &reuseWorkdir,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal task context receipt: %w", err)
+	}
+	if err := writeTaskContextMarkerAtomic(path, data); err != nil {
+		return fmt.Errorf("write task context receipt: %w", err)
 	}
 	return nil
 }
