@@ -121,6 +121,47 @@ func TestRunTaskResumeFallbackKeepsConservativeReceipt(t *testing.T) {
 	assertDaemonTaskReceipt(t, secondResult.WorkDir, "task-resume-fallback", "comment-resume-fallback", true, true)
 }
 
+func TestRunTaskResumeFallbackKeepsConservativeReceipt(t *testing.T) {
+	t.Parallel()
+
+	d, captureFile, cleanup := newLeaderReuseTestDaemonWithResumeFailure(t, true)
+	defer cleanup()
+
+	first := leaderReuseTestTask("task-before-fallback")
+	firstResult, err := d.runTask(context.Background(), first, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("first runTask: %v", err)
+	}
+
+	second := leaderReuseTestTask("task-resume-fallback")
+	second.TriggerCommentID = "comment-resume-fallback"
+	second.PriorSessionID = firstResult.SessionID
+	second.PriorWorkDir = firstResult.WorkDir
+	secondResult, err := d.runTask(context.Background(), second, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("fallback runTask: %v", err)
+	}
+	if secondResult.Status != "completed" || secondResult.SessionID == "" {
+		t.Fatalf("fallback result = %+v, want completed fresh session", secondResult)
+	}
+
+	data, err := os.ReadFile(captureFile)
+	if err != nil {
+		t.Fatalf("read fallback capture: %v", err)
+	}
+	capture := string(data)
+	if got := strings.Count(capture, `"task_id": "task-resume-fallback"`); got != 2 {
+		t.Fatalf("fallback backend observed task receipt %d times, want 2; capture:\n%s", got, capture)
+	}
+	if got := strings.Count(capture, `"resume_session": true`); got != 2 {
+		t.Fatalf("fallback receipt exposed resume_session=true %d times, want 2 conservative observations; capture:\n%s", got, capture)
+	}
+	if !strings.Contains(capture, "--has-resume=yes") || !strings.Contains(capture, "--has-resume=no") {
+		t.Fatalf("capture does not prove resumed first launch plus fresh fallback:\n%s", capture)
+	}
+	assertDaemonTaskReceipt(t, secondResult.WorkDir, "task-resume-fallback", "comment-resume-fallback", true, true)
+}
+
 func TestRunTaskFreshCommentWritesReceiptBeforeBackend(t *testing.T) {
 	t.Parallel()
 
