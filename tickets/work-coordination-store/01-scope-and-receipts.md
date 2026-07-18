@@ -33,6 +33,7 @@
 | `root_issue_id UUID NOT NULL` | application-validated实际root；无FK |
 | `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
 | `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
+| `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
 | creation provenance | `created_by_type/id`、nullable `created_task_id`、`created_at`、`updated_at`，成组CHECK |
 
 约束/index：
@@ -46,18 +47,29 @@
 
 ### `coordination_receipt`
 
-至少包含：
+完整列合同如下；除`actor_task_id`外不得nullable：
 
-- `id UUID NOT NULL`、`workspace_id UUID NOT NULL`、`coordination_scope_id UUID NOT NULL`（scope与receipt在同一transaction中先后写入；无FK）；
-- `operation TEXT`（DB只做1-64 chars非空/长度CHECK，不做跨slice enum CHECK；V1 service allowlist只允许`ensure_scope`）；
-- `idempotency_key` 1-200 chars；
-- `request_hash BYTEA`，固定32 bytes SHA-256；
-- `resource_type TEXT`（DB只做1-32 chars非空/长度CHECK；V1 service allowlist只允许`scope`）、`resource_id`；
-- `revision_before/after`非负`BIGINT`且after不小于before；
-- bounded `result_snapshot JSONB`，object且最多16KiB；
-- server-stamped actor/task provenance与`created_at`。
+| Column | Exact contract |
+| --- | --- |
+| `id` | `UUID NOT NULL`；opaque PK，无FK |
+| `workspace_id` | `UUID NOT NULL`；无FK |
+| `coordination_scope_id` | `UUID NOT NULL`；scope与receipt同transaction写入，无FK |
+| `receipt_ordinal` | `BIGINT NOT NULL`，CHECK `1..MaxInt64` |
+| `operation` | `TEXT NOT NULL`，CHECK char length `1..64`；DB不做跨slice enum |
+| `idempotency_key` | `TEXT NOT NULL`，CHECK char length `1..200` |
+| `request_hash` | `BYTEA NOT NULL`，CHECK `octet_length=32`，SHA-256 |
+| `resource_type` | `TEXT NOT NULL`，CHECK char length `1..32`；DB不做跨slice enum |
+| `resource_id` | `UUID NOT NULL` |
+| `revision_before` / `revision_after` | `BIGINT NOT NULL`，均非负且`after >= before` |
+| `result_snapshot` | `JSONB NOT NULL`，CHECK object且UTF-8 text form不超过16KiB；只存server-shaped saved result，不存raw request |
+| `actor_type` | `TEXT NOT NULL`，CHECK `member|agent` |
+| `actor_id` | `UUID NOT NULL` |
+| `actor_task_id` | `UUID NULL`；CHECK member→NULL、agent→NOT NULL |
+| `created_at` | `TIMESTAMPTZ NOT NULL`，由server在insert时取`clock_timestamp()`，客户端不可提供 |
 
-`(workspace_id,idempotency_key)`全局唯一；operation不能进入unique key，否则同key换operation无法fail closed。receipt是replay authority，常规应用rollback不得清空。
+Named indexes/constraints：`id` PK；`(workspace_id,idempotency_key)`唯一；`(coordination_scope_id,receipt_ordinal)`唯一；scope receipt read index以`(coordination_scope_id,receipt_ordinal DESC)`开头。Operation不能进入idempotency unique key，否则同key换operation无法fail closed。
+
+在workspace lock与scope row lock内，allocator先确认`next_receipt_ordinal < MaxInt64`，再原子`+1 RETURNING`并把返回值写入receipt；receipt insert/allocator/业务结果同transaction commit或rollback。Exact replay不分配新ordinal；新key no-op会分配。该顺序对transaction start time、`now()`和UUID无依赖。Receipt是replay authority，常规应用rollback不得清空。
 
 ## Migration contract
 
@@ -77,7 +89,7 @@
 - create scope；get by workspace+ID；get active by natural key；lock scope；CAS increment primitive（V1暂不暴露mutation使用，但V2必须复用）；
 - 统一workspace coordination advisory xact lock，namespace/key算法在V1冻结，V2-V5及删除路径必须复用；
 - workspace-scoped actual-root parent-chain validation query；
-- get/insert receipt与saved result；
+- get/insert receipt与saved result；持scope row lock原子allocate/increment `next_receipt_ordinal`；按scope+ordinal读取receipt page；
 - deletion guard：scope root、receipt scope/resource对Issue的引用，以及workspace是否存在任何scope/receipt。
 
 所有lookup显式带`workspace_id`，不能只按UUID。
@@ -114,16 +126,15 @@ V1 typed allowlist只含`operation=ensure_scope`、`resource_type=scope`。按[c
 
 Ensure顺序：
 
-1. strict validate key、root、profile与typed input；root必须是workspace内实际parent-chain root。
-2. 构造上述version 1 canonical hash；不含timestamp/display data/idempotency key。
-3. transaction内重新执行当前membership/task/root authority；receipt不是授权缓存，revoke/expiry/authority loss必须先拒绝。
-4. 按[workspace lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)取得统一workspace coordination advisory xact lock；该lock先于scope/resource row lock。
-5. 再查`(workspace,key)`：同operation/hash/actor/task replay原receipt/result；不同则`coordination_idempotency_conflict`。
-6. 持锁复核Workspace/root Issue仍存在；并发natural-key ensure依靠unique index收敛，loser reload现有scope。
-7. 新scope revision=0；已有scope以新key创建no-op receipt，revision不变。
-8. 保存bounded result snapshot与receipt后commit。
+1. strict parse key、root、profile与typed input；构造version 1 canonical hash，不含timestamp/display data/idempotency key。
+2. 开transaction并按[workspace lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)取得workspace advisory xact lock；该lock先于scope/resource row lock。
+3. **持锁**重新加载并验证current membership/task binding、Workspace、actual root与profile authority；receipt不是授权缓存，revoke/expiry/authority loss先拒绝。
+4. 查`(workspace,key)`：不同operation/hash/actor/task→`coordination_idempotency_conflict`；exact match还须持锁加载saved scope/resource并确认仍存在、同workspace且当前actor仍可读，才返回saved result。
+5. 非replay路径持锁复核Workspace/root仍存在；并发natural-key ensure依靠unique index收敛，loser reload现有scope。
+6. 新scope revision=0；已有scope以新key创建no-op receipt，revision不变。
+7. 持scope row lock分配下一个`receipt_ordinal`；保存bounded result snapshot与receipt后commit。Allocator/receipt/业务结果任一失败均rollback。
 
-已授权replay发生在current-state/CAS检查前，使成功响应丢失后仍可取得首次结果；但它始终发生在当前authorization之后。V1不允许任何revision mutation；V2开始使用CAS primitive。
+Replay发生在current-state/CAS判断前以恢复丢失响应，但只能在workspace lock、current authorization及saved resource revalidation之后返回；exact replay不分配ordinal。V1不允许任何coordination revision mutation；V2开始使用CAS primitive。
 
 ## API contract
 
@@ -181,9 +192,9 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 
 必须证明：
 
-1. migration fresh up/down/up、PK/concurrent-index序列、lint、sqlc二次生成无drift；
+1. migration fresh up/down/up、PK/concurrent-index序列、lint、sqlc二次生成无drift；逐列证明receipt除`actor_task_id`外均NOT NULL、长度/hash/JSON/actor/revision CHECK、两组unique及ordinal index exact；
 2. ensure串行/并发同natural key只产生一个scope；
-3. same-key same-hash exact replay；same-key不同profile/actor/task conflict；member revoke、task expiry/revoke或root authority loss后same-key replay仍被拒绝；
+3. same-key same-hash exact replay；same-key不同profile/actor/task conflict；所有replay/conflict均在workspace lock与二次authority/resource验证后返回；member revoke、task expiry/revoke、root authority loss或并发entity delete后same-key replay被拒绝；
 4. actual-root validation：child、cross-workspace parent、missing/cycle拒绝；
 5. member与合法issue-bound task；普通PAT/JWT伪造agent/task headers不能提升authority；无issue task拒绝；
 6. API unknown/identity fields、trailing JSON、tenant边界和safe errors；
@@ -193,7 +204,8 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
 11. Ensure分别与单删、BatchDeleteIssues、Workspace删的真实并发race：要么Store写成功且delete被guard，要么delete提交且Store写因entity不存在而失败；不得产生新orphan；
 12. guard触发时cache/task/Autopilot/event均未变化；session lock持有到实际DB delete结束，connection close释放；guard通过后的delete failure不虚构task/Autopilot/event rollback；
-13. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行。
+13. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
+14. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
 
 Focused Go命令必须从`server` module执行：
 

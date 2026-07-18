@@ -90,17 +90,16 @@ Service/API/CLI tests冻结exact operation/resource strings、完整canonical JS
 
 ### Mutation顺序
 
-除V1 receipt replay规则外，add/resolve必须：
+Add/resolve必须：
 
-1. strict typed input +上述canonical hash；
-2. transaction内重做当前actor/task authority；revoke/expiry/authority loss先于receipt replay返回；
-3. 取得统一workspace coordination advisory xact lock；
-4. 在持锁状态处理receipt replay/conflict；
+1. strict parse typed input并构造上述canonical hash；
+2. 开transaction并取得统一workspace coordination advisory xact lock；
+3. **持锁**重新加载current actor/task authority、Workspace、scope及请求endpoint/dependency resource；revoke/expiry/entity delete先拒绝；
+4. 处理receipt：different hash/actor/task→typed conflict；exact match还须确认saved resource仍存在、同workspace/owner scope且当前actor可读，才返回saved result；
 5. 非replay再lock owner scope并校验`expected_revision`；
-6. 持锁校验Workspace、scope及endpoint存在/current state；
-7. mutation与cycle check；新pair add还在同一lock内count active rows，已达1000则返回`coordination_capacity_exceeded`且零写入；
-8. 真实变化使scope revision恰增1；same-scope no-op不增；
-9. 保存bounded result+receipt并commit。
+6. 持锁复核endpoint/dependency current state；执行mutation与cycle check；新pair add还在同一lock内count active rows，已达1000则返回`coordination_capacity_exceeded`且零写入；
+7. 真实变化使scope revision恰增1；same-scope no-op不增；
+8. 持scope lock分配`receipt_ordinal`，保存bounded result+receipt并commit；任一步失败整体rollback。
 
 ### Add semantics
 
@@ -109,7 +108,7 @@ Service/API/CLI tests冻结exact operation/resource strings、完整canonical JS
 - self、missing、cross-workspace拒绝。
 - Workspace DAG不含legacy rows。若从upstream可达downstream，返回`coordination_cycle`。
 - 若active pair不存在且owner scope active dependency少于1000，创建owner scope edge；达到1000稳定返回`coordination_capacity_exceeded`。
-- 若active pair已由**同scope**拥有，新key得到no-op receipt，revision不变；原key走首次receipt replay。
+- 若active pair已由**同scope**拥有，新key得到no-op receipt并分配新`receipt_ordinal`，revision不变；原key走首次receipt replay且不分配ordinal。
 - 若active pair由**其他scope**拥有，返回`coordination_dependency_scope_conflict`；不创建association、不改变任何scope revision、不泄露其他scope详情。
 - 并发`A blocked_by B`与`B blocked_by A`在workspace lock内串行，最多一方成功。
 
@@ -117,7 +116,7 @@ Service/API/CLI tests冻结exact operation/resource strings、完整canonical JS
 
 - Resource必须由请求scope拥有；其他scope尝试resolve返回`coordination_dependency_scope_conflict`。
 - 只写resolved provenance/time并使owner scope active count减1；不处理blocker（V3）。
-- 已resolved edge以新key再次resolve为no-op receipt，revision不变。
+- 已resolved edge以新key再次resolve为no-op receipt并分配新ordinal，revision不变；exact replay不分配。
 - `blocks`只在read DTO中派生，永不写DB。
 
 ## API contract
