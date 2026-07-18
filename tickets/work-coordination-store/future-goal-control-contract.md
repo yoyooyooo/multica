@@ -44,8 +44,8 @@
 
 ## Evidence 与 handoff
 
-- Contract保存evidence/handoff的typed references、required classes和completion state，不保存无限session transcript或私有memory。Reconciler只能提交typed evidence/handoff proposal；每个proposal必须绑定exact `goal_contract_id`/version、workspace/root/scope/task/object identity及expected contract revision，proposal本身不改变authority。
-- Authority owner仅可用CAS接受proposal；server-stamped acceptance receipt必须确认与proposal完全相同的上述bindings，并记录previous/updated contract revision。任一binding不一致、expected revision stale、contract/version已superseded或引用resource missing都拒绝且零写入。
+- Contract保存evidence/handoff的typed references、required classes和completion state，不保存无限session transcript或私有memory。Reconciler只能提交typed evidence/handoff proposal；每个proposal必须绑定exact `goal_contract_id`/current version、workspace/root/scope/task/object identity、expected scope revision及expected previous goal-contract version，proposal本身不改变authority。
+- Authority owner仅可用CAS接受proposal；server-stamped acceptance receipt必须确认与proposal完全相同的上述bindings，并记录previous/updated goal-contract version；成功时updated=previous+1。任一binding不一致、expected scope revision或previous version stale、contract/version已superseded或引用resource missing都拒绝且零写入。
 - Evidence artifact仍由其source repo/runtime authority拥有；contract只记录immutable ref、digest/type和claim relation。
 - Handoff必须有version、predecessor、current frontier、known blockers、claim limit和supersession；不得以一个可覆盖文件丢失历史。
 - Passive Store receipt可以引用contract version，但不能反向修改目标状态。
@@ -54,7 +54,9 @@
 
 必须证明：
 
-- concurrent version CAS最多一个成功；stale version不能绑定scope或task；
+- concurrent version CAS最多一个成功；stale version不能绑定scope或task；claim-limit success receipt绑定human approval、exact previous/updated versions且updated恰为previous+1；
+- idempotency replay只接受同key/hash/actor/task并重新验证current authority/version/resource；任一不匹配、stale或missing均typed拒绝；
+- evidence/handoff proposal仅由owner以完全相同bindings、expected scope revision和previous goal-contract version CAS接受，acceptance receipt记录previous/updated version且成功时+1；mismatch/stale/superseded零写入；
 - human-gated fields不能由agent/task token自行修改；
 - projection drift不会改变authority；
 - old/current authority cutover和rollback演练无双写窗口；

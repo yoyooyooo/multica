@@ -149,7 +149,7 @@ Skill新增canonical方向、same-scope no-op、cross-scope conflict、workspace
 
 ## Deletion guard增量
 
-Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有该表row时，session-lock-held guard返回`coordination_delete_blocked`。所有V2 add/resolve使用README统一xact lock；单删、BatchDeleteIssues、Workspace删除继续用冲突session lock并持有到实际entity DB delete完成/失败。V2不删除edge、不实现lifecycle cleanup，也不以瞬时check替代持锁guard。
+Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有该表row时，session-lock-held guard返回`coordination_delete_blocked`。所有V2 add/resolve使用README统一xact lock；三类delete复用V1 concrete handles与Batch语义，session lock只持有到commit/rollback后verified unlock/release，成功`Finish`后才执行effects。V2不删除edge、不实现lifecycle cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
@@ -170,15 +170,16 @@ Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有
 13. CLI exact request、pagination、int64边界、stable code/exit/JSON；
 14. skill/source map/fork narrative只声明V1+V2。
 
-Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
+从repository root执行以下gate；机械脚本及括号内Go命令进入`server` module：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
+./scripts/verify-work-coordination-db-tests.sh
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -187,7 +188,7 @@ make test
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V2 gate失败；`git diff --check`不能替代。DB-required机械语义只引用V1冻结的`./scripts/verify-work-coordination-db-tests.sh`；它必须证明四个owning package均有matching test实际run+pass，并使DB不可用、skip、零匹配或`Skipping tests:` non-zero。
 
 ## Non-goals
 
