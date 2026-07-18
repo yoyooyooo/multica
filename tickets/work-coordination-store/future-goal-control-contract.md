@@ -15,7 +15,7 @@
 - Coordination scope只保存**immutable binding reference**（goal contract ID/version），不复制完整objective/policy JSON；binding mutation属于future control wave，不回填V1-V5表的空字段。
 - Issue/UI/Agent Kit可以投影摘要和链接，但projection不是write authority。
 - Goal authority自身cutover必须记录old authority snapshot、new version、冲突裁决、effective revision和rollback ceiling，禁止长期双写；该cutover不自动授权Reconciler写入。
-- Reconciler write calibration、copilot、controlled及MINI-570 bootstrap/cutover必须等本合同、reconciliation control与Store lifecycle三项source+live proof同时成立。
+- Reconciler write calibration、copilot、controlled及MINI-570 assisted facts bootstrap必须等本合同、reconciliation control与Store lifecycle三项source+live proof同时成立。该bootstrap不构成MINI-570 authority/autonomy cutover；本路线不授权后者。
 
 ## Typed contract surface
 

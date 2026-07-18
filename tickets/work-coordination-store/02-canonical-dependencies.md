@@ -28,8 +28,8 @@
 | identity | `id UUID NOT NULL`、`workspace_id UUID NOT NULL`、`coordination_scope_id UUID NOT NULL`；均无FK |
 | canonical endpoints | `downstream_issue_id UUID NOT NULL`、`upstream_issue_id UUID NOT NULL`；无FK，self-edge CHECK拒绝 |
 | direction | 不存自由`type`；该表唯一语义就是`downstream blocked_by upstream` |
-| provenance | created/resolved actor、nullable task、timestamps，成组CHECK |
-| lifecycle | active=`resolved_at IS NULL`；resolved provenance完整 |
+| create provenance | `created_by_type TEXT NOT NULL`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL`；member/agent task规则同receipt |
+| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；active时全NULL，resolved时type/id/time必填且task按actor type成组CHECK |
 
 Rules/indexes：
 
@@ -131,7 +131,7 @@ POST /api/coordination/scopes/{scopeId}/dependencies/{dependencyId}/resolve
 
 Mutation要求`Idempotency-Key`。Add body精确为`{"expected_revision":0,"downstream_issue_id":"<uuid>","upstream_issue_id":"<uuid>"}`；resolve body精确为`{"expected_revision":1}`。`scope_id/dependency_id`由path进入canonical request，不能出现在body。Decoder拒绝unknown/identity字段、duplicate object keys与trailing JSON。List只调用service，返回`scope_revision`、最多100条及`next_cursor`；foreign/malformed cursor返回`coordination_invalid_payload`，合法cursor但current revision变化返回`coordination_revision_conflict`。
 
-V2增量使用`coordination_revision_conflict`、`coordination_dependency_scope_conflict`、`coordination_self_dependency`、`coordination_cycle`、`coordination_capacity_exceeded`；HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。不得建立第二张表、使用裸后缀或泄露SQL/constraint。
+Mutation success中的receipt必须包含`receipt_ordinal`；new-key no-op返回新ordinal，exact replay返回原ordinal。V2增量使用`coordination_revision_conflict`、`coordination_dependency_scope_conflict`、`coordination_self_dependency`、`coordination_cycle`、`coordination_capacity_exceeded`；HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。不得建立第二张表、使用裸后缀或泄露SQL/constraint。
 
 ## CLI 与 skill增量
 
@@ -161,10 +161,10 @@ Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有
 4. same-scope duplicate no-op；other-scope active pair stable conflict且两个revision均不变；
 5. `coordination_self_dependency`、`coordination_not_found`、`coordination_cross_workspace`、`coordination_cycle`；
 6. 两个真实并发transaction写反向edge，恰一方成功；
-7. stale revision、authorized same-key replay、different-hash/actor conflict零部分写；revoke/expired task不能用old key读取旧receipt；
+7. stale revision、authorized same-key replay、different-hash/actor conflict零部分写；所有receipt返回在workspace lock后二次authority/resource validation；revoke/expired task或并发entity delete后不能用old key读取旧receipt；
 8. member/task endpoint authority与伪造headers/body拒绝；
 9. list稳定分页：100上限、created_at+id tie、revision-bound cursor无重漏/tenant escape；翻页间mutation稳定`coordination_revision_conflict`；active第1000条可写，第1001条返回`coordination_capacity_exceeded`且revision/receipt/facts不变；
-10. `add_dependency|resolve_dependency`/`dependency` allowlist、wire bodies、canonical JSON与digest golden tests；
+10. `add_dependency|resolve_dependency`/`dependency` allowlist、wire bodies、canonical JSON与digest golden tests；receipt ordinal对mutation/new-key no-op递增、exact replay不增且rollback不留推进；
 11. resolve不隐式改任何blocker/Issue/comment/task/Autopilot；
 12. Add分别与单删、BatchDeleteIssues、Workspace删的真实并发race，无新orphan；guard拒绝时cache/task/Autopilot/event零变化；
 13. CLI exact request、pagination、int64边界、stable code/exit/JSON；

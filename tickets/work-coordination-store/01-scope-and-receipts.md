@@ -34,7 +34,7 @@
 | `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
 | `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
 | `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
-| creation provenance | `created_by_type/id`、nullable `created_task_id`、`created_at`、`updated_at`，成组CHECK |
+| creation provenance | `created_by_type TEXT NOT NULL CHECK member|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
 
 约束/index：
 
@@ -152,7 +152,7 @@ POST要求`Idempotency-Key` header，body仅：
 {"root_issue_id":"<uuid>","workflow_profile_key":"matt-loop"}
 ```
 
-使用strict decoder：`DisallowUnknownFields`、duplicate object key detection并拒绝trailing第二个JSON value；任何客户端身份字段按unknown field拒绝。首次创建201；existing/no-op/replay 200；body均含saved receipt+scope。
+使用strict decoder：`DisallowUnknownFields`、duplicate object key detection并拒绝trailing第二个JSON value；任何客户端身份字段按unknown field拒绝。首次创建201；existing/new-key no-op/exact replay 200；body均含saved receipt+scope，receipt必须含`receipt_ordinal`；exact replay返回原ordinal。
 
 Stable envelope：
 

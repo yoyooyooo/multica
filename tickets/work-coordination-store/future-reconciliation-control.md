@@ -43,7 +43,7 @@ API只接受typed claim/release、policy内graph mutation、wake/dispatch、paus
 
 并发controller只有一个；steal后旧token不能heartbeat/dispatch/terminal；Stage/Reconciler/manual并发wake一个claim；各suppression reason与no-revision skip不启动GPT；actionable仅一次；restart恢复无duplicate；snapshot不可伪造且stale fail closed；program不能混写child；retire不越权archive；stable API/CLI/skill/source-map与exact live evidence齐全。
 
-每个implementation slice须fresh writer、focused/full、fresh independent review、exact-head CI与主验收；source接受后另有deployment plan、当次approval与live canary。Control单独完成不得解锁Reconciler write calibration/copilot/controlled或MINI-570 bootstrap/cutover；还需goal与lifecycle live。
+每个implementation slice须fresh writer、focused/full、fresh independent review、exact-head CI与主验收；source接受后另有deployment plan、当次approval与live canary。Control单独完成不得解锁Reconciler write calibration/copilot/controlled或MINI-570 assisted facts bootstrap；还需goal与lifecycle live。MINI-570 authority/autonomy cutover不在本路线授权面。
 
 ## Non-goals
 

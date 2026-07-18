@@ -50,7 +50,7 @@ Agent Kit **read-only** calibration可在control前完成；任何write calibrat
 
 ## MINI-570 boundary
 
-MINI-570永久`assisted transition dogfood`。只有passive Store、reconciliation control、versioned goal-control与Store lifecycle均完成source+live proof，并通过fresh canary与独立批准后，才可一次性snapshot bootstrap/cutover；历史自然语言仅candidate，冲突由human裁决，不把assignment当liveness、不回放lost wake、不批量改status/assignee/dependency。它不能替代fresh graduation roots。
+MINI-570永久`assisted transition dogfood`。只有passive Store、reconciliation control、versioned goal-control与Store lifecycle均完成source+live proof，并通过fresh非MINI root canary与独立批准后，才可一次性导入**assisted facts snapshot**；历史自然语言仅candidate，冲突由human裁决，不把assignment当liveness、不回放lost wake、不批量改status/assignee/dependency。该bootstrap不切换scheduling/terminal/write authority，MINI-570仍由human/既有Stage assisted。MINI-570不计入fresh graduation roots；本路线即使三root通过也不授权其authority/autonomy cutover，任何例外必须新合同和新批准。
 
 ## Run contract
 
