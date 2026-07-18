@@ -458,28 +458,37 @@ func externalPRCompletionReq(workspaceID, issueID string, number int32) external
 func createExternalPRTestIssue(t *testing.T, title, status, parentID string, stage *int32) string {
 	t.Helper()
 	var id string
+	var number int32
 	var err error
 	if parentID == "" && stage == nil {
 		err = testPool.QueryRow(context.Background(), `
 			INSERT INTO issue (workspace_id, title, status, creator_type, creator_id, number)
 			VALUES ($1, $2, $3, 'member', $4, (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id=$1))
-			RETURNING id
-		`, testWorkspaceID, title, status, testUserID).Scan(&id)
+			RETURNING id, number
+		`, testWorkspaceID, title, status, testUserID).Scan(&id, &number)
 	} else if stage == nil {
 		err = testPool.QueryRow(context.Background(), `
 			INSERT INTO issue (workspace_id, title, status, creator_type, creator_id, parent_issue_id, number)
 			VALUES ($1, $2, $3, 'member', $4, $5, (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id=$1))
-			RETURNING id
-		`, testWorkspaceID, title, status, testUserID, parentID).Scan(&id)
+			RETURNING id, number
+		`, testWorkspaceID, title, status, testUserID, parentID).Scan(&id, &number)
 	} else {
 		err = testPool.QueryRow(context.Background(), `
 			INSERT INTO issue (workspace_id, title, status, creator_type, creator_id, parent_issue_id, stage, number)
 			VALUES ($1, $2, $3, 'member', $4, $5, $6, (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id=$1))
-			RETURNING id
-		`, testWorkspaceID, title, status, testUserID, parentID, *stage).Scan(&id)
+			RETURNING id, number
+		`, testWorkspaceID, title, status, testUserID, parentID, *stage).Scan(&id, &number)
 	}
 	if err != nil {
 		t.Fatalf("create test issue %q: %v", title, err)
+	}
+	// Direct fixture inserts bypass CreateIssue's atomic workspace counter.
+	// Keep the counter at or above the inserted number so later HTTP CRUD tests
+	// cannot allocate a duplicate workspace-local issue number.
+	if _, err := testPool.Exec(context.Background(), `
+UPDATE workspace SET issue_counter=GREATEST(issue_counter, $2) WHERE id=$1
+`, testWorkspaceID, number); err != nil {
+		t.Fatalf("sync workspace issue counter for %q: %v", title, err)
 	}
 	return id
 }
