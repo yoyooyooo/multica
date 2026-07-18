@@ -10,12 +10,12 @@
 
 ## Why separate
 
-现有Issue删除路径可能在parent row delete前取消task、修改Autopilot或发布外部event。V1-V5选择RESTRICT-style guard，避免伪称这些副作用能和Store cleanup整体rollback。Future实现前必须先选择并证明：
+V1-V5只为并发安全guard做窄orchestration seam：guard后的必需pre-delete task/token/Autopilot/Workspace DB mutation与entity delete共享qtx；commit/rollback后`Finish`先verified unlock/release，只有成功Finish后才运行不可回滚cache/S3/metrics/reconciliation/event effects并沿既有路径记录operator debt。V1-V5仍不删除Store facts、不提供archive policy、outbox或可靠投递/自动修复。Future实现前必须选择并证明：
 
 - 保持guard，先显式archive/retire facts再允许delete；或
-- 重构delete orchestration，使DB cleanup与issue row delete共享qtx，并把不可回滚副作用移到commit后/outbox。
+- 在V1 seam上加入Store cleanup，使cleanup与Issue/Workspace row delete共享qtx，并把post-commit debt升级为durable outbox/reconciler recovery。
 
-不得实现或插入`CleanupIssueReferences(qtx)`作为本轮补丁，也不得在现有中段声称“整体原子”。Future若选择cleanup，必须另行设计完整orchestration与外部副作用恢复合同。
+不得把`CleanupIssueReferences(qtx)`插入现有中段后声称“整体原子”。Future若选择cleanup，必须另行设计完整retention、orchestration与外部副作用恢复合同。
 
 ## Required capabilities
 

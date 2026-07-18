@@ -104,7 +104,7 @@ Flow前后对root/B/C逐项exact比较：
 
 ### Deletion guard conformance
 
-对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在任何cache/task/Autopilot/event前从pool Acquire pinned `*pgxpool.Conn`，先取session advisory lock，再begin同connection上的`pgx.Tx`，按UUID锁entity rows并guard。返回handle只允许tx-bound qtx执行最终entity delete；Workspace既有row lock及chat-session locks并入同一qtx。`Finish`先commit/rollback，再在同一connection session unlock并验证true；false/error必须close/discard。Receipt history/reference单独存在时不得触发删除阻塞；删除后旧receipt replay必须因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、上述顺序及connection close释放。无受guard保护Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
+对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除。Guard拒绝发生在任何task/Autopilot DB mutation或cache/S3/metrics/reconciliation/event前，qtx rollback后再verified unlock/release；receipt history/reference单独存在时不阻塞删除，旧receipt replay因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete证明无新orphan。无受guard保护引用的成功删除验证：同qtx pre-delete task/token/Autopilot/Workspace DB cleanup→entity delete→commit→verified unlock/release→typed bounded effects；`Finish` at-most-once并使用独立bounded cleanup context，effects期间不持session lock。Single/Workspace atomic；Batch覆盖skip/dedupe/empty/deleted count、guard conflict整批零写及savepoint partial success。Effects失败只走既有error/log/operator debt，不声称outbox、exactly-once、automatic repair或DB rollback。
 
 ## Built-in skill / source map 收口
 
@@ -132,19 +132,20 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 7. no-side-effect全部字段exact不变且无event；
 8. active dependency/open blocker 1000 hard caps与第1001次mutation的`coordination_capacity_exceeded`零写入；
 9. deletion guard覆盖scope/dependency/record/typed-ref矩阵、receipt-only不阻塞回归、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race及无受guard保护引用路径回归；
-10. API/CLI/top-level JSON/error/exit contract；
+10. API/CLI/top-level JSON/error/exit contract：strict `ProductError`只来自allowlisted coordination envelope，coordination 409 exit6而legacy/string 409 exit1；两种output flag形态、zero-request与exit 3/4/5/6/1均覆盖；
 11. skill embed/frontmatter/source-map/path/symbol/narrative contract；
 12. sqlc二次生成无drift，focused/race/full/build/check通过。
 
-Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
+从repository root执行以下gate；机械脚本及括号内Go命令进入`server` module：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
+./scripts/verify-work-coordination-db-tests.sh
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -154,7 +155,7 @@ make check
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V4 gate失败；`git diff --check`不能替代。DB-required机械语义只引用V1冻结的`./scripts/verify-work-coordination-db-tests.sh`；它必须证明四个owning package均有matching test实际run+pass，并使DB不可用、skip、零匹配或`Skipping tests:` non-zero。
 
 ## Non-goals
 

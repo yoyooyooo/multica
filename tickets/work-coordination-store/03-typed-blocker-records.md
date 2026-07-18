@@ -28,14 +28,14 @@
 | `id` | `UUID NOT NULL`；opaque identity，无FK |
 | `workspace_id` | `UUID NOT NULL`；tenant key，无FK |
 | `coordination_scope_id` | `UUID NOT NULL`；soft scope ref，无FK |
-| type/version/state | `kind TEXT NOT NULL CHECK kind='blocker'`；`schema_version INTEGER NOT NULL CHECK =1`；`status TEXT NOT NULL CHECK open\|resolved` |
+| type/version/state | `kind TEXT NOT NULL CHECK (kind = 'blocker')`；`schema_version INTEGER NOT NULL CHECK (schema_version = 1)`；`status TEXT NOT NULL CHECK (status IN ('open','resolved'))` |
 | `root_issue_id` | `UUID NOT NULL`；无FK |
 | `downstream_issue_id` | `UUID NOT NULL`；无FK |
 | `upstream_issue_id` | `UUID NOT NULL`；无FK |
 | `dependency_id` | `UUID NULL`；该组identity/issue/dependency UUID中唯一nullable列，无FK |
-| typed codes | `reason_code TEXT NOT NULL CHECK waiting_on_issue`；`resolution_code TEXT NULL CHECK no_longer_blocking\|superseded` |
-| create provenance | `created_by_type TEXT NOT NULL`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL`；member/agent task规则同receipt |
-| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；open时全NULL，resolved时code/type/id/time必填且task按actor type成组CHECK |
+| typed codes | `reason_code TEXT NOT NULL CHECK (reason_code = 'waiting_on_issue')`；`resolution_code TEXT NULL CHECK (resolution_code IN ('no_longer_blocking','superseded'))` |
+| create provenance | `created_by_type TEXT NOT NULL CHECK (created_by_type IN ('member','agent'))`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()`；task nullability使用receipt同构CHECK |
+| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；下述table CHECK绑定status/code/type/id/task/time |
 
 Evidence refs不塞进JSONB。新增soft relation table `coordination_record_issue_ref`：
 
@@ -45,10 +45,12 @@ Evidence refs不塞进JSONB。新增soft relation table `coordination_record_iss
 | `workspace_id UUID NOT NULL` | tenant；无FK |
 | `coordination_scope_id UUID NOT NULL` | soft scope ref；无FK |
 | `record_id UUID NOT NULL` | soft record ref；无FK |
-| `phase TEXT NOT NULL` | `create\|resolution` |
+| `phase TEXT NOT NULL` | `CHECK (phase IN ('create','resolution'))` |
 | `issue_id UUID NOT NULL` | typed internal issue ref；无FK |
-| `position INTEGER NOT NULL` | 0-31，保留canonical response order |
-| `created_at TIMESTAMPTZ NOT NULL` | server `clock_timestamp()`；客户端不可提供 |
+| `position INTEGER NOT NULL` | `CHECK (position BETWEEN 0 AND 31)`；保留canonical response order |
+| `created_at TIMESTAMPTZ NOT NULL` | `DEFAULT clock_timestamp()`；客户端不可提供 |
+
+Record state table CHECK精确为两支：`status='open'`时`resolution_code/resolved_by_type/resolved_by_id/resolved_task_id/resolved_at`全NULL；`status='resolved'`时code/type/id/time均NOT NULL、`resolved_by_type IN ('member','agent')`，且member→task NULL、agent→task NOT NULL。Create provenance使用同样的actor/task互斥CHECK。
 
 同record/phase/issue唯一；同record/phase/position唯一。PK/index遵循README concurrent序列，并提供scope/status分页、record refs读取和issue deletion guard index。Service在同一transaction验证所有soft refs的workspace/scope/record/issue一致性并写record+refs。
 
@@ -251,7 +253,7 @@ multica coordination blocker resolve --scope <uuid> --blocker <uuid> --resolutio
 
 ## Deletion guard增量
 
-Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；单删、BatchDeleteIssues、Workspace删除使用冲突session lock并持有到实际entity DB delete完成/失败。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
+Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；三类delete复用V1 concrete handles与Batch语义，session lock只持有到commit/rollback后verified unlock/release，成功`Finish`后才执行effects。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
@@ -268,15 +270,16 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 11. Issue status/assignee/comment/metadata/task/Autopilot计数不变；
 12. Skill/source map/fork narrative只声明V1-V3。
 
-Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
+从repository root执行以下gate；机械脚本及括号内Go命令进入`server` module：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
+./scripts/verify-work-coordination-db-tests.sh
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -285,7 +288,7 @@ make test
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V3 gate失败；`git diff --check`不能替代。DB-required机械语义只引用V1冻结的`./scripts/verify-work-coordination-db-tests.sh`；它必须证明四个owning package均有matching test实际run+pass，并使DB不可用、skip、零匹配或`Skipping tests:` non-zero。
 
 ## Non-goals
 
