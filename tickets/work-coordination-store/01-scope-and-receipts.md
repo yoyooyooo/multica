@@ -17,10 +17,10 @@
 - `server/cmd/multica/cmd_coordination.go`及tests；`server/internal/cli/client.go`、`errors.go`、顶层JSON error rendering所需的`main.go`/`help.go`最小seam及tests。
 - `server/internal/service/builtin_skills/multica-work-coordination/**`与embed/source-map tests。
 - Root `scripts/test-work-coordination-db-required.sh`及相关harness tests；所有相关`TestMain`/DB helper在`WORK_COORDINATION_DB_REQUIRED=1`时必须non-zero fail，禁止`Skip`或`os.Exit(0)`。
-- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试；`server/internal/service/task.go`与相关task/autopilot queries允许做窄拆分：delete-only的pre-delete DB cancellation/failure走qtx，metrics/agent reconciliation/cache/S3/event通知走post-commit finalizer。不得改变非delete调用方语义，不实现Store cleanup，也不宣称post-commit副作用可rollback。
+- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试；`server/internal/service/task.go`与相关task/autopilot queries允许做窄拆分：delete-only的pre-delete DB cancellation/failure走qtx，metrics/agent reconciliation/cache/S3/event通知在commit确认且session lock terminal释放/丢弃后调用。不得改变非delete调用方语义，不实现Store cleanup，也不宣称post-release副作用bounded、可靠投递、可观测失败、自动重试或可rollback。
 - `docs/fork-features/work-coordination-store/README.md`与registry，只声明V1事实。
 
-不得修改`001_init`、dependency业务、blocker、Autopilot产品策略、Stage、Issue status/assignee/comment语义、Agent Kit或UI；只允许把现有delete-only task cancellation/Autopilot failure DB动作改为qtx-bound phase并拆出post-commit finalizer。
+不得修改`001_init`、dependency业务、blocker、Autopilot产品策略、Stage、Issue status/assignee/comment语义、Agent Kit或UI；只允许把现有delete-only task cancellation/Autopilot failure DB动作改为qtx-bound phase并拆出post-release best-effort effects。
 
 ## Schema contract
 
@@ -111,11 +111,15 @@ AcquireWorkspaceDeletion(ctx, actor, workspaceID) -> WorkspaceDeletionHandle
 
 Handler不得直查coordination tables。所有public reads和guard均经过同一workspace/task authority seam；handler不得复刻task-root授权。
 
-Service提供两个concrete handle：`IssueDeletionHandle`（单删或同workspace batch）与`WorkspaceDeletionHandle`。Acquire内部独占pinned `*pgxpool.Conn`，取得session advisory lock、开始`pgx.Tx`、按UUID byte order锁Issue rows，或锁Workspace row后再按UUID锁chat-session rows，然后同qtx执行Store guard。Handle只暴露at-most-once `Delete(ctx) -> PostCommitEffects`、`CommitDB`、`Abort`、`ReleaseAfterPostCommit`；`Delete`内部使用`db.New(qtx)`完成typed dependent DB cleanup与final entity delete，handler永远拿不到raw qtx/pool fallback，也不能另开transaction。
+Service提供两个concrete handle：`IssueDeletionHandle`（单删或同workspace batch）与`WorkspaceDeletionHandle`。Acquire内部独占pinned `*pgxpool.Conn`，取得session advisory lock、开始`pgx.Tx`、按UUID byte order锁Issue rows，或锁Workspace row后再按UUID锁chat-session rows，然后同qtx执行Store guard。Handle只暴露at-most-once `Delete(ctx)`、`CommitDB`、`Abort`、`ReleaseAfterCommit`；`Delete`内部使用`db.New(qtx)`完成typed dependent DB cleanup与final entity delete，并把immutable `PostCommitEffects`保留在handle内部。Handler永远拿不到raw qtx/pool fallback，不能另开transaction，也不能在release前取得或执行effects。
 
-`IssueDeletionHandle.Delete`在qtx内执行`CancelAgentTasksByIssue`、对应task-token cleanup、`FailAutopilotRunsByIssue`、attachment/effect census与final Issue delete，返回immutable bounded payload（cancelled task rows/agent IDs、metrics context、safe event IDs、attachment refs）。Workspace handle复用同一phase model并封装既有membership/workspace teardown。`CommitDB`只commit且保留session lock；commit后finalizer再做metrics、agent reconciliation、cache/S3 cleanup及task/Issue/Workspace events。Finalizer有独立30秒总deadline，逐effect幂等；失败记录typed retry debt，不停止最终cleanup。`Abort`与`ReleaseAfterPostCommit`使用独立5秒cleanup context执行rollback/unlock/connection处理。
+`IssueDeletionHandle.Delete`在qtx内执行`CancelAgentTasksByIssue`、对应task-token cleanup、`FailAutopilotRunsByIssue`、attachment/effect census与final Issue delete；payload含cancelled task rows/agent IDs、metrics context、safe event IDs、attachment refs。Workspace handle复用同一phase model并封装既有membership/workspace teardown。`CommitDB`只确认commit；成功后必须立即调用`ReleaseAfterCommit`，用独立5秒cleanup context verified unlock并release，或Hijack+close/discard异常connection。只有connection达到terminal `released|discarded`后，`ReleaseAfterCommit`才交出payload，handler随后调用现有metrics、agent reconciliation、cache/S3及task/Issue/Workspace event seams。
 
-Acquire内部状态固定为`acquiring → ready`；guard拒绝或Acquire panic/error不返回handle，而是在内部rollback→verified unlock后直接terminal `released|discarded`。已返回handle只允许`ready → deleted → committed → released|discarded`，或`ready|deleted → Abort → released|discarded`；不存在悬空`aborted` state。非法/重复调用返回typed internal error且不得重复DB/effect。Advisory-lock acquisition调用返回error即视为session lock状态不明并Hijack+close；unlock false/error、commit/rollback状态不明或connection异常同样discard，绝不`Release`。成功commit后的finalizer无论成功或记录债务，最终都调用`ReleaseAfterPostCommit`；panic defer按当前state执行Acquire内部cleanup、Abort或commit后的release。
+当前event bus同步、无context/error结果，storage delete也无error结果；因此V1 post-release phase只承诺best-effort调用尝试与safe日志，不承诺30秒总deadline、逐effect幂等、typed retry debt、可靠投递、自动修复或真实失败可观测。Blocking/reentrant listener或S3实现不得再持有session advisory lock；durable effect ID/outbox/recovery属于future lifecycle。
+
+Acquire内部状态固定为`acquiring → ready`；guard拒绝或Acquire panic/error不返回handle，而是在内部rollback→verified unlock后直接terminal `released|discarded`。已返回handle只允许`ready → deleted → committed → released|discarded`，或`ready|deleted → Abort → released|discarded`；不存在悬空`aborted` state。非法/重复调用返回typed internal error且不得重复DB/effect。Advisory-lock acquisition调用返回error即视为session lock状态不明并Hijack+close；unlock false/error、commit/rollback状态不明或connection异常同样discard，绝不`Release`。只有`CommitDB`明确成功才能进入post-release effects；panic defer按当前state执行Acquire内部cleanup、Abort或commit后的`ReleaseAfterCommit`，但不在defer中执行effects。
+
+任一statement或commit返回SQLSTATE `40001`/`40P01`时整次操作失败：禁止per-target skip/savepoint continuation、禁止在failed tx/同一handle继续、禁止post-commit effects且V1不自动retry。可确认未commit时使用独立cleanup context rollback→verified unlock；commit outcome unknown或rollback/unlock/transport状态不明时Hijack+close/discard。两类路径都返回safe `coordination_internal`，不暴露SQLSTATE/raw DB error。Commit outcome unknown不得自动retry，因为可能重复已提交delete；V1明确不补偿这种不确定结果。
 
 ### `CoordinationActor` 与 exact credential
 
@@ -212,9 +216,9 @@ multica coordination scope get (--scope <uuid> | --root <issue-ref> --workflow-p
 
 默认JSON。CLI复用现有issue-ref resolver；缺key/非法flag在零HTTP请求前失败。Revision类型统一为非负`int64`。
 
-新增可`errors.As`/unwrap的`cli.ProductError`，仅在coordination endpoint响应同时满足JSON content type、上述strict envelope、known `coordination_*` code和status/code mapping时建立；它保存safe envelope与HTTP status，不保存raw body。Coordination 409 `coordination_idempotency_conflict`映射exit 6；legacy/string/unknown-envelope 409继续现有safe fallback与exit 1，禁止全局改写409语义。
+新增可`errors.As`/unwrap的`cli.ProductError`，仅在coordination endpoint响应同时满足JSON content type、strict known envelope和README status/code mapping时建立；它保存safe envelope与HTTP status，不保存raw body。README列出的全部五个coordination 409 code均映射exit 6；legacy/string/unknown-envelope/status-mismatch 409继续现有safe fallback与exit 1，禁止全局改写409语义。
 
-顶层在Cobra parse前只为`multica coordination ... --output json`预扫描output mode，使flag/positional/local validation/server error都由同一个renderer输出。JSON失败时stdout为空、stderr恰好一个stable envelope JSON value（允许末尾换行）；即使`--debug`也不得追加prose/stack/raw body。Table失败保留安全prose。顶层execute helper与子进程测试分别覆盖parse error、零请求validation、strict ProductError、legacy fallback、debug JSON以及exit 1/3/4/5/6。
+Coordination默认JSON。顶层在Cobra parse前扫描`coordination`后的完整argv，支持`--output json|table`和`--output=json|table`，覆盖nested subcommand前后Cobra接受的位置并尊重`--`。只允许一个output flag；missing/empty/invalid、同值重复或json/table冲突均零HTTP请求返回`coordination_invalid_payload`/exit 5并用默认JSON renderer。恰有一个有效`table`才输出safe prose；其余失败stdout为空、stderr恰一个stable envelope JSON value（允许末尾换行），`--debug`也不得追加prose/stack/raw body。顶层execute helper与子进程测试逐一覆盖五个409 code、legacy fallback、两种flag语法/位置、重复/冲突/非法值、parse error、零请求validation以及exit 1/3/4/5/6。
 
 初版`multica-work-coordination` built-in skill只介绍scope ensure/get、idempotency、server identity、passive/未提供dependency等claim limit。Supporting source map引用实施后的真实symbol/route/migration，不能把ticket预期路径当证据。
 
@@ -223,12 +227,12 @@ multica coordination scope get (--scope <uuid> | --root <issue-ref> --workflow-p
 V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)，不删除Store rows。
 
 - 单Issue、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前Acquire handle：pool acquire pinned `*pgxpool.Conn`→session advisory lock→同connection `pgx.Tx`→entity rows按UUID byte order锁定→同qtx Store guard。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
-- Batch body维持现有shape；其ID列表解析冻结为：非法UUID、missing或foreign-workspace ID维持既有skip/no-leak语义；合法UUID先去重再按raw UUID bytes排序。取得session lock/qtx后才解析并锁定仍存在的实际target set，一次性guard并all-or-nothing删除；任一actual target的dependent DB cleanup/final delete失败则整批rollback，不保留旧逐项partial commit。`deleted`固定为成功commit的unique actual target数；duplicate不重复计数，零actual target返回200/`deleted:0`。Workspace现有workspace row与chat-session locks必须并入handle Acquire qtx，且不得先移除membership或invalidate cache。
+- Batch body维持现有shape；其ID列表解析冻结为：非法UUID、missing或foreign-workspace ID维持既有skip/no-leak语义；合法UUID先去重再按raw UUID bytes排序。取得session lock/qtx后才解析并锁定仍存在的实际target set，一次性guard并all-or-nothing删除；任一actual target的dependent DB cleanup/final delete失败则整批rollback，不保留旧逐项partial commit，也不使用per-target savepoint。`deleted`固定为成功commit的unique actual target数；duplicate不重复计数，零actual target返回200/`deleted:0`。Workspace现有workspace row与chat-session locks必须并入handle Acquire qtx，且不得先移除membership或invalidate cache。
 - Guard在该qtx内检查scope root；receipt reference本身不触发`coordination_delete_blocked`。拒绝时`Abort` rollback后再unlock，保证task/Autopilot DB mutation及cache/S3/metrics/reconciliation/event均为零。
-- Guard通过后，必须pre-delete的task/Autopilot DB mutation与final Issue/Workspace delete在同一qtx；任一步失败整体rollback。Commit成功后才执行bounded post-commit finalizer；其失败不能回滚entity delete，必须记录typed retry/debt evidence并继续安全释放session lock。
-- Lifecycle顺序固定：Acquire/guard→qtx pre-delete DB mutations→qtx entity delete→`CommitDB`→post-commit finalizer→`ReleaseAfterPostCommit` unlock/release。Abort为rollback→unlock/release。Unlock返回false/error、qtx状态不明或connection异常时调用pgxpool `Hijack`并close/discard；panic defer走Abort或commit后的release，process crash/connection close依赖PostgreSQL自动释放。
+- Guard通过后，必须pre-delete的task/Autopilot DB mutation与final Issue/Workspace delete在同一qtx；任一步失败整体rollback。`40001`/`40P01`在statement或commit阶段均整批失败，不continue、不自动retry、不运行effects；commit outcome unknown同样不自动retry/finalize并discard connection。
+- Lifecycle顺序固定：Acquire/guard→qtx pre-delete DB mutations→qtx entity delete→`CommitDB`明确成功→`ReleaseAfterCommit` verified unlock/release-or-discard→post-release best-effort metrics/reconciliation/cache/S3/events。Abort为rollback→unlock/release-or-discard。Unlock false/error、qtx/commit状态不明或connection异常时调用pgxpool `Hijack`并close/discard；panic defer走Abort或commit后的release，process crash/connection close依赖PostgreSQL自动释放。
 
-该合同只声明guard rejection零副作用、qtx rollback回滚pre-delete DB mutation，以及Store refs/Issue/Workspace DB rows不会产生新orphan。Commit后的cache/S3/metrics/reconciliation/event失败属于显式可重试债务；第一波不声称它们与DB原子或可rollback。
+该合同只声明guard rejection零副作用、qtx rollback回滚pre-delete DB mutation、session lock在effects前terminal释放/丢弃，以及Store refs/Issue/Workspace DB rows不会产生新orphan。第一波不声称cache/S3/metrics/reconciliation/event调用成功、有统一deadline/error结果、可重试、可靠投递、与DB原子或可rollback。
 
 ## Acceptance / tests
 
@@ -240,13 +244,13 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 4. actual-root validation：child正常；missing/cross-workspace parent不泄露foreign详情；cycle与第257 hop fail closed；
 5. member与合法issue-bound task；普通PAT/JWT伪造agent/task headers不能提升authority；无issue task拒绝；middleware auth后、workspace lock前删除/过期presented token row必须失败，同task另一有效token不能替代；credential ref不进wire/hash/log；
 6. API unknown/identity fields、trailing JSON、tenant边界和safe errors；POST/GET exact DTO golden、UTC time、int64、201/200；result snapshot只含ScopeDTO，replay从原row重建receipt且无key/hash/raw request；
-7. CLI exact request、zero-request validation；strict coordination ProductError与legacy 409 fallback；JSON failure stdout空/stderr单value，debug无prose，top-level exit 1/3/4/5/6；
+7. CLI exact request、zero-request validation；五个coordination 409逐code strict ProductError/exit 6与legacy/status-mismatch 409 exit 1；`--output json`/`--output=json`、table、nested位置、`--`、missing/invalid/duplicate/conflict矩阵；JSON failure stdout空/stderr单value，debug无prose，top-level exit 1/3/4/5/6；
 8. built-in embed/frontmatter/source-map存在性；
 9. before/after Issue status/assignee/comment/task/Autopilot计数不变；
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
 11. Ensure分别与单删、BatchDeleteIssues、Workspace删的真实并发race：要么Store写成功且delete被guard，要么delete提交且Store写因entity不存在而失败；不得产生新orphan；Batch覆盖invalid/missing/foreign skip、duplicate只计一次、零actual、actual targets all-or-nothing rollback与`deleted`计数；
 12. guard触发时task/Autopilot DB与cache/S3/metrics/reconciliation/event均未变化；测试证明pinned connection、session lock、entity row locks、guard、pre-delete task/token/Autopilot DB operations、Workspace既有row/chat locks及final delete共用一个qtx；任一步失败全部rollback；handler无法取得raw qtx；
-13. success顺序严格为qtx commit→30秒bounded post-commit metrics/reconciliation/cache/S3/events→verified unlock/release；finalizer失败记录typed debt且仍以独立5秒context cleanup，不虚构DB rollback；handle非法重复调用无重复effect，lock acquire error、unlock false/error、qtx/connection unknown均Hijack+discard；
+13. success顺序严格为qtx commit明确成功→独立5秒context verified unlock/release-or-discard→post-release best-effort metrics/reconciliation/cache/S3/events；blocking/reentrant listener和S3 fake证明effects开始前session lock已terminal；只断言现有void adapters被调用，不声称成功/debt/deadline；statement-time及commit-time `40001`/`40P01`注入均整批rollback/失败、零effects、无同handle continue/auto-retry；commit outcome unknown零effects且discard；handle非法重复调用无重复DB/effect；
 14. namespace常量及README两个exact正/负signed golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
 15. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
 

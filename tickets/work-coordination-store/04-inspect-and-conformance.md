@@ -104,7 +104,7 @@ Flow前后对root/B/C逐项exact比较：
 
 ### Deletion guard conformance
 
-对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除。Guard拒绝发生在任何task/Autopilot DB mutation或cache/S3/metrics/reconciliation/event前，qtx rollback后再unlock；receipt history/reference单独存在时不阻塞删除，旧receipt replay因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete证明无新orphan。无受guard保护引用的成功删除还须验证：同qtx pre-delete task/token/Autopilot DB mutations→entity delete→commit；commit后bounded finalizer执行metrics/reconciliation/cache/S3/events；最后verified unlock/release。对qtx各失败点证明整体rollback和零外部副作用；对finalizer失败记录typed retry debt且不虚构DB rollback。
+对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除。Guard拒绝发生在任何task/Autopilot DB mutation或cache/S3/metrics/reconciliation/event前，qtx rollback后再unlock；receipt history/reference单独存在时不阻塞删除，旧receipt replay因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete证明无新orphan。无受guard保护引用的成功删除还须验证：同qtx pre-delete task/token/Autopilot DB mutations→entity delete→commit明确成功→verified unlock/release-or-discard→post-release metrics/reconciliation/cache/S3/events调用尝试。对qtx各失败点证明整体rollback和零外部副作用；statement/commit `40001`、`40P01`均整批失败且不continue/retry/finalize，commit outcome unknown不finalize并discard。Blocking/reentrant listener与S3 fake证明effects开始前session lock已terminal；当前void/no-error adapter只验证调用，不虚构deadline、effect成功、typed debt或可靠恢复。
 
 ## Built-in skill / source map 收口
 
@@ -131,8 +131,8 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 6. `coordination_cycle`、`coordination_self_dependency`、`coordination_revision_conflict`、`coordination_cross_workspace`与`coordination_forbidden`零部分写；
 7. no-side-effect全部字段exact不变且无event；
 8. active dependency/open blocker 1000 hard caps与第1001次mutation的`coordination_capacity_exceeded`零写入；
-9. deletion guard覆盖scope/dependency/record/typed-ref矩阵、receipt-only不阻塞回归、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race及无受guard保护引用路径回归；
-10. API/CLI/top-level JSON/error/exit contract；
+9. deletion guard覆盖scope/dependency/record/typed-ref矩阵、receipt-only不阻塞回归、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race、`40001`/`40P01`/commit-unknown、release-before-effects及无受guard保护引用路径回归；
+10. API/CLI/top-level JSON/error/exit contract逐一覆盖五个coordination 409、legacy/status-mismatch 409、两种`--output`语法/位置及missing/invalid/duplicate/conflict；
 11. skill embed/frontmatter/source-map/path/symbol/narrative contract；
 12. sqlc二次生成无drift，focused/race/full/build/check通过。
 
