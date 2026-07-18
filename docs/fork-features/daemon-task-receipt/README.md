@@ -2,10 +2,11 @@
 
 ## Status
 
-- Fork state: source accepted by replacement PR 46 at `main@5e8661b8efb30c0728fb515ea7fa9a9b631a0c02`; mini-runtime projection is tracked by `MINI-693`.
-- Repair tracking: `MINI-691`; source child: `MINI-692`; apply child: `MINI-693`.
+- Fork state: source accepted by replacement PR 46 at `main@5e8661b8efb30c0728fb515ea7fa9a9b631a0c02`; mini-runtime projection accepted by PR 47 at `mini-runtime@6f5a45ed05b7a986aa0befab1799d0da69073e70`.
+- Runtime state: the exact mini-runtime CLI/daemon binary is deployed on mini and fresh live self-checks passed.
+- Repair tracking: `MINI-691`; source child: `MINI-692`; apply child: `MINI-693`; proof child: `MINI-694`.
 - Portability: general upstream candidate. The capability is independent of MATT Loop and AGS.
-- Claim limit: source tests do not prove mini deployment or a successful live Agent self-check.
+- Claim limit: live proof establishes task freshness provenance only; it does not establish review, merge, backup, Stage, or workflow acceptance.
 
 ## Problem and necessity
 
@@ -105,13 +106,13 @@ Source verification for accepted MINI-692 replacement PR 46 includes:
 - focused `go vet`;
 - `git diff --check`.
 
-Live acceptance additionally requires a fresh deployed task to validate its own receipt without host log access, supervisor-injected metadata, broad runtime enumeration, or sensitive path inspection. That proof is tracked by `MINI-694`.
+Live acceptance completed in `MINI-694`: fresh assignment task `43f7efee-737e-49d8-89d0-00658829c6b7` read its own exact assignment receipt with `false/false`, explicit empty trigger, and the safe key set. MINI-688 then used fresh comment-triggered critic task `23aee993-dff1-44c1-9820-9762e4587cbe` with exact non-empty trigger and `false/false`, allowing normal independent review to proceed. Neither proof used host logs or supervisor-injected metadata as freshness authority.
 
 ## Deployment and rollback
 
-The accepted source must be projected onto the maintained mini-runtime branch and deployed only after `active_task_count=0`. Deployment preserves the previous backend image as rollback and does not restart Postgres, frontend, or the host daemon. Projection/apply is tracked by `MINI-693`.
+Deployment built the exact `6f5a45ed...` arm64 CLI/daemon binary and preserved the prior `69b94aec...` binary plus symlink as rollback. After an immediate `active_task_count=0` readback and explicit operator approval, only the mini-profile host daemon was gracefully restarted so the new in-process receipt writer could load. Post-start health, executable path, PID change, and `active_task_count=0` were read back. Backend, Postgres, frontend, and the imile daemon were unchanged.
 
-Rolling back removes agent-visible receipt fields and returns consumers to fail-closed behavior; it must not be represented as freshness proof.
+Rolling back restores the prior symlink/binary and gracefully restarts only the mini-profile daemon. It removes agent-visible receipt fields and returns consumers to fail-closed behavior; it must not be represented as freshness proof.
 
 ## Upstream path and retirement
 

@@ -338,6 +338,18 @@ WHERE NOT EXISTS (
 	}
 }
 
+func issueExternalPRCompletionPolicy(issue db.Issue) string {
+	raw, exists := parseIssueMetadata(issue.Metadata)["external_pr_completion_policy"]
+	if !exists {
+		return ""
+	}
+	policy, ok := raw.(string)
+	if !ok {
+		return "unsupported"
+	}
+	return strings.ToLower(strings.TrimSpace(policy))
+}
+
 func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req externalPullRequestLinkRequest) externalCompleteFromPRResponse {
 	ctx := r.Context()
 	workspaceID, err := parseExternalPRUUID(req.WorkspaceID)
@@ -360,6 +372,21 @@ func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req exte
 	}
 	if issue.Status == "cancelled" {
 		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "cancelled", IssueID: req.IssueID}
+	}
+	// Some workflows have terminal gates beyond provider merge (for example,
+	// an independently verified outward backup). record_only keeps the external
+	// PR link and merge activity authoritative while leaving the Issue status —
+	// and therefore native parent/Stage wake — under the workflow's explicit
+	// close after those gates pass.
+	switch issueExternalPRCompletionPolicy(issue) {
+	case "", "leaf_child_only":
+		// Existing leaf completion behavior.
+	case "record_only":
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "completion_policy_record_only", IssueID: req.IssueID}
+	default:
+		// Unknown policies are future or misspelled terminal contracts. Fail
+		// closed rather than silently treating them as auto-complete.
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "completion_policy_unsupported", IssueID: req.IssueID}
 	}
 	if !issue.ParentIssueID.Valid {
 		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "no_parent", IssueID: req.IssueID}
@@ -384,6 +411,7 @@ UPDATE issue SET status='done', updated_at=now()
 WHERE id=$1 AND workspace_id=$2
   AND status NOT IN ('done','cancelled')
   AND parent_issue_id IS NOT NULL
+  AND lower(btrim(COALESCE(issue.metadata->>'external_pr_completion_policy', ''))) IN ('', 'leaf_child_only')
   AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
   AND NOT EXISTS (SELECT 1 FROM external_pull_request_link pr WHERE pr.workspace_id=issue.workspace_id AND pr.issue_id=issue.id AND pr.link_confidence='authoritative' AND pr.completion_intent AND pr.state IN ('open','draft'))
 RETURNING id`, issueID, workspaceID).Scan(&updatedID); err != nil {
