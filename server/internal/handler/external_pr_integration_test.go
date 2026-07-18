@@ -113,15 +113,22 @@ func TestCompleteExternalPRLeafStatusCompletionPolicyPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse test workspace id: %v", err)
 	}
+	normalizedLeafMetadata, err := json.Marshal(map[string]any{
+		"external_pr_completion_policy": externalPRCompletionPolicyTrimCutset + "LeAf_ChIlD_OnLy" + externalPRCompletionPolicyTrimCutset,
+	})
+	if err != nil {
+		t.Fatalf("marshal normalized leaf metadata: %v", err)
+	}
 	cases := []struct {
 		name     string
 		metadata string
 		wantDone bool
 	}{
 		{name: "absent", metadata: `{}`, wantDone: true},
-		{name: "normalized leaf", metadata: `{"external_pr_completion_policy":"\tLeAf_ChIlD_OnLy\n"}`, wantDone: true},
+		{name: "normalized complete ASCII cutset", metadata: string(normalizedLeafMetadata), wantDone: true},
 		{name: "record only", metadata: `{"external_pr_completion_policy":"record_only"}`},
 		{name: "unknown", metadata: `{"external_pr_completion_policy":"future_policy"}`},
+		{name: "letter-v bounded unknown", metadata: `{"external_pr_completion_policy":"vleaf_child_onlyv"}`},
 		{name: "json null", metadata: `{"external_pr_completion_policy":null}`},
 		{name: "boolean", metadata: `{"external_pr_completion_policy":true}`},
 	}
