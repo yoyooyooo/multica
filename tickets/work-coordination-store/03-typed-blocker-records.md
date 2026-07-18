@@ -253,7 +253,7 @@ multica coordination blocker resolve --scope <uuid> --blocker <uuid> --resolutio
 
 ## Deletion guard增量
 
-Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；单删、BatchDeleteIssues、Workspace删除使用冲突session lock并持有到实际entity DB delete完成/失败。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
+Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；三类delete复用V1 concrete handles与Batch savepoint语义，session lock由at-most-once `Finish(commit bool)`在commit/rollback后verified unlock并release/discard；只有commit且`Finish`完整成功后才执行typed effects，effects期间绝不持session lock。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
@@ -266,11 +266,11 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 7. list stable pagination：100上限、created_at+id tie、revision/status-bound cursor无重漏；翻页间mutation稳定`coordination_revision_conflict`；open第1000条可写，第1001条返回`coordination_capacity_exceeded`且零写入；
 8. member/task root+endpoint authority、伪造身份和run-only task拒绝；
 9. API/CLI exact request与mutation/list response golden fixtures：open/resolved/nullability、member/agent provenance、UTC timestamp、empty refs/cursor、changed/no-op/replay及saved-vs-current revision；
-10. Append分别与单删、BatchDeleteIssues、Workspace删真实并发race，无新orphan；guard覆盖record字段与create/resolution refs，拒绝时cache/task/Autopilot/event零变化；
+10. Append分别与单删、BatchDeleteIssues、Workspace删真实并发race，无新orphan；guard覆盖record字段与create/resolution refs，拒绝时cache/task/Autopilot/event零变化；Batch覆盖savepoint partial-success，且`40001`、`40P01`、connection/protocol/context cancellation/unknown tx state及savepoint create/rollback/release失败均整批Abort；
 11. Issue status/assignee/comment/metadata/task/Autopilot计数不变；
 12. Skill/source map/fork narrative只声明V1-V3。
 
-Focused Go命令必须从`server` module执行：
+从repository root执行以下gate（括号内Go命令进入`server` module）：
 
 ```bash
 set -euo pipefail

@@ -10,10 +10,10 @@
 
 ## Why separate
 
-V1-V5只为并发安全guard做窄orchestration seam：guard后的必需pre-delete task/Autopilot DB mutation与entity delete共享qtx，commit明确成功后先verified unlock/release-or-discard，再调用现有cache/S3/metrics/reconciliation/event seams。由于当前event/storage adapter不统一返回context/error，首期只承诺best-effort调用尝试，不生成typed retry debt，也不提供archive policy或durable outbox恢复。Future实现前必须选择并证明：
+V1-V5只为并发安全guard做窄orchestration seam：Acquire pinned session lock→begin qtx/UUID row locks/Store guard→同qtx task-token-Autopilot-Workspace dependent DB cleanup→final entity delete→at-most-once `Finish(commit bool)`以独立bounded cleanup context完成commit/rollback、verified unlock及release/discard→仅当commit结果明确成功且`Finish`完整成功后执行immutable typed effects；effects期间绝不持session lock且不得静默截断，失败只走既有error/log/operator debt。当前event/storage adapter不统一返回context/error；首波只验证调用尝试，不声明effects成功、cardinality、内存、时延或可靠恢复上界，规模化删除能力为`not_claimed`。V1-V5仍不删除Store facts，也不提供archive policy、delete receipt或额外投递/修复机制。Future实现前必须选择并证明：
 
 - 保持guard，先显式archive/retire facts再允许delete；或
-- 在V1 seam上加入Store cleanup，使cleanup、Issue/Workspace row delete与durable outbox/effect rows在同一qtx原子提交，并为外部effects新增effect ID、context-aware adapters与reconciler recovery。
+- 在V1 seam上加入Store cleanup，使cleanup与Issue/Workspace row delete共享qtx；若future声明外部effects可靠恢复，则durable outbox/effect rows也必须在该qtx中原子写入，并冻结effect ID、claim/retry/fencing、context-aware adapter error contract、reconciler recovery及commit outcome unknown处置。Post-commit enqueue不能满足该合同，且不得把外部effect本身纳入DB atomicity claim。
 
 不得把`CleanupIssueReferences(qtx)`插入现有中段后声称“整体原子”。Future若选择cleanup，必须另行设计完整retention、orchestration与外部副作用恢复合同。
 
@@ -35,7 +35,7 @@ V1-V5只为并发安全guard做窄orchestration seam：guard后的必需pre-dele
 
 - active scope仍被guard；archived scope按明确policy允许或拒绝delete；
 - cleanup success/failure、issue delete failure、DB rollback均无orphan/半清理；
-- 若外部副作用存在，证明只在commit后且不会持有V1 session lock；若声明可靠恢复，则证明outbox/effect row与cleanup/entity mutation同qtx原子commit，再以effect ID和幂等reconcile完成投递，不把外部effect本身纳入DB atomicity claim；
+- 若外部副作用存在，证明只在commit结果明确成功且`Finish`完整成功后执行并且不持V1 session lock；若声明可靠恢复，则证明outbox/effect row与cleanup/entity mutation同qtx原子commit，再以effect ID和幂等reconcile完成投递，不把外部effect本身纳入DB atomicity claim；
 - receipts/evidence不会因普通delete或application rollback被清空；receipt history/reference本身不作为独立删除阻塞，retention/archive preflight按显式policy保存或迁移它，删除后的replay因current authority/resource mismatch而fail closed；
 - concurrent retire/delete/CAS最多一个合法结果；
 - Workspace teardown同样有exact policy与测试；
