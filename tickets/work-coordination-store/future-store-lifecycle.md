@@ -10,7 +10,7 @@
 
 ## Why separate
 
-V1-V5只为并发安全guard做窄orchestration seam：guard后的必需pre-delete task/token/Autopilot/Workspace DB mutation与entity delete共享qtx；commit/rollback后`Finish`先verified unlock/release，只有成功Finish后才运行不可回滚cache/S3/metrics/reconciliation/event effects并沿既有路径记录operator debt。V1-V5仍不删除Store facts、不提供archive policy、outbox或可靠投递/自动修复。Future实现前必须选择并证明：
+V1-V5只为并发安全guard做窄orchestration seam：guard后的必需pre-delete task/Autopilot DB mutation与entity delete共享qtx，不可回滚cache/S3/metrics/reconciliation/event移到commit后并仅记录retry debt；它仍不删除Store facts、不提供archive policy或durable outbox恢复。Future实现前必须选择并证明：
 
 - 保持guard，先显式archive/retire facts再允许delete；或
 - 在V1 seam上加入Store cleanup，使cleanup与Issue/Workspace row delete共享qtx，并把post-commit debt升级为durable outbox/reconciler recovery。

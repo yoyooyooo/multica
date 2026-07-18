@@ -253,7 +253,7 @@ multica coordination blocker resolve --scope <uuid> --blocker <uuid> --resolutio
 
 ## Deletion guard增量
 
-Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；三类delete复用V1 concrete handles与Batch语义，session lock只持有到commit/rollback后verified unlock/release，成功`Finish`后才执行effects。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
+Issue若出现在record root/downstream/upstream或`coordination_record_issue_ref.issue_id`中，session-lock-held guard返回`coordination_delete_blocked`；optional `dependency_id`只允许指向独立`coordination_dependency`，V3不得产生悬空relation。Workspace存在任何record/ref也被guard。Append/resolve使用统一xact lock；单删、BatchDeleteIssues、Workspace删除使用冲突session lock并持有到实际entity DB delete完成/失败。V3不删除或改写record/ref，不实现cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
@@ -270,16 +270,17 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 11. Issue status/assignee/comment/metadata/task/Autopilot计数不变；
 12. Skill/source map/fork narrative只声明V1-V3。
 
-从repository root执行以下gate；机械脚本及括号内Go命令进入`server` module：
+Focused Go命令必须从`server` module执行：
 
 ```bash
 set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
-./scripts/verify-work-coordination-db-tests.sh
+./scripts/test-work-coordination-db-required.sh
 (
   cd server
+  export WORK_COORDINATION_DB_REQUIRED=1
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -288,7 +289,7 @@ make test
 git diff --check
 ```
 
-`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V3 gate失败；`git diff --check`不能替代。DB-required机械语义只引用V1冻结的`./scripts/verify-work-coordination-db-tests.sh`；它必须证明四个owning package均有matching test实际run+pass，并使DB不可用、skip、零匹配或`Skipping tests:` non-zero。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V3 gate失败；`git diff --check`不能替代。DB-required harness扩充V3 manifest：DB不可用、任何skip或任一required package缺`TestWorkCoordination*` pass evidence都必须non-zero。
 
 ## Non-goals
 
