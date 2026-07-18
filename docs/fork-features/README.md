@@ -18,6 +18,7 @@ A source change is not considered complete in this fork until its feature narrat
 
 | Feature | Status | Portability |
 |---|---|---|
-| [Daemon task receipt](daemon-task-receipt/README.md) | source PR in progress | general upstream candidate |
+| [Daemon task receipt](daemon-task-receipt/README.md) | deployed and live-proven on mini | general upstream candidate |
+| [External PR record-only completion](external-pr-record-only-completion/README.md) | source PR in progress | general upstream candidate |
 
 The historical fork-feature inventory and documentation backfill is tracked by Multica issue `MINI-695`.

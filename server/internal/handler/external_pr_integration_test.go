@@ -73,6 +73,36 @@ func TestCompleteIssueFromExternalPRGuardMatrix(t *testing.T) {
 		t.Fatalf("open-pr outcome = %#v, want skipped/open_pr_exists", got)
 	}
 	assertIssueStatus(t, blocked, "todo")
+
+	parentForUnknownPolicy := createExternalPRTestIssue(t, "external-pr unknown-policy parent", "todo", "", nil)
+	unknownPolicy := createExternalPRTestIssue(t, "external-pr unknown-policy child", "todo", parentForUnknownPolicy, int32Ptr(1))
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = jsonb_build_object('external_pr_completion_policy', 'future_policy')
+WHERE id=$1
+`, unknownPolicy); err != nil {
+		t.Fatalf("set unknown completion policy: %v", err)
+	}
+	got = testHandler.completeLeafChildIssueFromExternalPR(httptest.NewRequest(http.MethodPost, "/", nil), externalPRCompletionReq(workspaceID, unknownPolicy, 1007))
+	if got.Outcome != "skipped" || got.Reason != "completion_policy_unsupported" {
+		t.Fatalf("unknown-policy outcome = %#v, want skipped/completion_policy_unsupported", got)
+	}
+	assertIssueStatus(t, unknownPolicy, "todo")
+
+	parentForNonStringPolicy := createExternalPRTestIssue(t, "external-pr non-string-policy parent", "todo", "", nil)
+	nonStringPolicy := createExternalPRTestIssue(t, "external-pr non-string-policy child", "todo", parentForNonStringPolicy, int32Ptr(1))
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = jsonb_build_object('external_pr_completion_policy', true)
+WHERE id=$1
+`, nonStringPolicy); err != nil {
+		t.Fatalf("set non-string completion policy: %v", err)
+	}
+	got = testHandler.completeLeafChildIssueFromExternalPR(httptest.NewRequest(http.MethodPost, "/", nil), externalPRCompletionReq(workspaceID, nonStringPolicy, 1008))
+	if got.Outcome != "skipped" || got.Reason != "completion_policy_unsupported" {
+		t.Fatalf("non-string-policy outcome = %#v, want skipped/completion_policy_unsupported", got)
+	}
+	assertIssueStatus(t, nonStringPolicy, "todo")
 }
 
 func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T) {
@@ -106,6 +136,72 @@ func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T)
 	}
 	if systemComments == 0 {
 		t.Fatalf("expected parent child-done system comment")
+	}
+}
+
+func TestCompleteIssueFromExternalPRRecordOnlyKeepsLeafAndStageActive(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "test-external-pr-token")
+	parent := createExternalPRTestIssue(t, "external-pr record-only parent", "todo", "", nil)
+	child := createExternalPRTestIssue(t, "external-pr record-only child", "in_progress", parent, int32Ptr(1))
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = jsonb_build_object('external_pr_completion_policy', ' ReCoRd_OnLy ')
+WHERE id=$1
+`, child); err != nil {
+		t.Fatalf("set record-only completion policy: %v", err)
+	}
+
+	reqBody := externalPRCompletionReq(testWorkspaceID, child, 1006)
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", reqBody)
+	req.Header.Set("Authorization", "Bearer test-external-pr-token")
+	rr := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got externalCompleteFromPRResponse
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode completion response: %v", err)
+	}
+	if got.Outcome != "skipped" || got.Reason != "completion_policy_record_only" || got.IssueID != child {
+		t.Fatalf("record-only outcome = %#v, want skipped/completion_policy_record_only for child", got)
+	}
+	assertIssueStatus(t, child, "in_progress")
+
+	var linkState string
+	var completionIntent bool
+	if err := testPool.QueryRow(ctx, `
+SELECT state, completion_intent
+FROM external_pull_request_link
+WHERE workspace_id=$1 AND issue_id=$2 AND external_number=$3
+`, testWorkspaceID, child, int32(1006)).Scan(&linkState, &completionIntent); err != nil {
+		t.Fatalf("read merged record-only PR link: %v", err)
+	}
+	if linkState != "merged" || !completionIntent {
+		t.Fatalf("record-only PR link = state %q completion_intent %v, want merged/true", linkState, completionIntent)
+	}
+
+	var parentSystemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system' AND type='system'`, parent).Scan(&parentSystemComments); err != nil {
+		t.Fatalf("count record-only parent system comments: %v", err)
+	}
+	if parentSystemComments != 0 {
+		t.Fatalf("record-only merge emitted %d parent Stage comments, want 0", parentSystemComments)
+	}
+
+	for action, want := range map[string]int{
+		"external_pr_linked":             1,
+		"external_pr_merged":             1,
+		"issue_completed_by_external_pr": 0,
+	} {
+		var count int
+		if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action=$2 AND actor_type='system'`, child, action).Scan(&count); err != nil {
+			t.Fatalf("count record-only activity %s: %v", action, err)
+		}
+		if count != want {
+			t.Fatalf("record-only activity %s count = %d, want %d", action, count, want)
+		}
 	}
 }
 
