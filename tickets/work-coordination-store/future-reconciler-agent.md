@@ -54,7 +54,7 @@ MINI-570永久`assisted transition dogfood`。只有passive Store、reconciliati
 
 ## Run contract
 
-每个actionable run验证immutable authority snapshot与current revision/generation；读取goal versions、Store/Issue/task facts；区分facts/evidence/projection/candidate；通过typed intents做最小收敛动作；保留独立roles/human gates；same intent复用same key；stale/lease-lost立即停止并重新preflight；只提出typed evidence/handoff proposal。Claim-limit不得由run直接修改；任何变更必须经过显式human approval，创建新的versioned goal-contract version并保存绑定该approval与exact version的receipt。非actionable no-op；禁止raw provider/comment prompt/metadata双写/credential直连绕过kernel。
+每个actionable run验证immutable authority snapshot与current revision/generation；读取goal versions、Store/Issue/task facts；区分facts/evidence/projection/candidate；通过typed intents做最小收敛动作；保留独立roles/human gates；same intent复用same idempotency key，且只有同key + 同canonical hash + 同actor + 同task binding才replay，actor/task mismatch与hash mismatch均返回typed conflict；stale/lease-lost立即停止并重新preflight；只提出绑定exact goal-contract version、scope/task/object identity与expected revision的typed evidence/handoff proposal。Claim-limit不得由run直接修改；任何变更必须经过显式human approval，以expected previous version执行CAS并创建新goal-contract version；versioned server receipt必须绑定该human approval，包含exact previous/updated versions及expected CAS increment（成功时updated version恰为previous version + 1），任一不匹配或stale/superseded approval/update receipt均拒绝。非actionable no-op；禁止raw provider/comment prompt/metadata双写/credential直连绕过kernel。
 
 ## Permanent human gates
 
@@ -62,7 +62,7 @@ objective/acceptance/claim-limit/authority、credential/admin、不可逆migrati
 
 ## Tests / acceptance
 
-shadow对账；single wake/active suppression/grace/cooldown/second tick；envelope内graph mutation与越界needs-human；fresh critic single-agent/no-subagent、fresh durable maintainer、独立operator未被绕过；restart/stale receipt/dynamic blocker恢复；event/fallback；no revision无GPT；retire不越权；program隔离；typed evidence/handoff proposal由owner接受；claim-limit直接mutation拒绝及human-approved versioned update receipt；manual takeover。
+shadow对账；single wake/active suppression/grace/cooldown/second tick；envelope内graph mutation与越界needs-human；fresh critic single-agent/no-subagent、fresh durable maintainer、独立operator未被绕过；restart/stale receipt/dynamic blocker恢复；event/fallback；no revision无GPT；retire不越权；program隔离；typed evidence/handoff proposal由owner以相同bindings和CAS接受；claim-limit直接mutation拒绝，以及绑定human approval、exact previous/updated versions和expected CAS increment的versioned update receipt；manual takeover。
 
 实现必须fresh writer、focused/full、fresh review、exact-head CI、主验收；Agent Kit/runtime apply另需明确approval与live canary。
 
