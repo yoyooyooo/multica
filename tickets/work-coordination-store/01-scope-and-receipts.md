@@ -34,7 +34,7 @@
 | `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
 | `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
 | `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
-| creation provenance | `created_by_type TEXT NOT NULL CHECK member|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
+| creation provenance | `created_by_type TEXT NOT NULL CHECK member\|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
 
 约束/index：
 
@@ -62,7 +62,7 @@
 | `resource_id` | `UUID NOT NULL` |
 | `revision_before` / `revision_after` | `BIGINT NOT NULL`，均非负且`after >= before` |
 | `result_snapshot` | `JSONB NOT NULL`，CHECK object且UTF-8 text form不超过16KiB；只存server-shaped saved result，不存raw request |
-| `actor_type` | `TEXT NOT NULL`，CHECK `member|agent` |
+| `actor_type` | `TEXT NOT NULL`，CHECK `member\|agent` |
 | `actor_id` | `UUID NOT NULL` |
 | `actor_task_id` | `UUID NULL`；CHECK member→NULL、agent→NOT NULL |
 | `created_at` | `TIMESTAMPTZ NOT NULL`，由server在insert时取`clock_timestamp()`，客户端不可提供 |
@@ -90,7 +90,7 @@ Named indexes/constraints：`id` PK；`(workspace_id,idempotency_key)`唯一；`
 - 统一workspace coordination advisory xact lock，namespace/key算法在V1冻结，V2-V5及删除路径必须复用；
 - workspace-scoped actual-root parent-chain validation query；
 - get/insert receipt与saved result；持scope row lock原子allocate/increment `next_receipt_ordinal`；按scope+ordinal读取receipt page；
-- deletion guard：scope root、receipt scope/resource对Issue的引用，以及workspace是否存在任何scope/receipt。
+- deletion guard：scope root，以及workspace是否存在任何scope；receipt history本身不构成Issue或Workspace删除阻塞。
 
 所有lookup显式带`workspace_id`，不能只按UUID。
 
@@ -183,7 +183,7 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 
 - 单Issue删除、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前取得dedicated connection及冲突的session-level workspace lock；guard与最终entity delete transaction使用该connection，release只发生在实际DB delete commit/rollback或失败之后。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
 - Batch先解析全部实际目标并确认单workspace，再按UUID byte order锁row并一次性guard；不得逐项check后释放lock。Workspace删除不得先移除membership或invalidate cache。
-- Guard在session lock持有期间检查scope root/receipt引用；拒绝返回`coordination_delete_blocked`并保证cache/task/Autopilot/event零变化。Ensure在冲突xact lock内复核Workspace/root仍存在。
+- Guard在session lock持有期间检查scope root；receipt reference本身不触发`coordination_delete_blocked`。Scope guard拒绝时保证cache/task/Autopilot/event零变化。Ensure在冲突xact lock内复核Workspace/root仍存在。
 - `defer`必须在同一session显式unlock并验证成功；panic/crash/connection close依赖PostgreSQL自动释放。测试包含unlock失败/connection close的pool污染保护。
 
 该合同只声明guard rejection零副作用，以及Store refs/Issue/Workspace DB rows不会因并发TOCTOU形成**新**orphan。Guard通过后既有delete流程若在实际entity delete前后失败，可能留下task/Autopilot/event债；第一波不声称这些外部副作用随DB rollback恢复。

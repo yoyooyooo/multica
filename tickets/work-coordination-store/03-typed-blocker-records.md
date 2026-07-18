@@ -25,10 +25,15 @@
 
 | Columns | Exact contract |
 | --- | --- |
-| `id` / tenant | `id UUID NOT NULL`、`workspace_id UUID NOT NULL`、`coordination_scope_id UUID NOT NULL`；无FK |
-| type/version/state | `kind TEXT NOT NULL CHECK kind='blocker'`；`schema_version INTEGER NOT NULL CHECK =1`；`status TEXT NOT NULL CHECK open|resolved` |
-| issue refs | `root_issue_id`、`downstream_issue_id`、`upstream_issue_id`均`UUID NOT NULL`；`dependency_id UUID NULL`；均无FK |
-| typed codes | `reason_code TEXT NOT NULL CHECK waiting_on_issue`；`resolution_code TEXT NULL CHECK no_longer_blocking|superseded` |
+| `id` | `UUID NOT NULL`；opaque identity，无FK |
+| `workspace_id` | `UUID NOT NULL`；tenant key，无FK |
+| `coordination_scope_id` | `UUID NOT NULL`；soft scope ref，无FK |
+| type/version/state | `kind TEXT NOT NULL CHECK kind='blocker'`；`schema_version INTEGER NOT NULL CHECK =1`；`status TEXT NOT NULL CHECK open\|resolved` |
+| `root_issue_id` | `UUID NOT NULL`；无FK |
+| `downstream_issue_id` | `UUID NOT NULL`；无FK |
+| `upstream_issue_id` | `UUID NOT NULL`；无FK |
+| `dependency_id` | `UUID NULL`；该组identity/issue/dependency UUID中唯一nullable列，无FK |
+| typed codes | `reason_code TEXT NOT NULL CHECK waiting_on_issue`；`resolution_code TEXT NULL CHECK no_longer_blocking\|superseded` |
 | create provenance | `created_by_type TEXT NOT NULL`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL`；member/agent task规则同receipt |
 | resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；open时全NULL，resolved时code/type/id/time必填且task按actor type成组CHECK |
 
@@ -40,7 +45,7 @@ Evidence refs不塞进JSONB。新增soft relation table `coordination_record_iss
 | `workspace_id UUID NOT NULL` | tenant；无FK |
 | `coordination_scope_id UUID NOT NULL` | soft scope ref；无FK |
 | `record_id UUID NOT NULL` | soft record ref；无FK |
-| `phase TEXT NOT NULL` | `create|resolution` |
+| `phase TEXT NOT NULL` | `create\|resolution` |
 | `issue_id UUID NOT NULL` | typed internal issue ref；无FK |
 | `position INTEGER NOT NULL` | 0-31，保留canonical response order |
 | `created_at TIMESTAMPTZ NOT NULL` | server `clock_timestamp()`；客户端不可提供 |
