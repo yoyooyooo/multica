@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -103,6 +105,51 @@ WHERE id=$1
 		t.Fatalf("non-string-policy outcome = %#v, want skipped/completion_policy_unsupported", got)
 	}
 	assertIssueStatus(t, nonStringPolicy, "todo")
+}
+
+func TestCompleteExternalPRLeafStatusCompletionPolicyPredicate(t *testing.T) {
+	ctx := context.Background()
+	workspaceID, err := parseExternalPRUUID(testWorkspaceID)
+	if err != nil {
+		t.Fatalf("parse test workspace id: %v", err)
+	}
+	cases := []struct {
+		name     string
+		metadata string
+		wantDone bool
+	}{
+		{name: "absent", metadata: `{}`, wantDone: true},
+		{name: "normalized leaf", metadata: `{"external_pr_completion_policy":"\tLeAf_ChIlD_OnLy\n"}`, wantDone: true},
+		{name: "record only", metadata: `{"external_pr_completion_policy":"record_only"}`},
+		{name: "unknown", metadata: `{"external_pr_completion_policy":"future_policy"}`},
+		{name: "json null", metadata: `{"external_pr_completion_policy":null}`},
+		{name: "boolean", metadata: `{"external_pr_completion_policy":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := createExternalPRTestIssue(t, "external-pr predicate parent "+tc.name, "todo", "", nil)
+			child := createExternalPRTestIssue(t, "external-pr predicate child "+tc.name, "todo", parent, int32Ptr(1))
+			if _, err := testPool.Exec(ctx, `UPDATE issue SET metadata=$2::jsonb WHERE id=$1`, child, tc.metadata); err != nil {
+				t.Fatalf("set predicate metadata: %v", err)
+			}
+			issueID, err := parseExternalPRUUID(child)
+			if err != nil {
+				t.Fatalf("parse child issue id: %v", err)
+			}
+			_, err = testHandler.completeExternalPRLeafStatus(ctx, issueID, workspaceID)
+			if tc.wantDone {
+				if err != nil {
+					t.Fatalf("completeExternalPRLeafStatus() error = %v, want success", err)
+				}
+				assertIssueStatus(t, child, "done")
+				return
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("completeExternalPRLeafStatus() error = %v, want pgx.ErrNoRows", err)
+			}
+			assertIssueStatus(t, child, "todo")
+		})
+	}
 }
 
 func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T) {

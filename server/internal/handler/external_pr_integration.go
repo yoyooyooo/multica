@@ -338,6 +338,8 @@ WHERE NOT EXISTS (
 	}
 }
 
+const externalPRCompletionPolicyTrimCutset = " \t\n\r\v\f"
+
 func issueExternalPRCompletionPolicy(issue db.Issue) string {
 	raw, exists := parseIssueMetadata(issue.Metadata)["external_pr_completion_policy"]
 	if !exists {
@@ -347,7 +349,31 @@ func issueExternalPRCompletionPolicy(issue db.Issue) string {
 	if !ok {
 		return "unsupported"
 	}
-	return strings.ToLower(strings.TrimSpace(policy))
+	return strings.ToLower(strings.Trim(policy, externalPRCompletionPolicyTrimCutset))
+}
+
+// completeExternalPRLeafStatus repeats the completion-policy gate inside the
+// atomic status write. The JSON type check distinguishes an absent policy
+// (legacy auto-complete) from an existing JSON null/non-string value (blocked).
+// Its ASCII whitespace cutset exactly matches issueExternalPRCompletionPolicy.
+func (h *Handler) completeExternalPRLeafStatus(ctx context.Context, issueID, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	var updatedID pgtype.UUID
+	err := h.DB.QueryRow(ctx, `
+UPDATE issue SET status='done', updated_at=now()
+WHERE id=$1 AND workspace_id=$2
+  AND status NOT IN ('done','cancelled')
+  AND parent_issue_id IS NOT NULL
+  AND (
+    NOT (issue.metadata ? 'external_pr_completion_policy')
+    OR (
+      jsonb_typeof(issue.metadata->'external_pr_completion_policy') = 'string'
+      AND lower(btrim(issue.metadata->>'external_pr_completion_policy', E' \t\n\r\v\f')) IN ('', 'leaf_child_only')
+    )
+  )
+  AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
+  AND NOT EXISTS (SELECT 1 FROM external_pull_request_link pr WHERE pr.workspace_id=issue.workspace_id AND pr.issue_id=issue.id AND pr.link_confidence='authoritative' AND pr.completion_intent AND pr.state IN ('open','draft'))
+RETURNING id`, issueID, workspaceID).Scan(&updatedID)
+	return updatedID, err
 }
 
 func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req externalPullRequestLinkRequest) externalCompleteFromPRResponse {
@@ -405,16 +431,7 @@ func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req exte
 	if openPRs > 0 {
 		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "open_pr_exists", IssueID: req.IssueID}
 	}
-	var updatedID pgtype.UUID
-	if err := h.DB.QueryRow(ctx, `
-UPDATE issue SET status='done', updated_at=now()
-WHERE id=$1 AND workspace_id=$2
-  AND status NOT IN ('done','cancelled')
-  AND parent_issue_id IS NOT NULL
-  AND lower(btrim(COALESCE(issue.metadata->>'external_pr_completion_policy', ''))) IN ('', 'leaf_child_only')
-  AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
-  AND NOT EXISTS (SELECT 1 FROM external_pull_request_link pr WHERE pr.workspace_id=issue.workspace_id AND pr.issue_id=issue.id AND pr.link_confidence='authoritative' AND pr.completion_intent AND pr.state IN ('open','draft'))
-RETURNING id`, issueID, workspaceID).Scan(&updatedID); err != nil {
+	if _, err := h.completeExternalPRLeafStatus(ctx, issueID, workspaceID); err != nil {
 		if err == pgx.ErrNoRows {
 			return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "guard_not_satisfied", IssueID: req.IssueID}
 		}

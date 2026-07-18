@@ -24,9 +24,11 @@ Issue metadata gains a generic external PR completion policy:
 external_pr_completion_policy: leaf_child_only | record_only
 ```
 
+Policy strings are normalized with lowercase plus the explicit ASCII whitespace cutset `space/tab/newline/carriage-return/vertical-tab/form-feed` in both Go and SQL.
+
 - absent or `leaf_child_only`: retain existing authoritative leaf auto-completion;
 - `record_only`: persist external PR link, merge state, merged SHA, and system activity, but do not change Issue status;
-- any unknown non-empty value: fail closed and do not change status.
+- any unknown, JSON `null`, or non-string value: fail closed and do not change status.
 
 The callback returns a stable skipped reason for record-only or unsupported policies. It does not claim the Issue is complete.
 
@@ -37,11 +39,11 @@ The workflow that owns an extra terminal gate sets `record_only` before PR linka
 The handler performs two guards:
 
 1. a decoded metadata precheck returns a stable reason without attempting completion;
-2. the atomic `UPDATE issue ... SET status='done'` independently permits only absent or normalized `leaf_child_only` policy.
+2. the atomic `UPDATE issue ... SET status='done'` independently permits only an absent key or a JSON string normalized to empty / `leaf_child_only`.
 
-If policy changes to `record_only` or an unknown value between the precheck and update, the SQL predicate prevents completion. A concurrent removal after the precheck remains conservatively skipped for that callback and can be retried explicitly.
+If policy changes to `record_only`, an unknown string, JSON `null`, or another JSON type between the precheck and update, the SQL type/value predicate prevents completion. A concurrent removal after the precheck remains conservatively skipped for that callback and can be retried explicitly.
 
-Malformed metadata does not grant completion. Existing database constraints continue to require a small flat primitive metadata object.
+The public metadata handler accepts only a small flat primitive metadata object, while the SQL guard also defends against legacy rows or privileged/direct database writes containing JSON `null` or non-string values.
 
 ## Authority and security
 
