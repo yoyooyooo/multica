@@ -15,10 +15,10 @@
 - `server/internal/handler/coordination*.go`、`handler.go` wiring、`server/cmd/server/router.go`。
 - `server/cmd/multica/cmd_coordination.go`及tests；`server/internal/cli/client.go`、`errors.go`、顶层JSON error rendering所需的`main.go`/`help.go`最小seam及tests。
 - `server/internal/service/builtin_skills/multica-work-coordination/**`与embed/source-map tests。
-- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试：允许引入dedicated connection/session lock并让最终entity delete transaction使用该connection，但不实现Store cleanup，也不宣称既有外部副作用可rollback。
+- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试；`server/internal/service/task.go`与相关task/autopilot queries允许做窄拆分：delete-only的pre-delete DB cancellation/failure走qtx，metrics/agent reconciliation/cache/S3/event通知走post-commit finalizer。不得改变非delete调用方语义，不实现Store cleanup，也不宣称post-commit副作用可rollback。
 - `docs/fork-features/work-coordination-store/README.md`与registry，只声明V1事实。
 
-不得修改`001_init`、dependency业务、blocker、Autopilot、Stage、Issue status/assignee/comment、Agent Kit或UI。
+不得修改`001_init`、dependency业务、blocker、Autopilot产品策略、Stage、Issue status/assignee/comment语义、Agent Kit或UI；只允许把现有delete-only task cancellation/Autopilot failure DB动作改为qtx-bound phase并拆出post-commit finalizer。
 
 ## Schema contract
 
@@ -106,7 +106,9 @@ AcquireIssueDeletionGuard(ctx, actor, workspaceID, issueIDs[]) -> DeletionGuardH
 AcquireWorkspaceDeletionGuard(ctx, actor, workspaceID) -> DeletionGuardHandle
 ```
 
-Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service取得并独占pinned `*pgxpool.Conn`，在Acquire期间已取得session advisory lock、开始`pgx.Tx`、按UUID锁定entity rows并通过同一qtx执行Store guard。Handle只暴露transaction-bound typed delete operations（内部`db.New(qtx)`）与`Finish(commit|rollback)`；handler不得取得raw pool fallback、不得另开transaction执行entity delete，也不得在delete完成/失败前Finish。
+Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service取得并独占pinned `*pgxpool.Conn`，在Acquire期间已取得session advisory lock、开始`pgx.Tx`、按UUID锁定entity rows并通过同一qtx执行Store guard。Handle只暴露transaction-bound typed pre-delete operations与final entity delete（内部`db.New(qtx)`）、`CommitDB`、`Abort`和`ReleaseAfterPostCommit`；handler不得取得raw pool fallback或另开transaction。
+
+Issue pre-delete qtx operation必须返回bounded post-commit payload（cancelled task rows/agent IDs、预先解析的metrics context、safe event IDs、attachment refs等）：qtx内执行`CancelAgentTasksByIssue`及必须的token cleanup、`FailAutopilotRunsByIssue`、attachment read与final Issue delete；commit后finalizer再做metrics、agent reconciliation、cache/S3 cleanup及task/Issue events。Workspace使用同一phase model。`CommitDB`只commit且保留session lock；`Abort`执行rollback→unlock/connection cleanup；成功commit后的bounded finalizer无论成功或记录失败债务，最终都调用`ReleaseAfterPostCommit`验证unlock并release/discard。
 
 ### `CoordinationActor`
 
@@ -183,10 +185,11 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 
 - 单Issue、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前Acquire handle：pool acquire pinned `*pgxpool.Conn`→session advisory lock→同connection `pgx.Tx`→entity rows按UUID byte order锁定→同qtx Store guard。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
 - Batch先解析全部实际目标并确认单workspace，再在一个qtx内锁定全部实际rows并一次性guard；不得逐项check后释放transaction/session lock。Workspace现有workspace row与chat-session locks必须并入handle qtx，且不得先移除membership或invalidate cache。
-- Guard在该qtx内检查scope root；receipt reference本身不触发`coordination_delete_blocked`。拒绝时handle rollback后再unlock，保证cache/task/Autopilot/event零变化。通过后既有副作用可执行，但最终Issue/Workspace DB delete只能经handle的同一qtx；锁持续到其commit/rollback。
-- `Finish`顺序固定为qtx commit/rollback→同session advisory unlock→connection release。Unlock返回false/error、qtx状态不明或connection异常时调用pgxpool `Hijack`并close/discard，绝不归还pool；panic defer必须走rollback/cleanup，process crash/connection close依赖PostgreSQL自动释放。
+- Guard在该qtx内检查scope root；receipt reference本身不触发`coordination_delete_blocked`。拒绝时`Abort` rollback后再unlock，保证task/Autopilot DB mutation及cache/S3/metrics/reconciliation/event均为零。
+- Guard通过后，必须pre-delete的task/Autopilot DB mutation与final Issue/Workspace delete在同一qtx；任一步失败整体rollback。Commit成功后才执行bounded post-commit finalizer；其失败不能回滚entity delete，必须记录typed retry/debt evidence并继续安全释放session lock。
+- Lifecycle顺序固定：Acquire/guard→qtx pre-delete DB mutations→qtx entity delete→`CommitDB`→post-commit finalizer→`ReleaseAfterPostCommit` unlock/release。Abort为rollback→unlock/release。Unlock返回false/error、qtx状态不明或connection异常时调用pgxpool `Hijack`并close/discard；panic defer走Abort或commit后的release，process crash/connection close依赖PostgreSQL自动释放。
 
-该合同只声明guard rejection零副作用，以及Store refs/Issue/Workspace DB rows不会因并发TOCTOU形成**新**orphan。Guard通过后既有delete流程若在实际entity delete前后失败，可能留下task/Autopilot/event债；第一波不声称这些外部副作用随DB rollback恢复。
+该合同只声明guard rejection零副作用、qtx rollback回滚pre-delete DB mutation，以及Store refs/Issue/Workspace DB rows不会产生新orphan。Commit后的cache/S3/metrics/reconciliation/event失败属于显式可重试债务；第一波不声称它们与DB原子或可rollback。
 
 ## Acceptance / tests
 
@@ -203,13 +206,15 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 9. before/after Issue status/assignee/comment/task/Autopilot计数不变；
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
 11. Ensure分别与单删、BatchDeleteIssues、Workspace删的真实并发race：要么Store写成功且delete被guard，要么delete提交且Store写因entity不存在而失败；不得产生新orphan；
-12. guard触发时cache/task/Autopilot/event均未变化；测试证明pinned `*pgxpool.Conn`、session lock、entity row locks、Store guard和最终delete共用一个持续qtx，Workspace既有row/chat locks也在该qtx；`Finish`严格commit/rollback后unlock，unlock/connection失败会Hijack+discard；guard通过后的delete failure不虚构task/Autopilot/event rollback；
-13. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
-14. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
+12. guard触发时task/Autopilot DB与cache/S3/metrics/reconciliation/event均未变化；测试证明pinned connection、session lock、entity row locks、guard、pre-delete task/token/Autopilot DB operations、Workspace既有row/chat locks及final delete共用一个qtx；任一步失败全部rollback；
+13. success顺序严格为qtx commit→post-commit metrics/reconciliation/cache/S3/events→verified unlock/release；finalizer失败记录typed debt且仍安全release，不虚构DB rollback；unlock/connection失败Hijack+discard；
+14. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
+15. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
 
 Focused Go命令必须从`server` module执行：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"

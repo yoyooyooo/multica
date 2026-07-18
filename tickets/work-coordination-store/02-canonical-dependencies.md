@@ -173,6 +173,7 @@ Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有
 Focused Go命令必须从`server` module执行：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"

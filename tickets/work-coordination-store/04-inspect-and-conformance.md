@@ -104,7 +104,7 @@ Flow前后对root/B/C逐项exact比较：
 
 ### Deletion guard conformance
 
-对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在dedicated connection持有session lock期间guard，并在任何cache/task/Autopilot/event前返回`coordination_delete_blocked`。Receipt history/reference单独存在时不得触发删除阻塞；删除后旧receipt replay必须因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、session lock持有到实际entity delete结束、connection close释放。无受guard保护Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
+对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除。Guard拒绝发生在任何task/Autopilot DB mutation或cache/S3/metrics/reconciliation/event前，qtx rollback后再unlock；receipt history/reference单独存在时不阻塞删除，旧receipt replay因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete证明无新orphan。无受guard保护引用的成功删除还须验证：同qtx pre-delete task/token/Autopilot DB mutations→entity delete→commit；commit后bounded finalizer执行metrics/reconciliation/cache/S3/events；最后verified unlock/release。对qtx各失败点证明整体rollback和零外部副作用；对finalizer失败记录typed retry debt且不虚构DB rollback。
 
 ## Built-in skill / source map 收口
 
@@ -139,6 +139,7 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 Focused Go命令必须从`server` module执行：
 
 ```bash
+set -euo pipefail
 make sqlc
 git diff --exit-code -- server/pkg/db/generated
 test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
