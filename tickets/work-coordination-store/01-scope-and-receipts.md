@@ -218,7 +218,7 @@ multica coordination scope get (--scope <uuid> | --root <issue-ref> --workflow-p
 
 新增可`errors.As`/unwrap的`cli.ProductError`，仅在coordination endpoint响应同时满足JSON content type、strict known envelope和README status/code mapping时建立；它保存safe envelope与HTTP status，不保存raw body。README列出的全部五个coordination 409 code均映射exit 6；legacy/string/unknown-envelope/status-mismatch 409继续现有safe fallback与exit 1，禁止全局改写409语义。
 
-Coordination默认JSON。顶层在Cobra parse前扫描`coordination`后的完整argv，支持`--output json|table`和`--output=json|table`，覆盖nested subcommand前后Cobra接受的位置并尊重`--`。只允许一个output flag；missing/empty/invalid、同值重复或json/table冲突均零HTTP请求返回`coordination_invalid_payload`/exit 5并用默认JSON renderer。恰有一个有效`table`才输出safe prose；其余失败stdout为空、stderr恰一个stable envelope JSON value（允许末尾换行），`--debug`也不得追加prose/stack/raw body。顶层execute helper与子进程测试逐一覆盖五个409 code、legacy fallback、两种flag语法/位置、重复/冲突/非法值、parse error、零请求validation以及exit 1/3/4/5/6。
+Coordination默认JSON。顶层在Cobra parse前扫描`coordination`后的完整argv，支持`--output json|table`和`--output=json|table`，覆盖nested subcommand前后Cobra接受的位置并尊重`--`。只允许一个output flag；missing value/empty value/invalid value/duplicate/conflicting values均零HTTP请求返回`coordination_invalid_payload`/exit 5并用默认JSON renderer。恰有一个有效`table`才输出safe prose；其余失败stdout为空、stderr恰一个stable envelope JSON value（允许末尾换行），`--debug`也不得追加prose/stack/raw body。顶层execute helper与子进程测试逐一覆盖五个409 code、legacy fallback、两种flag语法/位置、重复/冲突/非法值、parse error、零请求validation以及exit 1/3/4/5/6。
 
 初版`multica-work-coordination` built-in skill只介绍scope ensure/get、idempotency、server identity、passive/未提供dependency等claim limit。Supporting source map引用实施后的真实symbol/route/migration，不能把ticket预期路径当证据。
 
@@ -227,7 +227,7 @@ Coordination默认JSON。顶层在Cobra parse前扫描`coordination`后的完整
 V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)，不删除Store rows。
 
 - 单Issue、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前Acquire handle：pool acquire pinned `*pgxpool.Conn`→session advisory lock→同connection `pgx.Tx`→entity rows按UUID byte order锁定→同qtx Store guard。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
-- Batch body维持现有shape；其ID列表解析冻结为：非法UUID、missing或foreign-workspace ID维持既有skip/no-leak语义；合法UUID先去重再按raw UUID bytes排序。取得session lock/qtx后才解析并锁定仍存在的实际target set，一次性guard并all-or-nothing删除；任一actual target的dependent DB cleanup/final delete失败则整批rollback，不保留旧逐项partial commit，也不使用per-target savepoint。`deleted`固定为成功commit的unique actual target数；duplicate不重复计数，零actual target返回200/`deleted:0`。Workspace现有workspace row与chat-session locks必须并入handle Acquire qtx，且不得先移除membership或invalidate cache。
+- Batch body维持现有shape；其ID列表解析冻结为：非法UUID、missing或foreign-workspace ID维持既有skip/no-leak语义；合法UUID先去重再按raw UUID bytes排序。取得session lock/qtx后才解析并锁定仍存在的实际target set，一次性guard并all-or-nothing删除；任一actual target的dependent DB cleanup/final delete失败则整批rollback，不保留旧逐项partial commit，也不使用per-target savepoint。`deleted`固定为实际成功提交删除的unique actual target数量；duplicate不重复计数，零actual target返回200/`deleted:0`。Workspace现有workspace row与chat-session locks必须并入handle Acquire qtx，且不得先移除membership或invalidate cache。
 - Guard在该qtx内检查scope root；receipt reference本身不触发`coordination_delete_blocked`。拒绝时`Abort` rollback后再unlock，保证task/Autopilot DB mutation及cache/S3/metrics/reconciliation/event均为零。
 - Guard通过后，必须pre-delete的task/Autopilot DB mutation与final Issue/Workspace delete在同一qtx；任一步失败整体rollback。`40001`/`40P01`在statement或commit阶段均整批失败，不continue、不自动retry、不运行effects；commit outcome unknown同样不自动retry/finalize并discard connection。
 - Lifecycle顺序固定：Acquire/guard→qtx pre-delete DB mutations→qtx entity delete→`CommitDB`明确成功→`ReleaseAfterCommit` verified unlock/release-or-discard→post-release best-effort metrics/reconciliation/cache/S3/events。Abort为rollback→unlock/release-or-discard。Unlock false/error、qtx/commit状态不明或connection异常时调用pgxpool `Hijack`并close/discard；panic defer走Abort或commit后的release，process crash/connection close依赖PostgreSQL自动释放。
@@ -244,7 +244,7 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 4. actual-root validation：child正常；missing/cross-workspace parent不泄露foreign详情；cycle与第257 hop fail closed；
 5. member与合法issue-bound task；普通PAT/JWT伪造agent/task headers不能提升authority；无issue task拒绝；middleware auth后、workspace lock前删除/过期presented token row必须失败，同task另一有效token不能替代；credential ref不进wire/hash/log；
 6. API unknown/identity fields、trailing JSON、tenant边界和safe errors；POST/GET exact DTO golden、UTC time、int64、201/200；result snapshot只含ScopeDTO，replay从原row重建receipt且无key/hash/raw request；
-7. CLI exact request、zero-request validation；五个coordination 409逐code strict ProductError/exit 6与legacy/status-mismatch 409 exit 1；`--output json`/`--output=json`、table、nested位置、`--`、missing/invalid/duplicate/conflict矩阵；JSON failure stdout空/stderr单value，debug无prose，top-level exit 1/3/4/5/6；
+7. CLI exact request、zero-request validation；五个coordination 409逐code strict ProductError/exit 6与legacy/status-mismatch 409 exit 1；`--output json`/`--output=json`、table、nested位置、`--`及missing value/empty value/invalid value/duplicate/conflicting values矩阵；JSON failure stdout空/stderr单value，debug无prose，top-level exit 1/3/4/5/6；
 8. built-in embed/frontmatter/source-map存在性；
 9. before/after Issue status/assignee/comment/task/Autopilot计数不变；
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
