@@ -21,15 +21,16 @@
 
 ## Schema contract
 
-`coordination_record`至少包含：
+`coordination_record`首期持久列合同如下；除表中nullable项和通用server timestamps外，不增加payload/metadata占位列：
 
-| Group | Contract |
+| Columns | Exact contract |
 | --- | --- |
-| identity | `id UUID NOT NULL`、`workspace_id`、`coordination_scope_id`；无FK |
-| type/version | `kind='blocker'`、`schema_version=1`、`status IN ('open','resolved')` |
-| issue refs | `root_issue_id`、`downstream_issue_id`、`upstream_issue_id`、nullable `dependency_id` |
-| typed codes | `reason_code='waiting_on_issue'`、nullable `resolution_code IN ('no_longer_blocking','superseded')` |
-| provenance | created/resolved actor、nullable task、timestamps，成组CHECK |
+| `id` / tenant | `id UUID NOT NULL`、`workspace_id UUID NOT NULL`、`coordination_scope_id UUID NOT NULL`；无FK |
+| type/version/state | `kind TEXT NOT NULL CHECK kind='blocker'`；`schema_version INTEGER NOT NULL CHECK =1`；`status TEXT NOT NULL CHECK open|resolved` |
+| issue refs | `root_issue_id`、`downstream_issue_id`、`upstream_issue_id`均`UUID NOT NULL`；`dependency_id UUID NULL`；均无FK |
+| typed codes | `reason_code TEXT NOT NULL CHECK waiting_on_issue`；`resolution_code TEXT NULL CHECK no_longer_blocking|superseded` |
+| create provenance | `created_by_type TEXT NOT NULL`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL`；member/agent task规则同receipt |
+| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；open时全NULL，resolved时code/type/id/time必填且task按actor type成组CHECK |
 
 Evidence refs不塞进JSONB。新增soft relation table `coordination_record_issue_ref`：
 
@@ -42,7 +43,7 @@ Evidence refs不塞进JSONB。新增soft relation table `coordination_record_iss
 | `phase TEXT NOT NULL` | `create|resolution` |
 | `issue_id UUID NOT NULL` | typed internal issue ref；无FK |
 | `position INTEGER NOT NULL` | 0-31，保留canonical response order |
-| `created_at` | server timestamp |
+| `created_at TIMESTAMPTZ NOT NULL` | server `clock_timestamp()`；客户端不可提供 |
 
 同record/phase/issue唯一；同record/phase/position唯一。PK/index遵循README concurrent序列，并提供scope/status分页、record refs读取和issue deletion guard index。Service在同一transaction验证所有soft refs的workspace/scope/record/issue一致性并写record+refs。
 
@@ -208,6 +209,7 @@ Append/resolve成功统一返回：
 
 精确规则：
 
+- first append且`changed=true`返回HTTP 201；append no-op/replay与全部resolve success返回200；resolve receipt的`operation=resolve_blocker`；
 - `dependency_id`、`resolution_code`、`resolved_by`、`resolved_at`及actor `task_id`是唯一nullable响应字段；member actor的`task_id=null`，agent非null；
 - evidence arrays始终存在且按canonical `(kind,id)`排序，空值为`[]`，不返回raw payload/JSONB；
 - UUID均lowercase hyphenated；timestamps均UTC RFC3339Nano；int64字段为JSON integer；
@@ -252,7 +254,7 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 2. strict append/resolve wire DTO：outer/nested unknown、duplicate keys、nullability、wrong types/version、超过32/duplicate refs、foreign/missing evidence；验证数据库不保存原始payload JSON；
 3. optional dependency只解析`coordination_dependency`并满足同workspace/scope/endpoints/active一致性；mismatch/foreign/resolved/legacy ID拒绝；
 4. `append_blocker|resolve_blocker`/`blocker` allowlist、canonical JSON/digest golden tests及CLI file-to-wire exact mapping；
-5. append/resolve receipt、CAS/authorized replay/different-hash/actor conflict；revoked/expired authority不能借old key replay；
+5. append/resolve receipt、CAS/authorized replay/different-hash/actor conflict；所有receipt返回在workspace lock后二次authority/resource validation；revoked/expired authority或并发entity delete后不能借old key replay；ordinal对mutation/new-key no-op递增、exact replay不增且rollback不推进；
 6. blocker resolve后dependency仍active；dependency resolve后blocker状态保持；
 7. list stable pagination：100上限、created_at+id tie、revision/status-bound cursor无重漏；翻页间mutation稳定`coordination_revision_conflict`；open第1000条可写，第1001条返回`coordination_capacity_exceeded`且零写入；
 8. member/task root+endpoint authority、伪造身份和run-only task拒绝；

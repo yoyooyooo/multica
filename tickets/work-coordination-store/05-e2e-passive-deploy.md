@@ -127,7 +127,7 @@ V5完成要求：aggregate source flow、bounds/receipt pagination、lock-held d
 
 ## Non-goals
 
-MINI-570 bootstrap/cutover、Agent Kit calibration、Store lifecycle cleanup、goal-control、lease/wake/Reconciler/Autopilot、program scope、UI、性能/SLO、graduation roots。
+MINI-570 assisted facts bootstrap或任何authority/autonomy cutover、Agent Kit calibration、Store lifecycle cleanup、goal-control、lease/wake/Reconciler/Autopilot、program scope、UI、性能/SLO、graduation roots。
 
 ## Claim limit
 

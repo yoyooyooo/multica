@@ -8,7 +8,7 @@
 
 在Agent Kit canonical assets中加入**只读**Work Coordination Store认知，让MATT coordinator/critic/observer能够通过已部署的`multica coordination inspect`读取scope revision、dependency、blocker和receipt refs，并在shadow模式与现有Issue lifecycle/metadata口径对账。
 
-该ticket不让Store成为scheduling authority，不调用Store mutation，不创建Reconciler/Autopilot，不做MINI-570 bootstrap，也不改变当前Stage/coordinator职责。
+该ticket不让Store成为scheduling authority，不调用Store mutation，不创建Reconciler/Autopilot，不做MINI-570 assisted facts bootstrap或authority/autonomy cutover，也不改变当前Stage/coordinator职责。
 
 ## Authority 与目标仓库
 
@@ -45,7 +45,7 @@
 - Native Stage/现有coordinator继续拥有当前liveness/frontier行为；
 - passive Store尚未拥有wake/dispatch/status/terminal authority；
 - metadata/comment不得与Store双写为两份canonical dependency；
-- 任何Reconciler write calibration、copilot、controlled、MINI-570 bootstrap或authority cutover都必须同时等future reconciliation control、versioned goal-control与Store lifecycle三项source+live proof完成，并另获独立批准。
+- 任何Reconciler write calibration、copilot、controlled或MINI-570 assisted facts bootstrap都必须同时等future reconciliation control、versioned goal-control与Store lifecycle三项source+live proof完成，并另获独立批准；该bootstrap不切换MINI-570 scheduling/write/terminal authority，本路线不授权其authority/autonomy cutover。
 
 ## Acceptance / tests
 
@@ -57,11 +57,11 @@
 - self-containment、source-map、topology/placement和target projection tests通过；
 - fresh independent review、exact-head CI、authorized linear merge、origin/backup及目标projection readback完成。
 
-Live shadow canary至少覆盖一个非MINI-570 fresh root或disposable fixture；它只证明读取与分类，不证明write control。此ticket完成后，control、goal与lifecycle任一项缺失都继续fail closed，不能进入write calibration/copilot/controlled/MINI-570 bootstrap/cutover。
+Live shadow canary至少覆盖一个非MINI-570 fresh root或disposable fixture；它只证明读取与分类，不证明write control。此ticket完成后，control、goal与lifecycle任一项缺失都继续fail closed，不能进入write calibration/copilot/controlled或MINI-570 assisted facts bootstrap。
 
 ## Non-goals
 
-Store mutation、authority cutover、MINI-570 bootstrap、controller lease/wake claim、Reconciler Agent、Autopilot、Issue cleanup、deployment/restart、graduation roots。
+Store mutation、MINI-570 assisted facts bootstrap或authority/autonomy cutover、controller lease/wake claim、Reconciler Agent、Autopilot、Issue cleanup、deployment/restart、graduation roots。
 
 ## Rollback / claim limit
 

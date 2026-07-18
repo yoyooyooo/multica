@@ -2,7 +2,7 @@
 
 **Status:** future capability contract；V1-V5只提供deletion guard。
 **Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)完成live tracer，且[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md) accepted；随后对真实Store数据、Issue/Workspace删除链和retention要求做gap audit。
-**Blocks:** Reconciler write calibration/copilot/controlled、MINI-570 bootstrap/cutover与[graduation canaries](graduation-canaries.md)中的retirement/archive证明；仍需reconciliation control与goal-control同时live。
+**Blocks:** Reconciler write calibration/copilot/controlled、MINI-570 assisted facts bootstrap与[graduation canaries](graduation-canaries.md)中的retirement/archive证明；仍需reconciliation control与goal-control同时live。它不解锁MINI-570 authority/autonomy cutover。
 
 ## Objective
 
