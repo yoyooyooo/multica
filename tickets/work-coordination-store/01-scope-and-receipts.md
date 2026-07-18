@@ -28,13 +28,13 @@
 | --- | --- |
 | `id UUID NOT NULL` | opaque API identity；物理PK按concurrent-index序列绑定 |
 | `workspace_id UUID NOT NULL` | tenant key；无FK |
-| `scope_kind TEXT NOT NULL` | V1 CHECK仅允许`root` |
-| `state TEXT NOT NULL` | V1 CHECK仅允许`active` |
+| `scope_kind TEXT NOT NULL` | `CHECK (scope_kind = 'root')` |
+| `state TEXT NOT NULL` | `CHECK (state = 'active')` |
 | `root_issue_id UUID NOT NULL` | application-validated实际root；无FK |
-| `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
-| `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
-| `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
-| creation provenance | `created_by_type TEXT NOT NULL CHECK member\|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
+| `workflow_profile_key TEXT NOT NULL` | `CHECK (char_length(workflow_profile_key) BETWEEN 1 AND 128 AND workflow_profile_key ~ '^[a-z0-9][a-z0-9._-]{0,127}$')` |
+| `revision BIGINT NOT NULL DEFAULT 0` | `CHECK (revision >= 0)`；BIGINT类型本身给出MaxInt64上界 |
+| `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | `CHECK (next_receipt_ordinal >= 0)`；internal per-scope allocator，不属于coordination revision |
+| creation provenance | `created_by_type TEXT NOT NULL CHECK (created_by_type IN ('member','agent'))`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；table CHECK强制member→task NULL、agent→task NOT NULL |
 
 约束/index：
 
@@ -54,18 +54,18 @@
 | `id` | `UUID NOT NULL`；opaque PK，无FK |
 | `workspace_id` | `UUID NOT NULL`；无FK |
 | `coordination_scope_id` | `UUID NOT NULL`；scope与receipt同transaction写入，无FK |
-| `receipt_ordinal` | `BIGINT NOT NULL`，CHECK `1..MaxInt64` |
-| `operation` | `TEXT NOT NULL`，CHECK char length `1..64`；DB不做跨slice enum |
-| `idempotency_key` | `TEXT NOT NULL`，CHECK char length `1..200` |
-| `request_hash` | `BYTEA NOT NULL`，CHECK `octet_length=32`，SHA-256 |
-| `resource_type` | `TEXT NOT NULL`，CHECK char length `1..32`；DB不做跨slice enum |
+| `receipt_ordinal` | `BIGINT NOT NULL CHECK (receipt_ordinal >= 1)`；BIGINT给出MaxInt64上界 |
+| `operation` | `TEXT NOT NULL CHECK (char_length(operation) BETWEEN 1 AND 64)`；DB不做跨slice enum |
+| `idempotency_key` | `TEXT NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 200)` |
+| `request_hash` | `BYTEA NOT NULL CHECK (octet_length(request_hash) = 32)`；SHA-256 |
+| `resource_type` | `TEXT NOT NULL CHECK (char_length(resource_type) BETWEEN 1 AND 32)`；DB不做跨slice enum |
 | `resource_id` | `UUID NOT NULL` |
-| `revision_before` / `revision_after` | `BIGINT NOT NULL`，均非负且`after >= before` |
-| `result_snapshot` | `JSONB NOT NULL`，CHECK object且UTF-8 text form不超过16KiB；只存server-shaped saved result，不存raw request |
-| `actor_type` | `TEXT NOT NULL`，CHECK `member\|agent` |
+| `revision_before` / `revision_after` | 均`BIGINT NOT NULL`；table CHECK为`revision_before >= 0 AND revision_after >= revision_before` |
+| `result_snapshot` | `JSONB NOT NULL CHECK (jsonb_typeof(result_snapshot) = 'object' AND octet_length(result_snapshot::text) <= 16384)`；只存server-shaped saved result，不存raw request |
+| `actor_type` | `TEXT NOT NULL CHECK (actor_type IN ('member','agent'))` |
 | `actor_id` | `UUID NOT NULL` |
-| `actor_task_id` | `UUID NULL`；CHECK member→NULL、agent→NOT NULL |
-| `created_at` | `TIMESTAMPTZ NOT NULL`，由server在insert时取`clock_timestamp()`，客户端不可提供 |
+| `actor_task_id` | `UUID NULL`；table CHECK为`(actor_type='member' AND actor_task_id IS NULL) OR (actor_type='agent' AND actor_task_id IS NOT NULL)` |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()`；客户端不可提供 |
 
 Named indexes/constraints：`id` PK；`(workspace_id,idempotency_key)`唯一；`(coordination_scope_id,receipt_ordinal)`唯一；scope receipt read index以`(coordination_scope_id,receipt_ordinal DESC)`开头。Operation不能进入idempotency unique key，否则同key换operation无法fail closed。
 

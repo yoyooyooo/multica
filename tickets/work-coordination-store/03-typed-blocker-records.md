@@ -28,14 +28,14 @@
 | `id` | `UUID NOT NULL`；opaque identity，无FK |
 | `workspace_id` | `UUID NOT NULL`；tenant key，无FK |
 | `coordination_scope_id` | `UUID NOT NULL`；soft scope ref，无FK |
-| type/version/state | `kind TEXT NOT NULL CHECK kind='blocker'`；`schema_version INTEGER NOT NULL CHECK =1`；`status TEXT NOT NULL CHECK open\|resolved` |
+| type/version/state | `kind TEXT NOT NULL CHECK (kind = 'blocker')`；`schema_version INTEGER NOT NULL CHECK (schema_version = 1)`；`status TEXT NOT NULL CHECK (status IN ('open','resolved'))` |
 | `root_issue_id` | `UUID NOT NULL`；无FK |
 | `downstream_issue_id` | `UUID NOT NULL`；无FK |
 | `upstream_issue_id` | `UUID NOT NULL`；无FK |
 | `dependency_id` | `UUID NULL`；该组identity/issue/dependency UUID中唯一nullable列，无FK |
-| typed codes | `reason_code TEXT NOT NULL CHECK waiting_on_issue`；`resolution_code TEXT NULL CHECK no_longer_blocking\|superseded` |
-| create provenance | `created_by_type TEXT NOT NULL`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL`；member/agent task规则同receipt |
-| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；open时全NULL，resolved时code/type/id/time必填且task按actor type成组CHECK |
+| typed codes | `reason_code TEXT NOT NULL CHECK (reason_code = 'waiting_on_issue')`；`resolution_code TEXT NULL CHECK (resolution_code IN ('no_longer_blocking','superseded'))` |
+| create provenance | `created_by_type TEXT NOT NULL CHECK (created_by_type IN ('member','agent'))`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()`；task nullability使用receipt同构CHECK |
+| resolution provenance | `resolved_by_type TEXT NULL`、`resolved_by_id UUID NULL`、`resolved_task_id UUID NULL`、`resolved_at TIMESTAMPTZ NULL`；下述table CHECK绑定status/code/type/id/task/time |
 
 Evidence refs不塞进JSONB。新增soft relation table `coordination_record_issue_ref`：
 
@@ -45,10 +45,12 @@ Evidence refs不塞进JSONB。新增soft relation table `coordination_record_iss
 | `workspace_id UUID NOT NULL` | tenant；无FK |
 | `coordination_scope_id UUID NOT NULL` | soft scope ref；无FK |
 | `record_id UUID NOT NULL` | soft record ref；无FK |
-| `phase TEXT NOT NULL` | `create\|resolution` |
+| `phase TEXT NOT NULL` | `CHECK (phase IN ('create','resolution'))` |
 | `issue_id UUID NOT NULL` | typed internal issue ref；无FK |
-| `position INTEGER NOT NULL` | 0-31，保留canonical response order |
-| `created_at TIMESTAMPTZ NOT NULL` | server `clock_timestamp()`；客户端不可提供 |
+| `position INTEGER NOT NULL` | `CHECK (position BETWEEN 0 AND 31)`；保留canonical response order |
+| `created_at TIMESTAMPTZ NOT NULL` | `DEFAULT clock_timestamp()`；客户端不可提供 |
+
+Record state table CHECK精确为两支：`status='open'`时`resolution_code/resolved_by_type/resolved_by_id/resolved_task_id/resolved_at`全NULL；`status='resolved'`时code/type/id/time均NOT NULL、`resolved_by_type IN ('member','agent')`，且member→task NULL、agent→task NOT NULL。Create provenance使用同样的actor/task互斥CHECK。
 
 同record/phase/issue唯一；同record/phase/position唯一。PK/index遵循README concurrent序列，并提供scope/status分页、record refs读取和issue deletion guard index。Service在同一transaction验证所有soft refs的workspace/scope/record/issue一致性并写record+refs。
 
