@@ -367,7 +367,7 @@ WHERE id=$1 AND workspace_id=$2
     NOT (issue.metadata ? 'external_pr_completion_policy')
     OR (
       jsonb_typeof(issue.metadata->'external_pr_completion_policy') = 'string'
-      AND lower(btrim(issue.metadata->>'external_pr_completion_policy', E' \t\n\r\v\f')) IN ('', 'leaf_child_only')
+      AND lower(btrim(issue.metadata->>'external_pr_completion_policy', E' \t\n\r\f' || chr(11))) IN ('', 'leaf_child_only')
     )
   )
   AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
