@@ -37,10 +37,10 @@ Handler/CLI不得直查DB。Authority沿用V1：member workspace；task actor实
 
 ### Receipt refs pagination
 
-- receipt page size固定为100，不提供`limit`；除最后一页外必须恰100条；排序固定`(created_at DESC,id DESC)`；
-- 首页面生成不可变snapshot upper bound=`(first_created_at,first_id)`；opaque cursor绑定workspace、scope、`scope_revision`、collection kind=`receipt`、upper bound及最后排序键；foreign/malformed cursor返回`coordination_invalid_payload`；
-- 后续页只读取upper bound以内的history；即使新no-op receipt未增加scope revision，也不能插入既有pagination window。若scope revision变化，返回`coordination_revision_conflict`并要求从第一页重启；cursor翻页不得重漏；
-- receipt ref只含`id,operation,resource_type/resource_id,revision_before/after,created_at`及安全actor type；operation/resource必须通过V1-V3 versioned typed allowlist；不返回request hash bytes、result snapshot、payload或无界history。
+- receipt page size固定为100，不提供`limit`；除最后一页外必须恰100条；排序固定`receipt_ordinal DESC`，不得用`created_at`或UUID推断提交顺序；
+- 首页面读取该scope已提交的`MAX(receipt_ordinal)`作为不可变`upper_ordinal`；opaque cursor绑定workspace、scope、`scope_revision`、collection kind=`receipt`、upper ordinal及last ordinal；foreign/malformed cursor返回`coordination_invalid_payload`；
+- 后续页只读取`receipt_ordinal <= upper_ordinal AND receipt_ordinal < last_ordinal`。新no-op receipt即使不增加scope revision，也因ordinal更大而不能插入既有window。若scope revision变化，返回`coordination_revision_conflict`并要求从第一页重启；cursor翻页不得重漏；
+- receipt ref只含`id,receipt_ordinal,operation,resource_type/resource_id,revision_before/after,created_at`及安全actor type；operation/resource必须通过V1-V3 versioned typed allowlist；不返回request hash bytes、result snapshot、payload或无界history。
 
 Active dependency即使没有open blocker也必须显示。Resolved blocker不使active edge消失；resolved dependency不出现在active list，即使仍有open blocker evidence。Inspect不推断frontier/actionable/wake/terminal，不读metadata/comment作为current truth。
 
@@ -124,7 +124,7 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 ## Acceptance / tests
 
 1. consistent snapshot在并发mutation下不混合revision；
-2. 单响应完整返回最多1000 active dependencies与1000 open blockers且顺序固定；receipt refs固定100、upper-bound cursor无重漏/tenant escape；翻页间插入revision不变的no-op receipt不污染window，revision变化后续页返回`coordination_revision_conflict`；
+2. 单响应完整返回最多1000 active dependencies与1000 open blockers且顺序固定；receipt refs固定100、ordinal upper-bound cursor无重漏/tenant escape；较早开启但较晚commit的transaction及revision不变的no-op receipt都不污染既有window，revision变化后续页返回`coordination_revision_conflict`；
 3. full-flow authorized same-actor replay、different-actor conflict与revoked/expired replay denial；
 4. independent blocker/dependency resolve中间态；
 5. cross-scope owner conflict/no visibility/no revision change；
