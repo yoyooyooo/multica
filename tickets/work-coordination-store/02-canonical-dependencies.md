@@ -9,7 +9,7 @@
 
 ## Exact owning modules
 
-- additive migrations：扩展legacy `issue_dependency`的nullable Store列、Store-only CHECK、concurrent indexes与必要constraint attach；不修改`001_init`。
+- additive migrations：新建soft-ref `coordination_dependency`表、concurrent indexes、constraint attach及down；不修改、不写入legacy `issue_dependency`或`001_init`。
 - `coordination.sql`及sqlc generated增量。
 - coordination service/types/errors/tests增量。
 - coordination handler/routes/tests增量。
@@ -21,34 +21,35 @@
 
 ## Schema contract
 
-对现有`issue_dependency(id,issue_id,depends_on_issue_id,type)`做additive nullable扩展：
+新建独立`coordination_dependency` soft-ref表；不得复用带既有`REFERENCES issue ... ON DELETE CASCADE`的legacy `issue_dependency`：
 
-- `workspace_id UUID NULL`
-- `coordination_scope_id UUID NULL`
-- created actor/task/timestamp provenance
-- resolved actor/task/timestamp provenance
+| Column group | Contract |
+| --- | --- |
+| identity | `id UUID NOT NULL`、`workspace_id UUID NOT NULL`、`coordination_scope_id UUID NOT NULL`；均无FK |
+| canonical endpoints | `downstream_issue_id UUID NOT NULL`、`upstream_issue_id UUID NOT NULL`；无FK，self-edge CHECK拒绝 |
+| direction | 不存自由`type`；该表唯一语义就是`downstream blocked_by upstream` |
+| provenance | created/resolved actor、nullable task、timestamps，成组CHECK |
+| lifecycle | active=`resolved_at IS NULL`；resolved provenance完整 |
 
-Store row定义为`coordination_scope_id IS NOT NULL`。Store-only规则：
+Rules/indexes：
 
-- `workspace_id`和created provenance完整；
-- `type='blocked_by'`；`issue_id=downstream`，`depends_on_issue_id=upstream`；
-- self-edge拒绝；active=`resolved_at IS NULL`；resolved provenance成组；
-- workspace-global active endpoint pair唯一，不把scope放进pair unique key；
-- 每条active pair由row中的一个`coordination_scope_id`拥有；
-- legacy unscoped `blocks/blocked_by/related` rows保持原值，不进入Store query/cycle/list。
+- partial unique index固定为`(workspace_id,downstream_issue_id,upstream_issue_id) WHERE resolved_at IS NULL`，不把scope放进pair unique key；该partial index不attach为UNIQUE constraint；
+- 每条edge由一个`coordination_scope_id`拥有；
+- owner-scope list/resolve、workspace reachability和deletion guard indexes；
+- PK/index/constraint attach遵循README concurrent序列；禁止FK/REFERENCES/cascade。
 
-不新增FK/REFERENCES/cascade。Structure/index/constraint attach遵循README concurrent-index序列。
+Legacy `issue_dependency`保持原schema/rows/既有authority；Store migrations不加列、不迁移、不回填、不写入，Store query/cycle/list完全忽略它。Upgrade tests逐类证明legacy `blocks/blocked_by/related`未变化。
 
 ## sqlc contract
 
 新增typed operations：
 
-- workspace advisory transaction lock，key使用独立`work-coordination` namespace + workspace UUID；
+- 复用[workspace coordination advisory-lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)的transaction-level lock query；
 - workspace-scoped endpoint loads；
-- get active edge by workspace+pair（必须返回owner scope）；
+- `coordination_dependency` get active edge by workspace+pair（必须返回owner scope）；
 - create edge；get by workspace+ID；list active by owner scope；resolve with provenance；
 - workspace Store graph successors/reachability query；
-- deletion guard：Issue是任何Store dependency endpoint、Workspace仍有Store dependency。
+- deletion guard：Issue是任何`coordination_dependency` endpoint、Workspace仍有`coordination_dependency` row。
 
 所有resource lookup显式带`workspace_id`。
 
@@ -62,19 +63,42 @@ ListDependencies(ctx, actor, scopeID, cursor, limit) -> DependencyPage
 ResolveDependency(ctx, actor, input) -> MutationResult[Dependency]
 ```
 
-`ListDependencies`必须经过V1 authority seam并只返回owner scope的active edge；按`(created_at ASC,id ASC)`稳定分页，默认/最大100，opaque cursor绑定workspace/scope与排序键；handler不得直查DB。
+`ListDependencies`必须经过V1 authority seam并只返回owner scope的active edge；按`(created_at ASC,id ASC)`稳定分页，默认/最大100。Opaque cursor绑定workspace/scope、读取时`scope_revision`和最后排序键；后续页revision变化返回`coordination_revision_conflict`并要求重启。Page返回该revision；handler不得直查DB。每scope active dependency硬上限为`1000`，不是运行时配置。
+
+### Receipt allowlist与canonical hash
+
+V2 typed allowlist精确新增：
+
+| Operation | Resource type |
+| --- | --- |
+| `add_dependency` | `dependency` |
+| `resolve_dependency` | `dependency` |
+
+V1 receipt表的DB CHECK只限制非空/长度，因此V2不做constraint widening。按[canonical receipt hash SSoT](README.md#canonical-receipt-hash-ssot)，canonical document的`request`精确为：
+
+```json
+{"downstream_issue_id":"<lowercase UUID>","expected_revision":"<decimal int64>","scope_id":"<lowercase UUID>","upstream_issue_id":"<lowercase UUID>"}
+```
+
+`resolve_dependency`的`request`精确为：
+
+```json
+{"dependency_id":"<lowercase UUID>","expected_revision":"<decimal int64>","scope_id":"<lowercase UUID>"}
+```
+
+Service/API/CLI tests冻结exact operation/resource strings、完整canonical JSON bytes及SHA-256 golden digest；字段、actor/task或operation变化必须改变digest。
 
 ### Mutation顺序
 
 除V1 receipt replay规则外，add/resolve必须：
 
-1. strict typed input + canonical hash；
+1. strict typed input +上述canonical hash；
 2. transaction内重做当前actor/task authority；revoke/expiry/authority loss先于receipt replay返回；
-3. 再处理receipt replay/conflict；
-4. 取得workspace coordination advisory xact lock；
-5. lock owner scope并校验`expected_revision`；
-6. 校验endpoint workspace/existence/current state；
-7. mutation与cycle check；
+3. 取得统一workspace coordination advisory xact lock；
+4. 在持锁状态处理receipt replay/conflict；
+5. 非replay再lock owner scope并校验`expected_revision`；
+6. 持锁校验Workspace、scope及endpoint存在/current state；
+7. mutation与cycle check；新pair add还在同一lock内count active rows，已达1000则返回`coordination_capacity_exceeded`且零写入；
 8. 真实变化使scope revision恰增1；same-scope no-op不增；
 9. 保存bounded result+receipt并commit。
 
@@ -84,15 +108,15 @@ ResolveDependency(ctx, actor, input) -> MutationResult[Dependency]
 - Task actor的root必须等于scope root，且其task issue必须是downstream或upstream之一。
 - self、missing、cross-workspace拒绝。
 - Workspace DAG不含legacy rows。若从upstream可达downstream，返回`coordination_cycle`。
-- 若active pair不存在，创建owner scope edge。
+- 若active pair不存在且owner scope active dependency少于1000，创建owner scope edge；达到1000稳定返回`coordination_capacity_exceeded`。
 - 若active pair已由**同scope**拥有，新key得到no-op receipt，revision不变；原key走首次receipt replay。
 - 若active pair由**其他scope**拥有，返回`coordination_dependency_scope_conflict`；不创建association、不改变任何scope revision、不泄露其他scope详情。
 - 并发`A blocked_by B`与`B blocked_by A`在workspace lock内串行，最多一方成功。
 
 ### Resolve semantics
 
-- Resource必须由请求scope拥有；其他scope尝试resolve返回`dependency_scope_conflict`。
-- 只写resolved provenance/time；不处理blocker（V3）。
+- Resource必须由请求scope拥有；其他scope尝试resolve返回`coordination_dependency_scope_conflict`。
+- 只写resolved provenance/time并使owner scope active count减1；不处理blocker（V3）。
 - 已resolved edge以新key再次resolve为no-op receipt，revision不变。
 - `blocks`只在read DTO中派生，永不写DB。
 
@@ -106,18 +130,9 @@ GET  /api/coordination/scopes/{scopeId}/dependencies?cursor=<opaque>&limit=<1..1
 POST /api/coordination/scopes/{scopeId}/dependencies/{dependencyId}/resolve
 ```
 
-Mutation要求`Idempotency-Key`和body中的非负`int64 expected_revision`；add还含两个UUID endpoint。Decoder拒绝unknown/identity字段与trailing JSON。List只调用service，返回最多100条及`next_cursor`；foreign/invalid cursor返回`coordination_invalid_payload`。
+Mutation要求`Idempotency-Key`。Add body精确为`{"expected_revision":0,"downstream_issue_id":"<uuid>","upstream_issue_id":"<uuid>"}`；resolve body精确为`{"expected_revision":1}`。`scope_id/dependency_id`由path进入canonical request，不能出现在body。Decoder拒绝unknown/identity字段、duplicate object keys与trailing JSON。List只调用service，返回`scope_revision`、最多100条及`next_cursor`；foreign/malformed cursor返回`coordination_invalid_payload`，合法cursor但current revision变化返回`coordination_revision_conflict`。
 
-新增error mapping：
-
-| Code | HTTP |
-| --- | --- |
-| `coordination_revision_conflict` | 409 |
-| `coordination_dependency_scope_conflict` | 409 |
-| `coordination_self_dependency` | 422 |
-| `coordination_cycle` | 422 |
-
-其他V1 codes保持。Raw SQL/constraint不得外泄。
+V2增量使用`coordination_revision_conflict`、`coordination_dependency_scope_conflict`、`coordination_self_dependency`、`coordination_cycle`、`coordination_capacity_exceeded`；HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。不得建立第二张表、使用裸后缀或泄露SQL/constraint。
 
 ## CLI 与 skill增量
 
@@ -128,43 +143,50 @@ multica coordination dependency resolve --scope <uuid> --dependency <uuid> --exp
 ```
 
 - expected revision必须显式提供、非负且不超过`MaxInt64`；零值不能冒充“已设置”。
-- `dependency_scope_conflict`与revision/idempotency conflict均保留stable product code；JSON stderr仍是单一value。
+- `coordination_dependency_scope_conflict`、`coordination_revision_conflict`、`coordination_idempotency_conflict`与`coordination_capacity_exceeded`均原样保留；JSON stderr仍是单一value。
 - issue refs先由现有resolver转UUID；CLI不发送身份字段。
 
 Skill新增canonical方向、same-scope no-op、cross-scope conflict、workspace-wide cycle、CAS/retry、`blocks`只读派生和passive边界。Source map更新为真实symbols。
 
 ## Deletion guard增量
 
-Issue是任何Store dependency downstream/upstream、或Workspace仍有Store dependency时，existing delete入口在既有副作用前返回`coordination_delete_blocked`。V2不删除/resolve edge，不实现lifecycle cleanup。
+Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有该表row时，session-lock-held guard返回`coordination_delete_blocked`。所有V2 add/resolve使用README统一xact lock；单删、BatchDeleteIssues、Workspace删除继续用冲突session lock并持有到实际entity DB delete完成/失败。V2不删除edge、不实现lifecycle cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
 必须证明：
 
-1. legacy三类rows upgrade后字节/语义保持，Store queries忽略它们；
-2. Store-only constraints、workspace active pair unique与concurrent-index序列；
+1. 新`coordination_dependency` migration fresh/down/up、PK/concurrent-index序列；legacy三类rows/schema在upgrade后保持，Store queries忽略且从不写入；
+2. soft-ref constraints、workspace active pair unique与owner-scope indexes；
 3. add/list/resolve public service与API/CLI均走owner scope；
 4. same-scope duplicate no-op；other-scope active pair stable conflict且两个revision均不变；
-5. self/missing/cross-workspace/cycle；
+5. `coordination_self_dependency`、`coordination_not_found`、`coordination_cross_workspace`、`coordination_cycle`；
 6. 两个真实并发transaction写反向edge，恰一方成功；
 7. stale revision、authorized same-key replay、different-hash/actor conflict零部分写；revoke/expired task不能用old key读取旧receipt；
 8. member/task endpoint authority与伪造headers/body拒绝；
-9. list稳定分页：100上限、created_at+id tie、cursor无重漏/tenant escape；
-10. resolve不隐式改任何blocker/Issue/comment/task/Autopilot；
-11. deletion guard在endpoint引用存在时零现有副作用；
-12. CLI exact request、pagination、int64边界、stable code/exit/JSON；
-13. skill/source map/fork narrative只声明V1+V2。
+9. list稳定分页：100上限、created_at+id tie、revision-bound cursor无重漏/tenant escape；翻页间mutation稳定`coordination_revision_conflict`；active第1000条可写，第1001条返回`coordination_capacity_exceeded`且revision/receipt/facts不变；
+10. `add_dependency|resolve_dependency`/`dependency` allowlist、wire bodies、canonical JSON与digest golden tests；
+11. resolve不隐式改任何blocker/Issue/comment/task/Autopilot；
+12. Add分别与单删、BatchDeleteIssues、Workspace删的真实并发race，无新orphan；guard拒绝时cache/task/Autopilot/event零变化；
+13. CLI exact request、pagination、int64边界、stable code/exit/JSON；
+14. skill/source map/fork narrative只声明V1+V2。
+
+Focused Go命令必须从`server` module执行：
 
 ```bash
 make sqlc
-(cd server && go test ./internal/migrations ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica)
-(cd server && go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica)
+(
+  cd server
+  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
+  go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
+  go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
+)
 make build
 make test
 git diff --check
 ```
 
-DB concurrency tests必须证明实际执行。
+第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
 
 ## Non-goals
 

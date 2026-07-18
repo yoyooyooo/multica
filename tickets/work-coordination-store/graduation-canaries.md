@@ -61,8 +61,8 @@ Stage 3: durable maintainer merge + backup + terminal/retirement
 
 - scope revisions与 tactical graph diff；
 - Stage/wake claim ledger；
--每个 task fresh authority snapshot；
-- PR exact head/base、fresh single-agent/no-subagent critic、CI、fresh durable maintainer merge、backup receipts；
+- 每个 task fresh authority snapshot；
+- PR exact head/base、fresh single-agent/no-subagent critic review receipt、CI receipt、fresh durable maintainer merge receipt与独立backup receipt；
 - deployment receipt：`N/A`（G1不要求部署）；
 - second-tick no-op；
 - `retire_requested`和归档 receipt。
@@ -132,7 +132,7 @@ Stage 3: durable maintainer merge + backup + terminal/retirement
 - canonical shared-fix owner/association receipt；
 - zero duplicate child/task/PR/merge/backup/deploy counts；
 - 两个 child lease/wake ledgers；
-- deployment plan、human approval、operator apply、exact version、rollback proof；
+- 强制deployment receipt：绑定deployment plan、human approval、独立operator apply、exact version readback与rollback proof；
 - child与program各自 evidence/handoff/retirement receipts。
 
 ### Claim limit
@@ -164,10 +164,10 @@ Stage 3: durable maintainer merge + backup + terminal/retirement
 - 三个 root均 fresh且零人工 wake；
 - weak observer所需 deadman/last-success/next-due可观测性已有平台或明确 operator schedule承载；
 - manual takeover演练通过；
--复杂 Root默认启用、简单 Ticket不启用的 enrollment policy已写入 current contract。
+- 复杂 Root默认启用、简单 Ticket不启用的 enrollment policy已写入 current contract。
 
 只有 review通过，才能声明 `autopilot_controlled`对已证明的复杂 root类别毕业。它仍不授权扩大 permanent human gates、跨工作区authority或不可逆操作。
 
 ## `not_claimed`
 
-当前三个 graduation roots尚未创建或执行；不声明 clean autonomy、默认 enrollment、weak observer切换、跨 Root controller能力、restart recovery或 deployment orchestration已毕业。统一边界见 [README `not_claimed`](README.md#统一-not_claimed)。
+当前三个 graduation roots尚未创建或执行；不声明 clean autonomy、默认 enrollment、weak observer切换、跨 Root controller能力、restart recovery或 deployment orchestration已毕业。统一边界见 [README Not Claimed](README.md#统一-not-claimed)。

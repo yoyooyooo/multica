@@ -2,7 +2,7 @@
 
 **Status:** future capability contract；不属于V1-V5 passive Store。
 **Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)与[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md)完成，随后对当前Goal/Issue/handoff authority做gap audit。
-**Blocks:** [future-reconciler-agent.md](future-reconciler-agent.md) write calibration与graduation。
+**Blocks:** [future-reconciler-agent.md](future-reconciler-agent.md) write calibration与graduation；仍需reconciliation control和Store lifecycle同时live。
 
 ## Objective
 
@@ -14,7 +14,8 @@
 - Future capability建立独立opaque `goal_contract_id + version` authority。每次修改创建新version、执行CAS并保存server-stamped receipt。
 - Coordination scope只保存**immutable binding reference**（goal contract ID/version），不复制完整objective/policy JSON；binding mutation属于future control wave，不回填V1-V5表的空字段。
 - Issue/UI/Agent Kit可以投影摘要和链接，但projection不是write authority。
-- Cutover必须记录old authority snapshot、new version、冲突裁决、effective revision和rollback ceiling；禁止长期双写。
+- Goal authority自身cutover必须记录old authority snapshot、new version、冲突裁决、effective revision和rollback ceiling，禁止长期双写；该cutover不自动授权Reconciler写入。
+- Reconciler write calibration、copilot、controlled及MINI-570 bootstrap/cutover必须等本合同、reconciliation control与Store lifecycle三项source+live proof同时成立。
 
 ## Typed contract surface
 

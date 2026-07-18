@@ -2,7 +2,7 @@
 
 **Status:** future contract；不属于01-05 passive Store。
 **Blocked by:** [V5 live tracer](05-e2e-passive-deploy.md)与[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md)，随后进行live gap audit。
-**Blocks:** [future-reconciler-agent.md](future-reconciler-agent.md) write mode；还需[goal-control contract](future-goal-control-contract.md) live。
+**Blocks:** [future-reconciler-agent.md](future-reconciler-agent.md) write calibration/copilot/controlled；还必须同时有[goal-control contract](future-goal-control-contract.md)与[Store lifecycle](future-store-lifecycle.md) source+live proof。
 
 ## Objective
 
@@ -43,7 +43,7 @@ API只接受typed claim/release、policy内graph mutation、wake/dispatch、paus
 
 并发controller只有一个；steal后旧token不能heartbeat/dispatch/terminal；Stage/Reconciler/manual并发wake一个claim；各suppression reason与no-revision skip不启动GPT；actionable仅一次；restart恢复无duplicate；snapshot不可伪造且stale fail closed；program不能混写child；retire不越权archive；stable API/CLI/skill/source-map与exact live evidence齐全。
 
-每个implementation slice须fresh writer、focused/full、fresh independent review、exact-head CI与主验收；source接受后另有deployment plan、当次approval与live canary。
+每个implementation slice须fresh writer、focused/full、fresh independent review、exact-head CI与主验收；source接受后另有deployment plan、当次approval与live canary。Control单独完成不得解锁Reconciler write calibration/copilot/controlled或MINI-570 bootstrap/cutover；还需goal与lifecycle live。
 
 ## Non-goals
 
