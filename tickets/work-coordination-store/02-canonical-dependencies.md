@@ -174,9 +174,12 @@ Focused Go命令必须从`server` module执行：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
+  export WORK_COORDINATION_DB_REQUIRED=1
+  go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -185,7 +188,7 @@ make test
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V2 gate失败；`git diff --check`不能替代。第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
 
 ## Non-goals
 

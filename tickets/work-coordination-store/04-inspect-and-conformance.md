@@ -72,14 +72,14 @@ V4增加顶层CLI conformance test：成功JSON stdout只有一个value；失败
 2. A add `B blocked_by C` → `r1`；
 3. A append blocker → `r2`；
 4. Client B inspect读到exact `r2`、edge、open blocker、receipt refs；
-5. **同一actor identity**的B进程用原key重放A的add/blocker，得到原receipt，revision仍`r2`；
+5. B进程仅以**同一actor + 同一task binding**重放A的add/blocker：agent必须绑定同一`task_id`，member则两次均为`task_id=null`；得到原receipt，revision仍`r2`；
 6. 不同actor复用同key必须`coordination_idempotency_conflict`；同actor若membership/task/root authority已revoke或过期，也必须在replay前被拒绝；
 7. B resolve blocker → `r3`，inspect显示edge仍active；
 8. A resolve dependency → `r4`，inspect显示active edge为空、open blocker为空；
 9. `coordination_revision_conflict`、`coordination_cycle`、`coordination_self_dependency`、`coordination_cross_workspace`、`coordination_dependency_scope_conflict`、`coordination_forbidden`均typed失败且零部分写；
 10. 并发反向edge最多一个成功。
 
-“两client”表示独立HTTP/CLI execution context，不表示必须不同actor；replay case必须同actor，因为actor/task属于canonical request hash。另设不同actor冲突case。
+“两client”表示独立HTTP/CLI execution context，不表示必须不同actor；replay case必须同时匹配actor identity与task binding，因为两者都属于canonical request hash。Agent换`task_id`不能replay；member只允许稳定的null task binding。另设不同actor冲突case。
 
 ### No-side-effect snapshot
 
@@ -104,7 +104,7 @@ Flow前后对root/B/C逐项exact比较：
 
 ### Deletion guard conformance
 
-对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs、receipt引用和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在dedicated connection持有session lock期间guard，并在任何cache/task/Autopilot/event前返回`coordination_delete_blocked`。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、session lock持有到实际entity delete结束、connection close释放。无Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
+对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在dedicated connection持有session lock期间guard，并在任何cache/task/Autopilot/event前返回`coordination_delete_blocked`。Receipt history/reference单独存在时不得触发删除阻塞；删除后旧receipt replay必须因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、session lock持有到实际entity delete结束、connection close释放。无受guard保护Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
 
 ## Built-in skill / source map 收口
 
@@ -131,7 +131,7 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 6. `coordination_cycle`、`coordination_self_dependency`、`coordination_revision_conflict`、`coordination_cross_workspace`与`coordination_forbidden`零部分写；
 7. no-side-effect全部字段exact不变且无event；
 8. active dependency/open blocker 1000 hard caps与第1001次mutation的`coordination_capacity_exceeded`零写入；
-9. deletion guard全引用矩阵、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race及无引用路径回归；
+9. deletion guard覆盖scope/dependency/record/typed-ref矩阵、receipt-only不阻塞回归、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race及无受guard保护引用路径回归；
 10. API/CLI/top-level JSON/error/exit contract；
 11. skill embed/frontmatter/source-map/path/symbol/narrative contract；
 12. sqlc二次生成无drift，focused/race/full/build/check通过。
@@ -140,9 +140,12 @@ Focused Go命令必须从`server` module执行：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
+  export WORK_COORDINATION_DB_REQUIRED=1
+  go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -152,7 +155,7 @@ make check
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V4 gate失败；`git diff --check`不能替代。第一条verbose DB command必须在DB不可用时non-zero fail并输出实际执行的coordination migration/integration test names；任何skip都使gate失败。
 
 ## Non-goals
 

@@ -1,7 +1,7 @@
 # Graduation canaries — 三个 fresh roots
 
 **Status:** future acceptance contract。
-**Blocked by:** passive Store live、[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md)、[Reconciliation control](future-reconciliation-control.md) live、[goal-control contract](future-goal-control-contract.md) live、[Store lifecycle/archive](future-store-lifecycle.md) live、`multica-work-reconciler` shadow/copilot canary均通过。
+**Blocked by:** passive Store live、[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md)、[Reconciliation control](future-reconciliation-control.md) live、[goal-control contract](future-goal-control-contract.md) live、[Store lifecycle/archive](future-store-lifecycle.md)已独立完成source+live acceptance、`multica-work-reconciler` shadow/copilot canary均通过。Graduation只验证已live的lifecycle/archive行为，不得作为lifecycle进入live或被accept的前置gate。
 **Authority:** MINI-570只作 assisted transition，不计入以下三个 clean roots。
 
 ## Graduation objective
@@ -33,7 +33,7 @@
 9. Store、Issue lifecycle、external source/PR authority边界清晰，无 metadata/comment双写为第二 truth。
 10. evidence/handoff、claim limit及所有适用的source/CI/merge/backup/deploy receipts完整且绑定exact对象；G1/G2的deployment receipt明确记为`N/A`，只有G3强制deployment receipt。
 11. 无主 Agent手工 wake；主 Agent只做预声明 gate批准或异常审计。
-12. Root满足 retirement conditions后产生 `retire_requested`并按授权归档，ledger保留。
+12. Root满足 retirement conditions后产生 `retire_requested`，并调用已在graduation前完成source+live acceptance的lifecycle/archive能力按授权归档、保留ledger；该canary证明行为而非反向解锁lifecycle。
 
 ## G1 — 正常多 Stage PR root
 

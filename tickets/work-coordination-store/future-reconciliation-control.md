@@ -23,25 +23,25 @@ program parent只组织、观察和排序child roots。每个child保留独立sc
 - acquire/renew/release/takeover使用DB time；lease绑定scope/controller/generation/expiry。
 - stale fencing token对control mutation匹配零row并稳定`lease_lost`；takeover递增generation。
 - manual takeover先pause Autopilot、隔离在途lease，再取得同一root authority。
-- wake key绑定scope revision、trigger kind/ref、target intent、controller generation与task authority snapshot。
-- claim、active-run检查、dispatch receipt同一transaction；same request replay，不同hash conflict。
+- wake key绑定scope revision、trigger kind/ref、target intent、controller generation、exact `goal_contract_id`/`goal_contract_version`与task authority snapshot。
+- claim、active-run检查、goal binding复核、task snapshot创建与dispatch receipt在同一transaction；task和receipt原子绑定同一exact `goal_contract_id`/`goal_contract_version`。Same request replay，不同hash conflict。
 - active run/native grace/cooldown返回deterministic no-action；second tick无重复task/comment/status副作用。
 
 ## Actionable preflight
 
-server-side deterministic read输入scope/revision、controller generation、trigger与policy version；输出限定为`skip_no_revision_change|skip_active_run|skip_native_grace|skip_cooldown|needs_human|actionable`。仅`actionable`可创建一次GPT-5.6 task；stale revision/generation不得把旧intent套到新snapshot。
+server-side deterministic read输入scope/revision、controller generation、trigger、policy version及exact `goal_contract_id`/`goal_contract_version`；在preflight与dispatch时都必须将该pair和scope current binding、effective goal version精确比较。任一stale/mismatch立即fail closed，不返回`actionable`，不得claim、建task或写dispatch receipt。其余输出限定为`skip_no_revision_change|skip_active_run|skip_native_grace|skip_cooldown|needs_human|actionable`。仅`actionable`可创建一次GPT-5.6 task；stale revision/generation不得把旧intent套到新snapshot。
 
 ## Task authority snapshot
 
-root Autopilot dispatch时由server保存immutable workspace/root/scope/revision/generation、goal-contract ID/version、trigger与policy version。task token只解析server snapshot，不接受prompt/body/header自声明。passive issue-bound task policy继续存在；不通过nullable placeholder假装已支持root authority。
+root Autopilot dispatch时由server保存immutable workspace/root/scope/revision/generation、exact `goal_contract_id`/`goal_contract_version`、trigger与policy version；同一transaction把exact pair写入task authority snapshot和dispatch receipt，二者不得部分提交。task token只解析server snapshot，不接受prompt/body/header自声明。passive issue-bound task policy继续存在；不通过nullable placeholder假装已支持root authority。
 
 ## Intent safety与human gates
 
-API只接受typed claim/release、policy内graph mutation、wake/dispatch、pause/resume/retire request、needs-human intents；全部要求expected revision、fencing generation、idempotency hash与authority snapshot。目标/验收/claim-limit/authority、credential/admin、不可逆migration、破坏性rollback、超预算、未预授权production deploy、主观接受永久human gate。
+API只接受typed claim/release、policy内graph mutation、wake/dispatch、pause/resume/retire request、needs-human intents；全部要求expected revision、fencing generation、exact `goal_contract_id`/`goal_contract_version`、idempotency hash与authority snapshot。目标/验收/claim-limit/authority、credential/admin、不可逆migration、破坏性rollback、超预算、未预授权production deploy、主观接受永久human gate。
 
 ## Tests / acceptance
 
-并发controller只有一个；steal后旧token不能heartbeat/dispatch/terminal；Stage/Reconciler/manual并发wake一个claim；各suppression reason与no-revision skip不启动GPT；actionable仅一次；restart恢复无duplicate；snapshot不可伪造且stale fail closed；program不能混写child；retire不越权archive；stable API/CLI/skill/source-map与exact live evidence齐全。
+并发controller只有一个；steal后旧token不能heartbeat/dispatch/terminal；Stage/Reconciler/manual并发wake一个claim；各suppression reason与no-revision skip不启动GPT；actionable仅一次；preflight/dispatch的stale或mismatched `goal_contract_id`/`goal_contract_version`均拒绝且零claim/task/receipt写入；成功dispatch的task snapshot与receipt原子绑定同一exact pair；restart恢复无duplicate；snapshot不可伪造且stale fail closed；program不能混写child；retire不越权archive；stable API/CLI/skill/source-map与exact live evidence齐全。
 
 每个implementation slice须fresh writer、focused/full、fresh independent review、exact-head CI与主验收；source接受后另有deployment plan、当次approval与live canary。Control单独完成不得解锁Reconciler write calibration/copilot/controlled或MINI-570 assisted facts bootstrap；还需goal与lifecycle live。MINI-570 authority/autonomy cutover不在本路线授权面。
 

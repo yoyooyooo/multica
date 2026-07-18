@@ -36,7 +36,7 @@
 
 ## Mutation / human gate
 
-- 创建initial contract与任何objective/acceptance/claim-limit/authority-envelope变更都是显式human gate。
+- 创建initial contract与任何objective/acceptance/claim-limit/authority-envelope变更都是显式human gate。尤其claim-limit mutation必须先取得human approval，再以CAS创建新version，并保存绑定approval及exact old/new version的server-stamped receipt；禁止Reconciler直接修改。
 - Reconciler只能读取并在当前version envelope内提出战术intent；不能自行创建新有效version。
 - CAS conflict、unknown schema、stale binding、superseded contract均fail closed。
 - 同idempotency key同canonical hash replay原receipt；different hash/actor conflict。
@@ -44,7 +44,7 @@
 
 ## Evidence 与 handoff
 
-- Contract保存evidence/handoff的typed references、required classes和completion state，不保存无限session transcript或私有memory。
+- Contract保存evidence/handoff的typed references、required classes和completion state，不保存无限session transcript或私有memory。Reconciler只能提交typed evidence/handoff proposal，由该authority owner验证并接受后写入；proposal本身不改变authority。
 - Evidence artifact仍由其source repo/runtime authority拥有；contract只记录immutable ref、digest/type和claim relation。
 - Handoff必须有version、predecessor、current frontier、known blockers、claim limit和supersession；不得以一个可覆盖文件丢失历史。
 - Passive Store receipt可以引用contract version，但不能反向修改目标状态。

@@ -34,7 +34,7 @@
 | `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
 | `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
 | `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
-| creation provenance | `created_by_type TEXT NOT NULL CHECK member|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
+| creation provenance | `created_by_type TEXT NOT NULL CHECK member\|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
 
 约束/index：
 
@@ -62,7 +62,7 @@
 | `resource_id` | `UUID NOT NULL` |
 | `revision_before` / `revision_after` | `BIGINT NOT NULL`，均非负且`after >= before` |
 | `result_snapshot` | `JSONB NOT NULL`，CHECK object且UTF-8 text form不超过16KiB；只存server-shaped saved result，不存raw request |
-| `actor_type` | `TEXT NOT NULL`，CHECK `member|agent` |
+| `actor_type` | `TEXT NOT NULL`，CHECK `member\|agent` |
 | `actor_id` | `UUID NOT NULL` |
 | `actor_task_id` | `UUID NULL`；CHECK member→NULL、agent→NOT NULL |
 | `created_at` | `TIMESTAMPTZ NOT NULL`，由server在insert时取`clock_timestamp()`，客户端不可提供 |
@@ -90,7 +90,7 @@ Named indexes/constraints：`id` PK；`(workspace_id,idempotency_key)`唯一；`
 - 统一workspace coordination advisory xact lock，namespace/key算法在V1冻结，V2-V5及删除路径必须复用；
 - workspace-scoped actual-root parent-chain validation query；
 - get/insert receipt与saved result；持scope row lock原子allocate/increment `next_receipt_ordinal`；按scope+ordinal读取receipt page；
-- deletion guard：scope root、receipt scope/resource对Issue的引用，以及workspace是否存在任何scope/receipt。
+- deletion guard：scope root，以及workspace是否存在任何scope；receipt history本身不构成Issue或Workspace删除阻塞。
 
 所有lookup显式带`workspace_id`，不能只按UUID。
 
@@ -106,7 +106,7 @@ AcquireIssueDeletionGuard(ctx, actor, workspaceID, issueIDs[]) -> DeletionGuardH
 AcquireWorkspaceDeletionGuard(ctx, actor, workspaceID) -> DeletionGuardHandle
 ```
 
-Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service取得并独占`*sql.Conn`，只暴露在该connection上开始实际delete transaction及`Finish`；handler不得换回pool执行entity delete，也不得在delete完成/失败前调用`Finish`。
+Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service取得并独占pinned `*pgxpool.Conn`，在Acquire期间已取得session advisory lock、开始`pgx.Tx`、按UUID锁定entity rows并通过同一qtx执行Store guard。Handle只暴露transaction-bound typed delete operations（内部`db.New(qtx)`）与`Finish(commit|rollback)`；handler不得取得raw pool fallback、不得另开transaction执行entity delete，也不得在delete完成/失败前Finish。
 
 ### `CoordinationActor`
 
@@ -181,10 +181,10 @@ Structured product error必须保留stable code。`--output json`失败时stderr
 
 V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)，不删除Store rows。
 
-- 单Issue删除、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前取得dedicated connection及冲突的session-level workspace lock；guard与最终entity delete transaction使用该connection，release只发生在实际DB delete commit/rollback或失败之后。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
-- Batch先解析全部实际目标并确认单workspace，再按UUID byte order锁row并一次性guard；不得逐项check后释放lock。Workspace删除不得先移除membership或invalidate cache。
-- Guard在session lock持有期间检查scope root/receipt引用；拒绝返回`coordination_delete_blocked`并保证cache/task/Autopilot/event零变化。Ensure在冲突xact lock内复核Workspace/root仍存在。
-- `defer`必须在同一session显式unlock并验证成功；panic/crash/connection close依赖PostgreSQL自动释放。测试包含unlock失败/connection close的pool污染保护。
+- 单Issue、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前Acquire handle：pool acquire pinned `*pgxpool.Conn`→session advisory lock→同connection `pgx.Tx`→entity rows按UUID byte order锁定→同qtx Store guard。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
+- Batch先解析全部实际目标并确认单workspace，再在一个qtx内锁定全部实际rows并一次性guard；不得逐项check后释放transaction/session lock。Workspace现有workspace row与chat-session locks必须并入handle qtx，且不得先移除membership或invalidate cache。
+- Guard在该qtx内检查scope root；receipt reference本身不触发`coordination_delete_blocked`。拒绝时handle rollback后再unlock，保证cache/task/Autopilot/event零变化。通过后既有副作用可执行，但最终Issue/Workspace DB delete只能经handle的同一qtx；锁持续到其commit/rollback。
+- `Finish`顺序固定为qtx commit/rollback→同session advisory unlock→connection release。Unlock返回false/error、qtx状态不明或connection异常时调用pgxpool `Hijack`并close/discard，绝不归还pool；panic defer必须走rollback/cleanup，process crash/connection close依赖PostgreSQL自动释放。
 
 该合同只声明guard rejection零副作用，以及Store refs/Issue/Workspace DB rows不会因并发TOCTOU形成**新**orphan。Guard通过后既有delete流程若在实际entity delete前后失败，可能留下task/Autopilot/event债；第一波不声称这些外部副作用随DB rollback恢复。
 
@@ -203,7 +203,7 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 9. before/after Issue status/assignee/comment/task/Autopilot计数不变；
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
 11. Ensure分别与单删、BatchDeleteIssues、Workspace删的真实并发race：要么Store写成功且delete被guard，要么delete提交且Store写因entity不存在而失败；不得产生新orphan；
-12. guard触发时cache/task/Autopilot/event均未变化；session lock持有到实际DB delete结束，connection close释放；guard通过后的delete failure不虚构task/Autopilot/event rollback；
+12. guard触发时cache/task/Autopilot/event均未变化；测试证明pinned `*pgxpool.Conn`、session lock、entity row locks、Store guard和最终delete共用一个持续qtx，Workspace既有row/chat locks也在该qtx；`Finish`严格commit/rollback后unlock，unlock/connection失败会Hijack+discard；guard通过后的delete failure不虚构task/Autopilot/event rollback；
 13. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
 14. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
 
@@ -211,9 +211,12 @@ Focused Go命令必须从`server` module执行：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
-  WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
+  export WORK_COORDINATION_DB_REQUIRED=1
+  go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
   go test ./internal/migrations ./cmd/migrate ./pkg/db/... ./internal/service ./internal/handler ./internal/middleware ./internal/cli ./cmd/multica
   go test -race ./internal/service ./internal/handler ./internal/cli ./cmd/multica
 )
@@ -222,7 +225,7 @@ make test
 git diff --check
 ```
 
-第一条verbose DB command必须在DB不可用时non-zero fail，输出实际执行的coordination migration/integration test names；任何skip都使该gate失败。
+`make sqlc`后的tracked diff与untracked porcelain assertions必须同时为空，任一非空立即使V1 gate失败；`git diff --check`不能替代。第一条verbose DB command必须在DB不可用时non-zero fail，输出实际执行的coordination migration/integration test names；任何skip都使该gate失败。
 
 ## Non-goals
 

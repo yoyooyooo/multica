@@ -26,7 +26,7 @@ root-scoped Autopilot heartbeat
 
 ## Tactical authority
 
-在accepted、版本化 objective/acceptance/claim-limit/authority envelope内可创建、拆分、重排、暂停、替换child work，维护typed work graph/frontier，选择domain roles，处理常规blocker/stale work，编排review/CI/merge/backup/预授权可回滚deploy，并维护typed evidence/handoff。
+在accepted、版本化 objective/acceptance/claim-limit/authority envelope内可创建、拆分、重排、暂停、替换child work，维护typed work graph/frontier，选择domain roles，处理常规blocker/stale work，并编排review/CI/merge/backup/预授权可回滚deploy。Reconciler对evidence/handoff只能提交typed proposal，由其authority owner校验并接受；不能自行改写accepted evidence/handoff或goal contract。
 
 改变四项合同、冲突事实主观裁决、扩大root/program边界必须`needs_human`。Issue文本/comment/metadata只能生成candidate，不能覆盖[goal-control SSoT](future-goal-control-contract.md)。
 
@@ -54,15 +54,15 @@ MINI-570永久`assisted transition dogfood`。只有passive Store、reconciliati
 
 ## Run contract
 
-每个actionable run验证immutable authority snapshot与current revision/generation；读取goal versions、Store/Issue/task facts；区分facts/evidence/projection/candidate；通过typed intents做最小收敛动作；保留独立roles/human gates；same intent复用same key；stale/lease-lost立即停止并重新preflight；更新typed evidence/handoff与claim limit；非actionable no-op；禁止raw provider/comment prompt/metadata双写/credential直连绕过kernel。
+每个actionable run验证immutable authority snapshot与current revision/generation；读取goal versions、Store/Issue/task facts；区分facts/evidence/projection/candidate；通过typed intents做最小收敛动作；保留独立roles/human gates；same intent复用same key；stale/lease-lost立即停止并重新preflight；只提出typed evidence/handoff proposal。Claim-limit不得由run直接修改；任何变更必须经过显式human approval，创建新的versioned goal-contract version并保存绑定该approval与exact version的receipt。非actionable no-op；禁止raw provider/comment prompt/metadata双写/credential直连绕过kernel。
 
 ## Permanent human gates
 
-objective/acceptance/claim-limit/authority、credential/admin、不可逆migration、破坏性rollback、超预算、未预授权production deployment、主观产品接受。Reconciler可准备材料、等待并验证approval receipt，不能代替批准。
+objective/acceptance/claim-limit/authority、credential/admin、不可逆migration、破坏性rollback、超预算、未预授权production deployment、主观产品接受。尤其claim-limit mutation必须是human-approved、CAS创建的versioned goal-contract update并产出receipt；Reconciler只能准备proposal、等待并验证approval/update receipt，不能代替批准或直接写入。
 
 ## Tests / acceptance
 
-shadow对账；single wake/active suppression/grace/cooldown/second tick；envelope内graph mutation与越界needs-human；fresh critic single-agent/no-subagent、fresh durable maintainer、独立operator未被绕过；restart/stale receipt/dynamic blocker恢复；event/fallback；no revision无GPT；retire不越权；program隔离；typed evidence/handoff；manual takeover。
+shadow对账；single wake/active suppression/grace/cooldown/second tick；envelope内graph mutation与越界needs-human；fresh critic single-agent/no-subagent、fresh durable maintainer、独立operator未被绕过；restart/stale receipt/dynamic blocker恢复；event/fallback；no revision无GPT；retire不越权；program隔离；typed evidence/handoff proposal由owner接受；claim-limit直接mutation拒绝及human-approved versioned update receipt；manual takeover。
 
 实现必须fresh writer、focused/full、fresh review、exact-head CI、主验收；Agent Kit/runtime apply另需明确approval与live canary。
 
