@@ -1,8 +1,8 @@
 # Future — Store lifecycle、archive 与 safe cleanup
 
 **Status:** future capability contract；V1-V5只提供deletion guard。
-**Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)完成live tracer，并对真实Store数据、Issue/Workspace删除链和retention要求做gap audit。
-**Blocks:** Reconciler controlled mode与[graduation canaries](graduation-canaries.md)中的retirement/archive证明。
+**Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)完成live tracer，且[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md) accepted；随后对真实Store数据、Issue/Workspace删除链和retention要求做gap audit。
+**Blocks:** Reconciler write calibration/copilot/controlled、MINI-570 bootstrap/cutover与[graduation canaries](graduation-canaries.md)中的retirement/archive证明；仍需reconciliation control与goal-control同时live。
 
 ## Objective
 
@@ -15,12 +15,12 @@
 - 保持guard，先显式archive/retire facts再允许delete；或
 - 重构delete orchestration，使DB cleanup与issue row delete共享qtx，并把不可回滚副作用移到commit后/outbox。
 
-不得只把`CleanupIssueReferences(qtx)`插入现有中段后声称“整体原子”。
+不得实现或插入`CleanupIssueReferences(qtx)`作为本轮补丁，也不得在现有中段声称“整体原子”。Future若选择cleanup，必须另行设计完整orchestration与外部副作用恢复合同。
 
 ## Required capabilities
 
 1. versioned scope state machine：active→retire_requested→archived；transition使用CAS、idempotency receipt与server actor/task provenance；
-2. retention policy：dependency、record、typed issue refs、receipts和goal/control refs各自保留/归档规则；
+2. retention policy：独立`coordination_dependency`、record、typed issue refs、receipts和goal/control refs各自保留/归档规则；legacy `issue_dependency`继续由原authority拥有，future Store lifecycle不得查询、改写或清理它；
 3. Issue/Workspace deletion preflight与explicit lifecycle API；
 4. 若允许cleanup，Store rows与Issue/Workspace DB row在同一qtx提交/rollback；
 5. task cancellation、Autopilot状态、event/outbox的commit ordering与failure recovery；

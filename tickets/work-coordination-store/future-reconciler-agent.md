@@ -46,11 +46,11 @@ program parent可观察排序child roots；每child保留独立facts/revision/le
 4. controlled：唯一root lease内自主协调；
 5. manual takeover：先pause、隔离lease再移交。
 
-Agent Kit **read-only** calibration可在control前完成；任何write calibration、copilot或controlled必须等control与goal contract live。
+Agent Kit **read-only** calibration可在control前完成；任何write calibration、copilot或controlled必须同时等reconciliation control、versioned goal-control与Store lifecycle三项source+live proof。三者缺一即fail closed。
 
 ## MINI-570 boundary
 
-MINI-570永久`assisted transition dogfood`。passive/control/goal能力及fresh canary通过后才可一次性snapshot bootstrap；历史自然语言仅candidate，冲突由human裁决，不把assignment当liveness、不回放lost wake、不批量改status/assignee/dependency。它不能替代fresh graduation roots。
+MINI-570永久`assisted transition dogfood`。只有passive Store、reconciliation control、versioned goal-control与Store lifecycle均完成source+live proof，并通过fresh canary与独立批准后，才可一次性snapshot bootstrap/cutover；历史自然语言仅candidate，冲突由human裁决，不把assignment当liveness、不回放lost wake、不批量改status/assignee/dependency。它不能替代fresh graduation roots。
 
 ## Run contract
 

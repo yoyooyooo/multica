@@ -2,7 +2,7 @@
 
 **Status:** 独立跨仓交付ticket；不属于Multica V1-V5 source。
 **Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)完成accepted live tracer。
-**Blocks:** [future-reconciliation-control.md](future-reconciliation-control.md)、[future-goal-control-contract.md](future-goal-control-contract.md)与[future-store-lifecycle.md](future-store-lifecycle.md)开始实施；Reconciler write calibration仍要等待三者live。
+**Blocks:** [future-reconciliation-control.md](future-reconciliation-control.md)、[future-goal-control-contract.md](future-goal-control-contract.md)与[future-store-lifecycle.md](future-store-lifecycle.md)开始实施；它不单独解锁任何write能力。
 
 ## Objective
 
@@ -32,7 +32,7 @@
 
 1. 只调用`scope get`/`inspect`/dependency list/blocker list等read commands；不得调用ensure/add/resolve。
 2. Store输出按V5 exact contract解释；comment/metadata仍是历史/current Issue路径，尚未切换为Store projection或双写。
-3. 当Store scope不存在、版本不匹配、读取失败或revision变化时，返回`not_available|stale_read`并保持现有协调路径；不得自行创建scope或修复事实。
+3. 当Store scope不存在、版本不匹配、读取失败或revision变化时，返回Agent Kit本地classification `not_available|stale_read`并保持现有协调路径；不得自行创建scope或修复事实。
 4. Shadow对账只记录分类：match、legacy-only、store-only、conflict、unavailable；不改Issue/status/assignee/dependency/blocker/task。
 5. MINI-570永久保持`assisted`；不得把read-only校准描述成autonomy证据。
 6. 不引入第二Supervisor Agent；未来`multica-work-reconciler`仍由独立ticket拥有。
@@ -45,7 +45,7 @@
 - Native Stage/现有coordinator继续拥有当前liveness/frontier行为；
 - passive Store尚未拥有wake/dispatch/status/terminal authority；
 - metadata/comment不得与Store双写为两份canonical dependency；
-- 真正authority cutover必须等future control、goal contract、write calibration及独立批准。
+- 任何Reconciler write calibration、copilot、controlled、MINI-570 bootstrap或authority cutover都必须同时等future reconciliation control、versioned goal-control与Store lifecycle三项source+live proof完成，并另获独立批准。
 
 ## Acceptance / tests
 
@@ -57,7 +57,7 @@
 - self-containment、source-map、topology/placement和target projection tests通过；
 - fresh independent review、exact-head CI、authorized linear merge、origin/backup及目标projection readback完成。
 
-Live shadow canary至少覆盖一个非MINI-570 fresh root或disposable fixture；它只证明读取与分类，不证明write control。
+Live shadow canary至少覆盖一个非MINI-570 fresh root或disposable fixture；它只证明读取与分类，不证明write control。此ticket完成后，control、goal与lifecycle任一项缺失都继续fail closed，不能进入write calibration/copilot/controlled/MINI-570 bootstrap/cutover。
 
 ## Non-goals
 
