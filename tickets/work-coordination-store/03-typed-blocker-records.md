@@ -170,7 +170,7 @@ POST /api/coordination/scopes/{scopeId}/blockers/{recordId}/resolve
 
 Mutation使用上节唯一append/resolve wire body与nullable规则，不在API层定义第二种shape。List只调用service并返回`scope_revision`、stable order和`next_cursor`；foreign/malformed cursor→`coordination_invalid_payload`，revision变化→`coordination_revision_conflict`。
 
-V3增量使用`coordination_capacity_exceeded`；dependency mismatch/resolved→`coordination_invalid_payload`，foreign/missing→不泄露详情的`coordination_not_found`或`coordination_cross_workspace`，owner mismatch→`coordination_dependency_scope_conflict`。HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)，不得使用裸后缀、message substring或泄露foreign详情。
+V3增量使用`coordination_capacity_exceeded`；dependency mismatch/resolved→`coordination_invalid_payload`，foreign/missing→不泄露详情的`coordination_not_found`或`coordination_cross_workspace`，owner mismatch→`coordination_dependency_scope_conflict`。HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。V3 response classifier只新增这些exact 409组合：blocker append POST可返回`coordination_capacity_exceeded|coordination_revision_conflict|coordination_idempotency_conflict|coordination_dependency_scope_conflict`，blocker list GET只可返回`coordination_revision_conflict`，blocker resolve POST只可返回`coordination_revision_conflict|coordination_idempotency_conflict`；其他known 409 code放在这些routes上仍须fallback/exit 1。不得使用裸后缀、message substring或泄露foreign详情。
 
 ### Response wire SSoT
 
@@ -265,7 +265,7 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 6. blocker resolve后dependency仍active；dependency resolve后blocker状态保持；
 7. list stable pagination：100上限、created_at+id tie、revision/status-bound cursor无重漏；翻页间mutation稳定`coordination_revision_conflict`；open第1000条可写，第1001条返回`coordination_capacity_exceeded`且零写入；
 8. member/task root+endpoint authority、伪造身份和run-only task拒绝；
-9. API/CLI exact request与mutation/list response golden fixtures：open/resolved/nullability、member/agent provenance、UTC timestamp、empty refs/cursor、changed/no-op/replay及saved-vs-current revision；
+9. API/CLI exact request与mutation/list response golden fixtures：open/resolved/nullability、member/agent provenance、UTC timestamp、empty refs/cursor、changed/no-op/replay及saved-vs-current revision；逐一证明上节V3 exact method/route/code组合才构造ProductError，未列组合与legacy/status-mismatch 409均fallback/exit 1；
 10. Append分别与单删、BatchDeleteIssues、Workspace删真实并发race，无新orphan；guard覆盖record字段与create/resolution refs，拒绝时cache/task/Autopilot/event零变化；Batch覆盖savepoint partial-success，且`40001`、`40P01`、connection/protocol/context cancellation/unknown tx state及savepoint create/rollback/release失败均整批Abort；
 11. Issue status/assignee/comment/metadata/task/Autopilot计数不变；
 12. Skill/source map/fork narrative只声明V1-V3。
