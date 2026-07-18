@@ -15,7 +15,7 @@
 - `server/internal/handler/coordination*.go`、`handler.go` wiring、`server/cmd/server/router.go`。
 - `server/cmd/multica/cmd_coordination.go`及tests；`server/internal/cli/client.go`、`errors.go`、顶层JSON error rendering所需的`main.go`/`help.go`最小seam及tests。
 - `server/internal/service/builtin_skills/multica-work-coordination/**`与embed/source-map tests。
-- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试：允许引入dedicated connection/session lock并让最终entity delete transaction使用该connection，但不实现Store cleanup，也不宣称既有外部副作用可rollback。
+- Issue单删/批删、Workspace删除入口的**lock-held deletion guard seam**及回归测试：从pool Acquire pinned `*pgxpool.Conn`，先取session lock，再begin同connection上的`pgx.Tx`，并让guard与最终entity delete使用该tx-bound qtx；不实现Store cleanup，也不宣称既有外部副作用可rollback。
 - `docs/fork-features/work-coordination-store/README.md`与registry，只声明V1事实。
 
 不得修改`001_init`、dependency业务、blocker、Autopilot、Stage、Issue status/assignee/comment、Agent Kit或UI。
@@ -34,7 +34,7 @@
 | `workflow_profile_key TEXT NOT NULL` | 1-128 chars，`^[a-z0-9][a-z0-9._-]{0,127}$` |
 | `revision BIGINT NOT NULL DEFAULT 0` | CHECK `0 <= revision <= MaxInt64` |
 | `next_receipt_ordinal BIGINT NOT NULL DEFAULT 0` | internal per-scope allocator；CHECK非负，不属于coordination revision |
-| creation provenance | `created_by_type TEXT NOT NULL CHECK member|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
+| creation provenance | `created_by_type TEXT NOT NULL CHECK member\|agent`、`created_by_id UUID NOT NULL`、`created_task_id UUID NULL`、`created_at/updated_at TIMESTAMPTZ NOT NULL`；member→task NULL、agent→task NOT NULL |
 
 约束/index：
 
@@ -62,7 +62,7 @@
 | `resource_id` | `UUID NOT NULL` |
 | `revision_before` / `revision_after` | `BIGINT NOT NULL`，均非负且`after >= before` |
 | `result_snapshot` | `JSONB NOT NULL`，CHECK object且UTF-8 text form不超过16KiB；只存server-shaped saved result，不存raw request |
-| `actor_type` | `TEXT NOT NULL`，CHECK `member|agent` |
+| `actor_type` | `TEXT NOT NULL`，CHECK `member\|agent` |
 | `actor_id` | `UUID NOT NULL` |
 | `actor_task_id` | `UUID NULL`；CHECK member→NULL、agent→NOT NULL |
 | `created_at` | `TIMESTAMPTZ NOT NULL`，由server在insert时取`clock_timestamp()`，客户端不可提供 |
@@ -90,7 +90,7 @@ Named indexes/constraints：`id` PK；`(workspace_id,idempotency_key)`唯一；`
 - 统一workspace coordination advisory xact lock，namespace/key算法在V1冻结，V2-V5及删除路径必须复用；
 - workspace-scoped actual-root parent-chain validation query；
 - get/insert receipt与saved result；持scope row lock原子allocate/increment `next_receipt_ordinal`；按scope+ordinal读取receipt page；
-- deletion guard：scope root、receipt scope/resource对Issue的引用，以及workspace是否存在任何scope/receipt。
+- deletion guard：scope root，以及workspace是否存在任何scope；receipt history本身不构成Issue或Workspace删除阻塞。
 
 所有lookup显式带`workspace_id`，不能只按UUID。
 
@@ -106,7 +106,7 @@ AcquireIssueDeletionGuard(ctx, actor, workspaceID, issueIDs[]) -> DeletionGuardH
 AcquireWorkspaceDeletionGuard(ctx, actor, workspaceID) -> DeletionGuardHandle
 ```
 
-Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service取得并独占`*sql.Conn`，只暴露在该connection上开始实际delete transaction及`Finish`；handler不得换回pool执行entity delete，也不得在delete完成/失败前调用`Finish`。
+Handler不得直查coordination tables。所有read和guard均经过同一workspace/task authority seam。`DeletionGuardHandle`由service从pool Acquire并独占pinned `*pgxpool.Conn`：先在该connection取得session advisory lock，再begin `pgx.Tx`并构造tx-bound qtx；handle只暴露该qtx上的最终entity delete及`Finish(commit|rollback)`。Handler不得换回pool或另开transaction执行delete，也不得在delete完成/失败前调用`Finish`。
 
 ### `CoordinationActor`
 
@@ -181,10 +181,10 @@ Structured product error必须保留stable code。`--output json`失败时stderr
 
 V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace-coordination-advisory-lock-ssot)，不删除Store rows。
 
-- 单Issue删除、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前取得dedicated connection及冲突的session-level workspace lock；guard与最终entity delete transaction使用该connection，release只发生在实际DB delete commit/rollback或失败之后。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
-- Batch先解析全部实际目标并确认单workspace，再按UUID byte order锁row并一次性guard；不得逐项check后释放lock。Workspace删除不得先移除membership或invalidate cache。
-- Guard在session lock持有期间检查scope root/receipt引用；拒绝返回`coordination_delete_blocked`并保证cache/task/Autopilot/event零变化。Ensure在冲突xact lock内复核Workspace/root仍存在。
-- `defer`必须在同一session显式unlock并验证成功；panic/crash/connection close依赖PostgreSQL自动释放。测试包含unlock失败/connection close的pool污染保护。
+- 单Issue删除、BatchDeleteIssues、Workspace删除各自在任何cache/task/Autopilot/event副作用前从pool Acquire pinned `*pgxpool.Conn`，先在该connection取得冲突的session-level workspace lock，再begin同connection上的`pgx.Tx`并构造tx-bound qtx。不得保留瞬时`CheckIssueDeletionAllowed`/`CheckWorkspaceDeletionAllowed` API。
+- Batch先解析全部实际目标并确认单workspace，再在qtx内按UUID byte order锁entity rows并一次性guard；不得逐项check后释放lock。Workspace删除既有workspace row lock及chat-session locks必须并入同一qtx，不得先移除membership、invalidate cache或在外部transaction取锁。
+- Guard在session lock与`pgx.Tx`持有期间检查scope root；receipt reference本身不触发`coordination_delete_blocked`。Handle只允许同一qtx执行最终entity delete。Scope guard拒绝时保证cache/task/Autopilot/event零变化。Ensure在冲突xact lock内复核Workspace/root仍存在。
+- `Finish`必须先commit或rollback `pgx.Tx`，再在同一pinned connection显式session unlock并验证返回true，最后release；unlock返回false或报错必须close/discard connection，禁止归还pool。Begin/guard/delete失败同样按rollback→unlock清理；panic/crash/connection close依赖PostgreSQL自动释放。测试包含unlock失败/connection close的pool污染保护。
 
 该合同只声明guard rejection零副作用，以及Store refs/Issue/Workspace DB rows不会因并发TOCTOU形成**新**orphan。Guard通过后既有delete流程若在实际entity delete前后失败，可能留下task/Autopilot/event债；第一波不声称这些外部副作用随DB rollback恢复。
 
@@ -203,14 +203,16 @@ V1实现并复用[workspace coordination advisory-lock SSoT](README.md#workspace
 9. before/after Issue status/assignee/comment/task/Autopilot计数不变；
 10. `ensure_scope/scope` allowlist、canonical JSON与SHA-256 golden vectors；unknown operation/resource_type被service拒绝；
 11. Ensure分别与单删、BatchDeleteIssues、Workspace删的真实并发race：要么Store写成功且delete被guard，要么delete提交且Store写因entity不存在而失败；不得产生新orphan；
-12. guard触发时cache/task/Autopilot/event均未变化；session lock持有到实际DB delete结束，connection close释放；guard通过后的delete failure不虚构task/Autopilot/event rollback；
+12. guard触发时cache/task/Autopilot/event均未变化；pinned connection上的session lock→`pgx.Tx`→UUID row locks/guard→同qtx delete→commit/rollback→verified unlock顺序成立，Workspace row/chat-session locks在同一qtx，unlock失败close/discard且connection close释放；guard通过后的delete failure不虚构task/Autopilot/event rollback；
 13. namespace常量与至少两个workspace UUID→signed int32 key golden vectors；session/xact helpers对同一workspace互斥、不同无碰撞fixture可并行；
 14. receipt ordinal从1严格递增；exact replay不增、新key no-op增；allocator/receipt rollback不推进counter；较早开始但较晚commit的writer仍不能污染已建立的ordinal pagination window。
 
-Focused Go命令必须从`server` module执行：
+Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
   WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'

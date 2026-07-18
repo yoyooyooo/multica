@@ -2,7 +2,7 @@
 
 **Status:** future capability contract；V1-V5只提供deletion guard。
 **Blocked by:** [05-e2e-passive-deploy.md](05-e2e-passive-deploy.md)完成live tracer，且[Agent Kit read-only calibration](post-deploy-agent-kit-read-only-calibration.md) accepted；随后对真实Store数据、Issue/Workspace删除链和retention要求做gap audit。
-**Blocks:** Reconciler write calibration/copilot/controlled、MINI-570 assisted facts bootstrap与[graduation canaries](graduation-canaries.md)中的retirement/archive证明；仍需reconciliation control与goal-control同时live。它不解锁MINI-570 authority/autonomy cutover。
+**Blocks:** Reconciler write calibration/copilot/controlled与MINI-570 assisted facts bootstrap；仍需reconciliation control与goal-control同时live。Lifecycle/archive必须先独立完成source acceptance、获批apply与live proof，[graduation canaries](graduation-canaries.md)随后依赖并验证其已上线行为；本ticket的source/live acceptance绝不反向依赖graduation。它不解锁MINI-570 authority/autonomy cutover。
 
 ## Objective
 
@@ -31,10 +31,12 @@
 
 ## Acceptance
 
+本ticket须在任何graduation canary创建前独立完成以下source+live gates；graduation结果不是本ticket进入live或被accept的前置条件。
+
 - active scope仍被guard；archived scope按明确policy允许或拒绝delete；
 - cleanup success/failure、issue delete failure、DB rollback均无orphan/半清理；
 - 若外部副作用存在，证明只在commit后执行或可幂等reconcile，且不把其债务纳入DB atomicity claim；
-- receipts/evidence不会因普通delete或application rollback被清空；
+- receipts/evidence不会因普通delete或application rollback被清空；receipt history/reference本身不作为独立删除阻塞，retention/archive preflight按显式policy保存或迁移它，删除后的replay因current authority/resource mismatch而fail closed；
 - concurrent retire/delete/CAS最多一个合法结果；
 - Workspace teardown同样有exact policy与测试；
 - fresh review、CI、当次deployment approval和live rollback演练完成。
