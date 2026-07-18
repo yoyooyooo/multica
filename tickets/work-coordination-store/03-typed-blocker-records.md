@@ -268,10 +268,12 @@ Issue若出现在record root/downstream/upstream或`coordination_record_issue_re
 11. Issue status/assignee/comment/metadata/task/Autopilot计数不变；
 12. Skill/source map/fork narrative只声明V1-V3。
 
-Focused Go命令必须从`server` module执行：
+Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
   WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'

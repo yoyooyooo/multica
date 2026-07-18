@@ -104,7 +104,7 @@ Flow前后对root/B/C逐项exact比较：
 
 ### Deletion guard conformance
 
-对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在dedicated connection持有session lock期间guard，并在任何cache/task/Autopilot/event前返回`coordination_delete_blocked`。Receipt history/reference单独存在时不得触发删除阻塞；删除后旧receipt replay必须因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、session lock持有到实际entity delete结束、connection close释放。无受guard保护Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
+对scope root、`coordination_dependency` endpoints、record字段、create/resolution relation refs和workspace逐类注入单删、BatchDeleteIssues、Workspace删除；均须在任何cache/task/Autopilot/event前从pool Acquire pinned `*pgxpool.Conn`，先取session advisory lock，再begin同connection上的`pgx.Tx`，按UUID锁entity rows并guard。返回handle只允许tx-bound qtx执行最终entity delete；Workspace既有row lock及chat-session locks并入同一qtx。`Finish`先commit/rollback，再在同一connection session unlock并验证true；false/error必须close/discard。Receipt history/reference单独存在时不得触发删除阻塞；删除后旧receipt replay必须因current authority/resource revalidation失败。并发Ensure/Add/Append与三类delete的矩阵证明无新orphan、上述顺序及connection close释放。无受guard保护Store引用的普通delete路径保持既有行为；对guard通过后delete后续失败不声称task/Autopilot/event债可rollback，V4不得顺带重构。
 
 ## Built-in skill / source map 收口
 
@@ -136,10 +136,12 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 11. skill embed/frontmatter/source-map/path/symbol/narrative contract；
 12. sqlc二次生成无drift，focused/race/full/build/check通过。
 
-Focused Go命令必须从`server` module执行：
+Focused Go命令必须从`server` module执行。`make sqlc`后，generated目录的`git diff --exit-code`返回nonzero或porcelain assertion返回nonzero（即输出nonempty）均使gate失败：
 
 ```bash
 make sqlc
+git diff --exit-code -- server/pkg/db/generated
+test -z "$(git status --porcelain --untracked-files=all -- server/pkg/db/generated)"
 (
   cd server
   WORK_COORDINATION_DB_REQUIRED=1 go test -count=1 -v ./internal/migrations ./cmd/migrate ./internal/service ./internal/handler -run 'WorkCoordination'
