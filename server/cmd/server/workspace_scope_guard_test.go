@@ -37,8 +37,8 @@ func TestWorkspaceScopeGuard(t *testing.T) {
 		id := seedIssue(t, ctx)
 		t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, util.UUIDToString(id)) })
 
-		if err := queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: id, WorkspaceID: wsB}); err != nil {
-			t.Fatalf("cross-workspace DeleteIssue: expected nil error (no-op), got %v", err)
+		if rows, err := queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: id, WorkspaceID: wsB}); err != nil || rows != 0 {
+			t.Fatalf("cross-workspace DeleteIssue: rows=%d err=%v", rows, err)
 		}
 		assertRowExists(t, ctx, "issue", id)
 	})
@@ -115,8 +115,8 @@ func TestWorkspaceScopeGuard(t *testing.T) {
 		id := seedIssue(t, ctx)
 		t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, util.UUIDToString(id)) })
 
-		if err := queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: id, WorkspaceID: wsA}); err != nil {
-			t.Fatalf("in-workspace DeleteIssue: %v", err)
+		if rows, err := queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: id, WorkspaceID: wsA}); err != nil || rows != 1 {
+			t.Fatalf("in-workspace DeleteIssue: rows=%d err=%v", rows, err)
 		}
 		var count int
 		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE id = $1`, util.UUIDToString(id)).Scan(&count); err != nil {

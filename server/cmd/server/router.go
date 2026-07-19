@@ -1028,6 +1028,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
 
+			// Passive work coordination scopes. Register the static by-root route
+			// before the scope-id route so "by-root" is never parsed as a UUID.
+			r.Route("/api/coordination/scopes", func(r chi.Router) {
+				r.Post("/", h.EnsureCoordinationScope)
+				r.Get("/by-root", h.GetCoordinationScopeByRoot)
+				r.Get("/{scopeId}", h.GetCoordinationScope)
+			})
+
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 

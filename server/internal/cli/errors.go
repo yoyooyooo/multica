@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -51,6 +54,7 @@ const (
 	ExitAuth       = 3 // 401 / 403
 	ExitNotFound   = 4 // 404
 	ExitValidation = 5 // 400 / 422
+	ExitConflict   = 6 // strict typed product conflicts
 )
 
 // IsNetwork reports whether the kind is a transport-layer failure.
@@ -140,6 +144,209 @@ func (e *UserMessageError) Error() string {
 }
 
 func (e *UserMessageError) Unwrap() error { return e.Err }
+
+// ProductError is a strict, safe product-level error envelope. It is only
+// constructed when the endpoint, content type, status, and code all match the
+// coordination contract; generic or malformed HTTP errors keep legacy handling.
+type ProductError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *ProductError) Error() string { return e.Code + ": " + e.Message }
+
+func (e *ProductError) JSON() string {
+	payload := struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{}
+	payload.Error.Code = e.Code
+	payload.Error.Message = e.Message
+	encoded, _ := json.Marshal(payload)
+	return string(encoded)
+}
+
+var coordinationStatusByCode = map[string]int{
+	"coordination_not_found":                 http.StatusNotFound,
+	"coordination_cross_workspace":           http.StatusForbidden,
+	"coordination_forbidden":                 http.StatusForbidden,
+	"coordination_invalid_payload":           http.StatusBadRequest,
+	"coordination_capacity_exceeded":         http.StatusConflict,
+	"coordination_self_dependency":           http.StatusUnprocessableEntity,
+	"coordination_cycle":                     http.StatusUnprocessableEntity,
+	"coordination_revision_conflict":         http.StatusConflict,
+	"coordination_idempotency_conflict":      http.StatusConflict,
+	"coordination_dependency_scope_conflict": http.StatusConflict,
+	"coordination_delete_blocked":            http.StatusConflict,
+	"coordination_internal":                  http.StatusInternalServerError,
+}
+
+// CoordinationProductError upgrades a strict, route-allowlisted coordination
+// envelope to a ProductError. Every mismatch returns the original error.
+func CoordinationProductError(err error) error {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !coordinationV1RouteRegistered(httpErr.Method, httpErr.Path) {
+		return err
+	}
+	mediaType, _, parseErr := mime.ParseMediaType(httpErr.ContentType)
+	if parseErr != nil || mediaType != "application/json" {
+		return err
+	}
+	var envelope struct {
+		Error struct {
+			Code    string          `json:"code"`
+			Message string          `json:"message"`
+			Details json.RawMessage `json:"details,omitempty"`
+		} `json:"error"`
+	}
+	if shapeErr := validateCoordinationJSONShape([]byte(httpErr.Body)); shapeErr != nil {
+		return err
+	}
+	decoder := json.NewDecoder(strings.NewReader(httpErr.Body))
+	decoder.DisallowUnknownFields()
+	if decodeErr := decoder.Decode(&envelope); decodeErr != nil {
+		return err
+	}
+	var trailing any
+	if decodeErr := decoder.Decode(&trailing); !errors.Is(decodeErr, io.EOF) {
+		return err
+	}
+	expectedStatus, known := coordinationStatusByCode[envelope.Error.Code]
+	if !known || expectedStatus != httpErr.StatusCode || !coordinationV1RouteAllowsCode(httpErr.Method, httpErr.Path, envelope.Error.Code) || envelope.Error.Message == "" || len(envelope.Error.Message) > 1024 || strings.TrimSpace(envelope.Error.Message) != envelope.Error.Message {
+		return err
+	}
+	if len(envelope.Error.Details) > 0 && string(envelope.Error.Details) != "null" {
+		var details map[string]json.RawMessage
+		if json.Unmarshal(envelope.Error.Details, &details) != nil || len(details) != 0 {
+			return err
+		}
+	}
+	return &ProductError{StatusCode: httpErr.StatusCode, Code: envelope.Error.Code, Message: envelope.Error.Message}
+}
+
+func coordinationV1RouteRegistered(method, rawPath string) bool {
+	path := strings.SplitN(rawPath, "?", 2)[0]
+	switch {
+	case method == http.MethodPost && path == "/api/coordination/scopes":
+		return true
+	case method == http.MethodGet && path == "/api/coordination/scopes/by-root":
+		return true
+	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
+		return true
+	case method == http.MethodDelete && hasOnePathValue(path, "/api/issues/"):
+		return true
+	case method == http.MethodPost && path == "/api/issues/batch-delete":
+		return true
+	case method == http.MethodDelete && hasOnePathValue(path, "/api/workspaces/"):
+		return true
+	default:
+		return false
+	}
+}
+
+func coordinationV1RouteAllowsCode(method, rawPath, code string) bool {
+	path := strings.SplitN(rawPath, "?", 2)[0]
+	baseCodes := map[string]struct{}{
+		"coordination_not_found":       {},
+		"coordination_cross_workspace": {},
+		"coordination_forbidden":       {},
+		"coordination_invalid_payload": {},
+		"coordination_internal":        {},
+	}
+	if _, ok := baseCodes[code]; ok {
+		return true
+	}
+	if method == http.MethodPost && path == "/api/coordination/scopes" {
+		return code == "coordination_idempotency_conflict"
+	}
+	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
+		return code == "coordination_delete_blocked"
+	}
+	if method == http.MethodPost && path == "/api/issues/batch-delete" {
+		return code == "coordination_delete_blocked"
+	}
+	if method == http.MethodDelete && hasOnePathValue(path, "/api/workspaces/") {
+		return code == "coordination_delete_blocked"
+	}
+	return false
+}
+
+func hasOnePathValue(path, prefix string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	value := strings.TrimPrefix(path, prefix)
+	return value != "" && !strings.Contains(value, "/")
+}
+
+func validateCoordinationJSONShape(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if err := consumeCoordinationJSONValue(decoder, first); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeCoordinationJSONValue(decoder *json.Decoder, token json.Token) error {
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid JSON object key")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return errors.New("duplicate JSON object key")
+			}
+			seen[key] = struct{}{}
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+}
 
 // WithUserMessage wraps err with a user-facing message that FormatError will
 // surface by default. It returns nil when err is nil so it can be used inline
@@ -362,6 +569,10 @@ func FormatError(err error, debug bool) string {
 	if err == nil {
 		return ""
 	}
+	var productErr *ProductError
+	if errors.As(err, &productErr) {
+		return productErr.JSON()
+	}
 	lang := DetectLanguage()
 	base := userMessage(err, lang)
 	if debug || debugEnabled() {
@@ -469,6 +680,22 @@ func ExitCodeFor(err error) int {
 		return 0
 	}
 
+	var productErr *ProductError
+	if errors.As(err, &productErr) {
+		switch productErr.StatusCode {
+		case http.StatusForbidden:
+			return ExitAuth
+		case http.StatusNotFound:
+			return ExitNotFound
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			return ExitValidation
+		case http.StatusConflict:
+			return ExitConflict
+		default:
+			return ExitGeneric
+		}
+	}
+
 	var netErr *NetworkError
 	if errors.As(err, &netErr) {
 		return ExitNetwork
@@ -476,6 +703,17 @@ func ExitCodeFor(err error) int {
 
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
+		// Coordination endpoints only get the special exit classes after a strict
+		// ProductError upgrade. Legacy bodies, unknown codes, and status/code
+		// mismatches must keep the safe fallback exit 1.
+		if strings.HasPrefix(httpErr.Path, "/api/coordination/") {
+			switch httpErr.StatusCode {
+			case http.StatusBadRequest, http.StatusUnprocessableEntity:
+				return ExitValidation
+			default:
+				return ExitGeneric
+			}
+		}
 		switch httpErr.Kind() {
 		case KindAuthRequired, KindForbidden:
 			return ExitAuth

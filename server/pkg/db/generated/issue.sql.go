@@ -338,7 +338,7 @@ func (q *Queries) CreateIssueWithOrigin(ctx context.Context, arg CreateIssueWith
 	return i, err
 }
 
-const deleteIssue = `-- name: DeleteIssue :exec
+const deleteIssue = `-- name: DeleteIssue :execrows
 DELETE FROM issue WHERE id = $1 AND workspace_id = $2
 `
 
@@ -352,9 +352,12 @@ type DeleteIssueParams struct {
 // (loadIssueForUser / GetIssueInWorkspace) already enforce membership today,
 // but a future loader bypass or a new caller skipping the loader would be
 // silently catastrophic without this guard. See incident #1661.
-func (q *Queries) DeleteIssue(ctx context.Context, arg DeleteIssueParams) error {
-	_, err := q.db.Exec(ctx, deleteIssue, arg.ID, arg.WorkspaceID)
-	return err
+func (q *Queries) DeleteIssue(ctx context.Context, arg DeleteIssueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteIssue, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteIssueMetadataKey = `-- name: DeleteIssueMetadataKey :one

@@ -12,3 +12,11 @@ DELETE FROM task_token WHERE task_id = $1;
 
 -- name: DeleteExpiredTaskTokens :exec
 DELETE FROM task_token WHERE expires_at <= now();
+
+-- name: GetTaskTokenByIDForCoordination :one
+SELECT * FROM task_token
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND agent_id = @agent_id
+  AND task_id = @task_id
+  AND expires_at > now();
