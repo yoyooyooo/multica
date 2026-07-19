@@ -45,6 +45,21 @@ func (q *Queries) DeleteMember(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const deleteMembersByWorkspaceForCoordination = `-- name: DeleteMembersByWorkspaceForCoordination :execrows
+DELETE FROM member WHERE workspace_id = $1
+`
+
+// Workspace deletion owns this explicit teardown inside its pinned qtx. Do not
+// defer membership removal to the workspace FK cascade: post-commit effects use
+// the pre-delete census, while rollback must restore every membership row.
+func (q *Queries) DeleteMembersByWorkspaceForCoordination(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteMembersByWorkspaceForCoordination, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getMember = `-- name: GetMember :one
 SELECT id, workspace_id, user_id, role, created_at FROM member
 WHERE id = $1

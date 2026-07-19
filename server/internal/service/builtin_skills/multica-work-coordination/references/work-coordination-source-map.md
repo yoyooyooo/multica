@@ -15,7 +15,10 @@ server/migrations/208_coordination_receipt_scope_ordinal_unique_index.up.sql
 server/migrations/209_coordination_receipt_scope_ordinal_read_index.up.sql
 server/migrations/210_coordination_scope_receipt_attach_constraints.up.sql
 server/pkg/db/queries/coordination.sql
+server/pkg/db/queries/issue.sql
+server/pkg/db/queries/member.sql
 server/pkg/db/queries/task_token.sql
+server/pkg/db/queries/workspace.sql
 server/internal/service/coordination.go
 server/internal/service/coordination_delete.go
 server/internal/handler/coordination.go

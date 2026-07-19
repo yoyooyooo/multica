@@ -23,9 +23,15 @@ It does not add dependency, blocker, inspect, or scheduling authority.
 
 V1 stores only passive coordination facts. It does not alter Issue status, assignee, comments, metadata, task scheduling, or Autopilot behavior. It does not use foreign keys or cascading actions. Delete-path handling remains a narrow guard seam around existing delete flows; V1 does not introduce Store cleanup or external-effect durability guarantees.
 
-Issue and Workspace deletion now use one pinned connection, a workspace session lock, one transaction, and at-most-once `Finish(commit)`. Batch deletion preserves the existing partial-success boundary with per-target savepoints: only `entity_delete` SQLSTATE `23503` is recoverable after verified rollback-to/release; all other failures abort the batch. Compact typed effects run only after commit and verified lock release. Commit-unknown or release failure returns `coordination_internal` and runs no effects.
+Issue and Workspace deletion now use one pinned connection, a workspace session lock, one transaction, and at-most-once `Finish(commit)`. Workspace membership teardown is explicit in that transaction and checked against the locked pre-delete census, rather than being left only to FK cascade. Batch deletion preserves the existing partial-success boundary with per-target savepoints: only `entity_delete` SQLSTATE `23503` is recoverable after verified rollback-to/release; all other failures abort the batch. Compact typed effects run only after commit and verified lock release. Commit-unknown or release failure returns `coordination_internal` and runs no effects.
 
 Failures are closed through typed `coordination_*` errors and stable CLI exit mapping. V1 only upgrades exact method/route/code combinations; future-slice conflict codes on V1 routes retain legacy exit 1. Receipt replay revalidates current authority before returning saved data.
+
+## Deployment and portability
+
+The source implementation is a PR candidate in this fork. Exact-head CI, merge, migration apply, service/CLI restart, and live deployment are not claimed here. No runtime or projection target has been updated by the source change alone.
+
+This feature is a general upstream candidate rather than a permanent local-only contract. Until upstream owns an equivalent passive slice, this fork remains the source authority for the implementation and its additive migrations.
 
 ## Implementation anchors
 

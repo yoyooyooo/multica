@@ -430,7 +430,7 @@ func (h *IssueDeletionHandle) deleteIssuePhases(ctx context.Context, issue db.Is
 		return IssueDeletionEffects{}, IssueDeletionPhaseEntityDelete, err
 	}
 	if rows != 1 {
-		return IssueDeletionEffects{}, IssueDeletionPhaseEntityDelete, errIssueDeletionRowCount
+		return IssueDeletionEffects{}, IssueDeletionPhaseEntityDelete, errDeletionRowCount
 	}
 	return IssueDeletionEffects{
 		IssueID:          issue.ID,
@@ -468,12 +468,19 @@ func (h *WorkspaceDeletionHandle) Delete(ctx context.Context) (WorkspaceDeletion
 	if err := h.lifecycle.qtx.DeleteChatPinnedAgentsByWorkspace(ctx, h.workspace.ID); err != nil {
 		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, classifyIssueDeletionFailure(err, false), err))
 	}
+	memberRows, err := h.lifecycle.qtx.DeleteMembersByWorkspaceForCoordination(ctx, h.workspace.ID)
+	if err != nil {
+		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, classifyIssueDeletionFailure(err, false), err))
+	}
+	if memberRows != int64(len(h.members)) {
+		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, IssueDeletionFailureRowCount, errDeletionRowCount))
+	}
 	rows, err := h.lifecycle.qtx.DeleteWorkspace(ctx, h.workspace.ID)
 	if err != nil {
 		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, classifyIssueDeletionFailure(err, false), err))
 	}
 	if rows != 1 {
-		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, IssueDeletionFailureRowCount, errIssueDeletionRowCount))
+		return h.failWorkspaceDeletion(newWorkspaceDeletionFatal(IssueDeletionPhaseEntityDelete, IssueDeletionFailureRowCount, errDeletionRowCount))
 	}
 	userIDs := make([]pgtype.UUID, 0, len(h.members))
 	for _, member := range h.members {
@@ -651,7 +658,7 @@ func (l *coordinationDeleteLifecycle) discard() {
 	}()
 }
 
-var errIssueDeletionRowCount = errors.New("issue deletion row-count invariant failed")
+var errDeletionRowCount = errors.New("deletion row-count invariant failed")
 
 func newIssueDeletionFatal(phase IssueDeletionPhase, class IssueDeletionFailureClass, cause error) error {
 	return &IssueDeletionFatalError{
@@ -670,7 +677,7 @@ func newWorkspaceDeletionFatal(phase IssueDeletionPhase, class IssueDeletionFail
 }
 
 func classifyIssueDeletionFailure(err error, savepoint bool) IssueDeletionFailureClass {
-	if errors.Is(err, errIssueDeletionRowCount) || errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, errDeletionRowCount) || errors.Is(err, pgx.ErrNoRows) {
 		return IssueDeletionFailureRowCount
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -40,8 +40,10 @@ Important consequences:
 - `root_issue_id` - actual root issue UUID.
 - `workflow_profile_key` - workflow profile identifier.
 - `revision` - server-side revision counter.
-- `next_receipt_ordinal` - internal receipt allocator.
-- `created_by_*` - server-stamped creator identity.
+- `created_by` - nested server-stamped `actor_type`, `actor_id`, and nullable `task_id`.
+- `created_at` / `updated_at` - RFC 3339 server timestamps.
+
+`next_receipt_ordinal` is internal storage state and is not part of the API or CLI scope projection.
 
 ## Receipts
 

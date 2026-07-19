@@ -433,6 +433,34 @@ func TestWorkCoordinationWorkspaceFailureCannotBeCommitted(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationWorkspaceDeleteFailureRollsBackMembershipTeardown(t *testing.T) {
+	pool := openWorkCoordinationPool(t)
+	ctx := context.Background()
+	fixture := createWorkCoordinationFixture(t, pool)
+	installWorkspaceDeleteFailureTrigger(t, pool, fixture.workspaceID, "23503")
+	svc := NewCoordinationService(db.New(pool), pool)
+	actor := CoordinationActor{WorkspaceID: fixture.workspaceID, ActorType: CoordinationActorMember, ActorID: fixture.userID}
+	handle, err := svc.AcquireWorkspaceDeletion(ctx, actor, fixture.workspaceID)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	_, err = handle.Delete(ctx)
+	var fatal *WorkspaceDeletionFatalError
+	if !errors.As(err, &fatal) || fatal.Phase != IssueDeletionPhaseEntityDelete || fatal.Class != IssueDeletionFailureStatement {
+		t.Fatalf("fatal=%+v err=%v", fatal, err)
+	}
+	if err := handle.Finish(false); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	var workspaceExists, memberExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace WHERE id=$1), EXISTS(SELECT 1 FROM member WHERE workspace_id=$1 AND user_id=$2)`, fixture.workspaceID, fixture.userID).Scan(&workspaceExists, &memberExists); err != nil {
+		t.Fatalf("verify rollback: %v", err)
+	}
+	if !workspaceExists || !memberExists {
+		t.Fatalf("workspace exists=%v member exists=%v", workspaceExists, memberExists)
+	}
+}
+
 func TestWorkCoordinationWorkspaceDeletionGuardAndSuccess(t *testing.T) {
 	pool := openWorkCoordinationPool(t)
 	ctx := context.Background()
@@ -465,9 +493,12 @@ func TestWorkCoordinationWorkspaceDeletionGuardAndSuccess(t *testing.T) {
 	if err := handle.Finish(false); coordinationCode(err) != CoordinationInternal {
 		t.Fatalf("repeated finish error=%v", err)
 	}
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace WHERE id=$1)`, fixture.workspaceID).Scan(&exists); err != nil || exists {
-		t.Fatalf("workspace exists=%v err=%v", exists, err)
+	var workspaceExists, memberExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace WHERE id=$1), EXISTS(SELECT 1 FROM member WHERE workspace_id=$1)`, fixture.workspaceID).Scan(&workspaceExists, &memberExists); err != nil {
+		t.Fatalf("verify delete: %v", err)
+	}
+	if workspaceExists || memberExists {
+		t.Fatalf("workspace exists=%v member exists=%v", workspaceExists, memberExists)
 	}
 }
 
@@ -486,6 +517,25 @@ func installIssueDeleteFailureTrigger(t *testing.T, pool pgxBeginQueryExecer, is
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON issue`, quotedTrigger))
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, quotedFn))
+	})
+}
+
+func installWorkspaceDeleteFailureTrigger(t *testing.T, pool pgxBeginQueryExecer, workspaceID pgtype.UUID, sqlState string) {
+	t.Helper()
+	ctx := context.Background()
+	fn := fmt.Sprintf("wcs_fail_workspace_delete_%s_%d", sqlState, time.Now().UnixNano())
+	trigger := fn + "_trigger"
+	quotedFn := pgx.Identifier{fn}.Sanitize()
+	quotedTrigger := pgx.Identifier{trigger}.Sanitize()
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced workspace delete failure' USING ERRCODE='%s'; END $$`, quotedFn, sqlState)); err != nil {
+		t.Fatalf("create workspace failure function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE DELETE ON workspace FOR EACH ROW WHEN (OLD.id = '%s'::uuid) EXECUTE FUNCTION %s()`, quotedTrigger, util.UUIDToString(workspaceID), quotedFn)); err != nil {
+		t.Fatalf("create workspace failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON workspace`, quotedTrigger))
 		_, _ = pool.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, quotedFn))
 	})
 }
