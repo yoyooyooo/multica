@@ -48,6 +48,8 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "scope", "get", "--scope", "x", "--bogus", "table"},
 		{"coordination", "scope", "get", "--scope"},
 		{"coordination", "dependency", "resolve", "--expected-revision"},
+		{"coordination", "scope", "get", "--scope", "x", "--output=table", "--dependency", "y"},
+		{"coordination", "dependency", "list", "--scope", "x", "--root", "MUL-1", "--output=table"},
 	}
 	for _, args := range invalid {
 		err := prepareCoordinationArgs(args)
@@ -596,6 +598,48 @@ func TestWorkCoordinationCLIHelperProcess(t *testing.T) {
 		os.Exit(99)
 	}
 	os.Exit(executeRoot(os.Args[separator+1:], os.Stdout, os.Stderr))
+}
+
+func TestWorkCoordinationSiblingFlagsFailWithDefaultJSON(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "00000000-0000-0000-0000-000000000020")
+	t.Setenv("MULTICA_TOKEN", "mul_test")
+	for _, args := range [][]string{
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--output=table", "--dependency", "x"},
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--dependency", "x", "--output=table"},
+		{"coordination", "dependency", "list", "--scope", "00000000-0000-0000-0000-000000000010", "--root", "MUL-1", "--output=table"},
+	} {
+		resetWorkCoordinationCommandState()
+		var stdout, stderr bytes.Buffer
+		if got := executeRoot(args, &stdout, &stderr); got != 5 {
+			t.Fatalf("args=%v exit=%d stderr=%q", args, got, stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q", args, stdout.String())
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(stderr.String()))
+		if err := decoder.Decode(&envelope); err != nil || envelope.Error.Code != "coordination_invalid_payload" {
+			t.Fatalf("args=%v envelope=%+v err=%v raw=%q", args, envelope, err, stderr.String())
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("args=%v trailing stderr=%q", args, stderr.String())
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("sibling flag validation made %d requests", requests.Load())
+	}
+	resetWorkCoordinationCommandState()
 }
 
 func TestWorkCoordinationValidationMakesZeroRequests(t *testing.T) {

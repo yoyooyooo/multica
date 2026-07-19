@@ -175,6 +175,11 @@ WHERE workspace_id = @workspace_id
   AND coordination_scope_id = @coordination_scope_id
   AND resolved_at IS NULL
   AND (
+      sqlc.narg('visible_endpoint_issue_id')::uuid IS NULL
+      OR downstream_issue_id = sqlc.narg('visible_endpoint_issue_id')::uuid
+      OR upstream_issue_id = sqlc.narg('visible_endpoint_issue_id')::uuid
+  )
+  AND (
       sqlc.narg('cursor_created_at')::timestamptz IS NULL
       OR (created_at, id) > (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid)
   )

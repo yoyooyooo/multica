@@ -392,8 +392,34 @@ func TestWorkCoordinationDependencyAgentEndpointAndReplayAuthority(t *testing.T)
 	if _, err := svc.AddDependency(ctx, agent, AddDependencyInput{ScopeID: scope.Scope.ID, ExpectedRevision: 1, DownstreamIssueID: child, UpstreamIssueID: other, IdempotencyKey: "agent-not-endpoint"}); coordinationCode(err) != CoordinationForbidden {
 		t.Fatalf("non-endpoint code=%q err=%v", coordinationCode(err), err)
 	}
+	if _, err := svc.AddDependency(ctx, member, AddDependencyInput{ScopeID: scope.Scope.ID, ExpectedRevision: 1, DownstreamIssueID: fixture.issueID, UpstreamIssueID: other, IdempotencyKey: "member-visible-agent-edge"}); err != nil {
+		t.Fatalf("add second visible edge: %v", err)
+	}
+	if _, err := svc.AddDependency(ctx, member, AddDependencyInput{ScopeID: scope.Scope.ID, ExpectedRevision: 2, DownstreamIssueID: child, UpstreamIssueID: other, IdempotencyKey: "member-unrelated-agent-edge"}); err != nil {
+		t.Fatalf("add unrelated edge: %v", err)
+	}
+	memberPage, err := svc.ListDependencies(ctx, member, scope.Scope.ID, "", 100)
+	if err != nil || len(memberPage.Dependencies) != 3 {
+		t.Fatalf("member page len=%d err=%v", len(memberPage.Dependencies), err)
+	}
+	agentPage, err := svc.ListDependencies(ctx, agent, scope.Scope.ID, "", 100)
+	if err != nil || len(agentPage.Dependencies) != 2 {
+		t.Fatalf("agent page len=%d err=%v", len(agentPage.Dependencies), err)
+	}
+	for _, dependency := range agentPage.Dependencies {
+		if !uuidEqual(dependency.DownstreamIssueID, fixture.issueID) && !uuidEqual(dependency.UpstreamIssueID, fixture.issueID) {
+			t.Fatalf("agent saw unrelated dependency: %+v", dependency)
+		}
+	}
+	firstAgentPage, err := svc.ListDependencies(ctx, agent, scope.Scope.ID, "", 1)
+	if err != nil || len(firstAgentPage.Dependencies) != 1 || firstAgentPage.NextCursor == "" {
+		t.Fatalf("first agent page=%+v err=%v", firstAgentPage, err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM task_token WHERE id=$1`, agentFixture.tokenOneID); err != nil {
 		t.Fatalf("revoke token: %v", err)
+	}
+	if _, err := svc.ListDependencies(ctx, agent, scope.Scope.ID, firstAgentPage.NextCursor, 1); coordinationCode(err) != CoordinationForbidden {
+		t.Fatalf("list after revoke code=%q err=%v", coordinationCode(err), err)
 	}
 	if _, err := svc.AddDependency(ctx, agent, input); coordinationCode(err) != CoordinationForbidden {
 		t.Fatalf("replay after revoke code=%q err=%v", coordinationCode(err), err)

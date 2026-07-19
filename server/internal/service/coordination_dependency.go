@@ -308,11 +308,26 @@ func (s *CoordinationService) ListDependencies(ctx context.Context, actor Coordi
 		if err != nil {
 			return DependencyPage{}, err
 		}
+		var visibleEndpointIssueID pgtype.UUID
+		if actor.ActorType == CoordinationActorAgent {
+			task, err := qtx.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{ID: actor.TaskID, WorkspaceID: actor.WorkspaceID})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return DependencyPage{}, coordinationErr(CoordinationForbidden, "task is not current", err)
+				}
+				return DependencyPage{}, coordinationErr(CoordinationInternal, "could not load task endpoint authority", err)
+			}
+			if !uuidEqual(task.AgentID, actor.ActorID) || !task.IssueID.Valid {
+				return DependencyPage{}, coordinationErr(CoordinationForbidden, "task endpoint authority is not current", nil)
+			}
+			visibleEndpointIssueID = task.IssueID
+		}
 		if decoded != nil && decoded.ScopeRevision != scope.Revision {
 			return DependencyPage{}, coordinationErr(CoordinationRevisionConflict, "coordination scope revision changed", nil)
 		}
 		params := db.ListActiveCoordinationDependenciesByScopeParams{
-			WorkspaceID: actor.WorkspaceID, CoordinationScopeID: scopeID, LimitRows: int32(limit + 1),
+			WorkspaceID: actor.WorkspaceID, CoordinationScopeID: scopeID,
+			VisibleEndpointIssueID: visibleEndpointIssueID, LimitRows: int32(limit + 1),
 		}
 		if decoded != nil {
 			params.CursorCreatedAt = pgtype.Timestamptz{Time: decoded.CreatedAt, Valid: true}

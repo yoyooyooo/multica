@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -134,7 +135,11 @@ func (h *Handler) ListCoordinationDependencies(w http.ResponseWriter, r *http.Re
 		writeCoordinationError(w, service.CoordinationInvalidPayload, "scopeId must be a UUID")
 		return
 	}
-	query := r.URL.Query()
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeCoordinationError(w, service.CoordinationInvalidPayload, "invalid dependency list query")
+		return
+	}
 	for key, values := range query {
 		if (key != "cursor" && key != "limit") || len(values) != 1 {
 			writeCoordinationError(w, service.CoordinationInvalidPayload, "invalid dependency list query")

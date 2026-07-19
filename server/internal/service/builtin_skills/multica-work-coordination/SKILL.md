@@ -42,13 +42,18 @@ The Store does not own scheduling, wakeups, Issue status, assignee, comments, me
 Important consequences:
 
 - scope ensure and dependency mutations are idempotent for the same canonical request;
+- an exact-key replay returns the saved receipt and does not allocate another ordinal;
+- a fresh-key duplicate add in the same owner scope returns `noop`, leaves revision unchanged, and allocates a new receipt ordinal;
+- an unresolved pair owned by another scope returns `coordination_dependency_scope_conflict` and changes neither scope revision;
 - replay revalidates current authority and referenced resources before returning saved data;
 - member and task identity come from the server, not CLI-provided fields;
-- Agent dependency mutations require both endpoints to share the scope's actual root and one endpoint to equal the current task issue;
+- Agent dependency mutations require both endpoints to share the scope's actual root and one endpoint to equal the current task issue; Agent list returns only active pairs containing that task issue;
 - one unresolved downstream/upstream pair has one owner scope across the workspace;
+- each scope may have at most 1,000 active dependencies; resolving a row removes it from that active count but retains its history;
 - self edges and active cycles are rejected;
 - resolve is monotonic and retains history;
 - active-list cursors are opaque and revision-bound; restart from page one after a revision conflict;
+- on a mutation revision conflict, read the scope again and retry from its current revision with a fresh idempotency key instead of looping the stale request;
 - all dependency history, including resolved rows, blocks Issue/Batch/Workspace deletion;
 - `coordination_dependency` is independent of legacy `issue_dependency`.
 

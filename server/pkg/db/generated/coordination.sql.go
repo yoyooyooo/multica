@@ -710,25 +710,32 @@ WHERE workspace_id = $1
   AND coordination_scope_id = $2
   AND resolved_at IS NULL
   AND (
-      $3::timestamptz IS NULL
-      OR (created_at, id) > ($3::timestamptz, $4::uuid)
+      $3::uuid IS NULL
+      OR downstream_issue_id = $3::uuid
+      OR upstream_issue_id = $3::uuid
+  )
+  AND (
+      $4::timestamptz IS NULL
+      OR (created_at, id) > ($4::timestamptz, $5::uuid)
   )
 ORDER BY created_at ASC, id ASC
-LIMIT $5
+LIMIT $6
 `
 
 type ListActiveCoordinationDependenciesByScopeParams struct {
-	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
-	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
-	CursorCreatedAt     pgtype.Timestamptz `json:"cursor_created_at"`
-	CursorID            pgtype.UUID        `json:"cursor_id"`
-	LimitRows           int32              `json:"limit_rows"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID    pgtype.UUID        `json:"coordination_scope_id"`
+	VisibleEndpointIssueID pgtype.UUID        `json:"visible_endpoint_issue_id"`
+	CursorCreatedAt        pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID               pgtype.UUID        `json:"cursor_id"`
+	LimitRows              int32              `json:"limit_rows"`
 }
 
 func (q *Queries) ListActiveCoordinationDependenciesByScope(ctx context.Context, arg ListActiveCoordinationDependenciesByScopeParams) ([]CoordinationDependency, error) {
 	rows, err := q.db.Query(ctx, listActiveCoordinationDependenciesByScope,
 		arg.WorkspaceID,
 		arg.CoordinationScopeID,
+		arg.VisibleEndpointIssueID,
 		arg.CursorCreatedAt,
 		arg.CursorID,
 		arg.LimitRows,

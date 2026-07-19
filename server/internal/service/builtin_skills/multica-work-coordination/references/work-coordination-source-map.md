@@ -88,9 +88,12 @@ main.runCoordinationDependencyResolve
 ```text
 server/internal/migrations/work_coordination_test.go
 server/cmd/migrate/work_coordination_test.go
+server/internal/service/coordination_test.go
 server/internal/service/coordination_dependency_test.go
 server/internal/service/coordination_delete_test.go
+server/internal/service/coordination_delete_race_test.go
 server/internal/handler/coordination_dependency_test.go
+server/internal/handler/coordination_guard_effects_test.go
 server/cmd/server/work_coordination_router_test.go
 server/cmd/multica/cmd_coordination_test.go
 server/internal/cli/work_coordination_errors_test.go

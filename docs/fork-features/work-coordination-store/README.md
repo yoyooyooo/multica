@@ -40,7 +40,7 @@ The Store never reads or writes `issue_dependency` to implement this model. V2 m
 
 ## Authority and concurrency boundaries
 
-Every operation derives workspace and actor identity from server authentication. Agent mutations revalidate the exact task credential, require both endpoints to share the scope's actual root, and require one endpoint to equal the current task issue. Member mutations require current workspace membership.
+Every operation derives workspace and actor identity from server authentication. Agent mutations revalidate the exact task credential, require both endpoints to share the scope's actual root, and require one endpoint to equal the current task issue. Agent list reads return only active pairs containing that current task issue. Member operations require current workspace membership.
 
 Mutations share the workspace advisory-lock key space with Scope and delete operations. Under that lock, the service validates current authority, scope ownership, expected revision, pair ownership, capacity, and cycle safety; then it writes the dependency, advances the scope revision through CAS, and persists the receipt in one transaction. Replay first revalidates current authority and referenced resources, then returns the immutable saved projection.
 

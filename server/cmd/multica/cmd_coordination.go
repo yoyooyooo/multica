@@ -123,15 +123,18 @@ func coordinationValidationError(message string) error {
 	return &cli.ProductError{StatusCode: http.StatusBadRequest, Code: "coordination_invalid_payload", Message: message}
 }
 
-// prepareCoordinationArgs is a token/arity-aware pre-parser. Its flag metadata
-// is derived from the actual coordination Cobra tree so adding a value-taking
-// flag cannot silently desynchronize output detection.
+// prepareCoordinationArgs is a token/arity-aware pre-parser. It uses the full
+// Cobra tree only to locate the selected command, then validates flags against
+// that command's root/ancestor/current metadata so sibling flags fail before
+// Cobra can switch the error renderer to table mode.
 func prepareCoordinationArgs(args []string) error {
 	commandIndex := coordinationCommandIndex(args)
 	if commandIndex < 0 {
 		return nil
 	}
-	arity := coordinationFlagArity()
+	allArity := coordinationFlagArity()
+	selected := coordinationSelectedCommand(args, commandIndex, allArity)
+	arity := coordinationAllowedFlagArity(selected)
 	seenOutput := false
 	for i := commandIndex + 1; i < len(args); i++ {
 		arg := args[i]
@@ -182,9 +185,8 @@ func prepareCoordinationArgs(args []string) error {
 	return nil
 }
 
-// coordinationFlagArity returns true for value-taking flags and false for
-// boolean/no-value flags. Root persistent flags are included because Cobra
-// accepts them after the coordination command as well as before it.
+// coordinationFlagArity returns the full-tree metadata used only while locating
+// the selected command. Final validation uses coordinationAllowedFlagArity.
 func coordinationFlagArity() map[string]bool {
 	result := make(map[string]bool)
 	collect := func(flags *pflag.FlagSet) {
@@ -209,6 +211,63 @@ func coordinationFlagArity() map[string]bool {
 		}
 	}
 	walk(coordinationCmd)
+	return result
+}
+
+func coordinationSelectedCommand(args []string, commandIndex int, allArity map[string]bool) *cobra.Command {
+	selected := coordinationCmd
+	for i := commandIndex + 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			name := arg
+			hasEquals := false
+			if strings.HasPrefix(arg, "--") {
+				if at := strings.IndexByte(arg, '='); at >= 0 {
+					name, hasEquals = arg[:at], true
+				}
+			}
+			if takesValue, known := allArity[name]; known && takesValue && !hasEquals && i+1 < len(args) && args[i+1] != "--" {
+				i++
+			}
+			continue
+		}
+		for _, child := range selected.Commands() {
+			if child.Name() == arg || child.HasAlias(arg) {
+				selected = child
+				break
+			}
+		}
+	}
+	return selected
+}
+
+func coordinationAllowedFlagArity(selected *cobra.Command) map[string]bool {
+	result := make(map[string]bool)
+	collect := func(flags *pflag.FlagSet) {
+		flags.VisitAll(func(flag *pflag.Flag) {
+			result["--"+flag.Name] = flag.NoOptDefVal == ""
+			if flag.Shorthand != "" {
+				result["-"+flag.Shorthand] = flag.NoOptDefVal == ""
+			}
+		})
+	}
+	collect(rootCmd.PersistentFlags())
+	path := make([]*cobra.Command, 0, 4)
+	for command := selected; command != nil && command != rootCmd; command = command.Parent() {
+		path = append(path, command)
+		if command == coordinationCmd {
+			break
+		}
+	}
+	for i := len(path) - 1; i >= 0; i-- {
+		path[i].InitDefaultHelpFlag()
+		collect(path[i].PersistentFlags())
+	}
+	selected.InitDefaultHelpFlag()
+	collect(selected.LocalNonPersistentFlags())
 	return result
 }
 

@@ -154,12 +154,17 @@ func TestWorkCoordinationDependencyStrictWireLifecycle(t *testing.T) {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 
-	for i, rawPath := range []string{
-		"/api/coordination/scopes/" + ensured.Scope.ID + "/dependencies?unknown=x",
-		"/api/coordination/scopes/" + ensured.Scope.ID + "/dependencies?cursor=a&cursor=b",
-		"/api/coordination/scopes/" + ensured.Scope.ID + "/dependencies?limit=0",
+	for i, rawQuery := range []string{
+		"unknown=x",
+		"cursor=a&cursor=b",
+		"limit=0",
+		"cursor=%zz",
+		"limit=1;cursor=x",
+		"limit=1&cursor=%zz",
 	} {
-		invalidListReq := withURLParam(newRequest(http.MethodGet, rawPath, nil), "scopeId", ensured.Scope.ID)
+		invalidListReq := newRequest(http.MethodGet, "/api/coordination/scopes/"+ensured.Scope.ID+"/dependencies", nil)
+		invalidListReq.URL.RawQuery = rawQuery
+		invalidListReq = withURLParam(invalidListReq, "scopeId", ensured.Scope.ID)
 		invalidListW := httptest.NewRecorder()
 		testHandler.ListCoordinationDependencies(invalidListW, invalidListReq)
 		if invalidListW.Code != http.StatusBadRequest || !bytes.Contains(invalidListW.Body.Bytes(), []byte(`"code":"coordination_invalid_payload"`)) {
