@@ -131,7 +131,7 @@ POST /api/coordination/scopes/{scopeId}/dependencies/{dependencyId}/resolve
 
 Mutation要求`Idempotency-Key`。Add body精确为`{"expected_revision":0,"downstream_issue_id":"<uuid>","upstream_issue_id":"<uuid>"}`；resolve body精确为`{"expected_revision":1}`。`scope_id/dependency_id`由path进入canonical request，不能出现在body。Decoder拒绝unknown/identity字段、duplicate object keys与trailing JSON。List只调用service，返回`scope_revision`、最多100条及`next_cursor`；foreign/malformed cursor返回`coordination_invalid_payload`，合法cursor但current revision变化返回`coordination_revision_conflict`。
 
-Mutation success中的receipt必须包含`receipt_ordinal`；new-key no-op返回新ordinal，exact replay返回原ordinal。V2增量使用`coordination_revision_conflict`、`coordination_dependency_scope_conflict`、`coordination_self_dependency`、`coordination_cycle`、`coordination_capacity_exceeded`；HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。不得建立第二张表、使用裸后缀或泄露SQL/constraint。
+Mutation success中的receipt必须包含`receipt_ordinal`；new-key no-op返回新ordinal，exact replay返回原ordinal。V2增量使用`coordination_revision_conflict`、`coordination_dependency_scope_conflict`、`coordination_self_dependency`、`coordination_cycle`、`coordination_capacity_exceeded`；HTTP/CLI exit只引用[README Stable wire error SSoT](README.md#stable-wire-error-ssot)。V2 response classifier只新增这些exact 409组合：dependency add POST可返回`coordination_capacity_exceeded|coordination_revision_conflict|coordination_idempotency_conflict|coordination_dependency_scope_conflict`，dependency list GET只可返回`coordination_revision_conflict`，dependency resolve POST可返回`coordination_revision_conflict|coordination_idempotency_conflict|coordination_dependency_scope_conflict`；其他known 409 code放在这些routes上仍须fallback/exit 1。不得建立第二张表、使用裸后缀或泄露SQL/constraint。
 
 ## CLI 与 skill增量
 
@@ -149,7 +149,7 @@ Skill新增canonical方向、same-scope no-op、cross-scope conflict、workspace
 
 ## Deletion guard增量
 
-Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有该表row时，session-lock-held guard返回`coordination_delete_blocked`。所有V2 add/resolve使用README统一xact lock；单删、BatchDeleteIssues、Workspace删除继续用冲突session lock并持有到实际entity DB delete完成/失败。V2不删除edge、不实现lifecycle cleanup，也不以瞬时check替代持锁guard。
+Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有该表row时，session-lock-held guard返回`coordination_delete_blocked`。所有V2 add/resolve使用README统一xact lock；三类delete复用V1 concrete handles与Batch savepoint语义，session lock由at-most-once `Finish(commit bool)`在commit/rollback后verified unlock并release/discard；只有commit且`Finish`完整成功后才执行typed effects，effects期间绝不持session lock。V2不删除edge、不实现lifecycle cleanup，也不以瞬时check替代持锁guard。
 
 ## Acceptance / tests
 
@@ -166,11 +166,11 @@ Issue是任何`coordination_dependency` downstream/upstream、或Workspace仍有
 9. list稳定分页：100上限、created_at+id tie、revision-bound cursor无重漏/tenant escape；翻页间mutation稳定`coordination_revision_conflict`；active第1000条可写，第1001条返回`coordination_capacity_exceeded`且revision/receipt/facts不变；
 10. `add_dependency|resolve_dependency`/`dependency` allowlist、wire bodies、canonical JSON与digest golden tests；receipt ordinal对mutation/new-key no-op递增、exact replay不增且rollback不留推进；
 11. resolve不隐式改任何blocker/Issue/comment/task/Autopilot；
-12. Add分别与单删、BatchDeleteIssues、Workspace删的真实并发race，无新orphan；guard拒绝时cache/task/Autopilot/event零变化；
-13. CLI exact request、pagination、int64边界、stable code/exit/JSON；
+12. Add分别与单删、BatchDeleteIssues、Workspace删的真实并发race，无新orphan；guard拒绝时cache/task/Autopilot/event零变化；Batch覆盖savepoint partial-success，且`40001`、`40P01`、connection/protocol/context cancellation/unknown tx state及savepoint create/rollback/release失败均整批Abort；
+13. CLI exact request、pagination、int64边界、stable code/exit/JSON；逐一证明上节V2 exact method/route/code组合才构造ProductError，未列组合与legacy/status-mismatch 409均fallback/exit 1；
 14. skill/source map/fork narrative只声明V1+V2。
 
-Focused Go命令必须从`server` module执行：
+从repository root执行以下gate（括号内Go命令进入`server` module）：
 
 ```bash
 set -euo pipefail
