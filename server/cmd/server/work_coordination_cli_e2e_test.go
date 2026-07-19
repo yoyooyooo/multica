@@ -77,8 +77,8 @@ VALUES ($1,'WCS V5 Upstream','member',$2,'none',3,$3) RETURNING id`, workspaceID
 	})
 
 	issueIDs := []string{rootID, downstreamID, upstreamID}
-	before := captureCoordinationCLIPassiveSnapshots(t, issueIDs)
-	legacyBefore := captureCoordinationCLILegacyDependencies(t, issueIDs)
+	before := captureCoordinationCLIPassiveSnapshots(t, workspaceID, issueIDs)
+	legacyBefore := captureCoordinationCLILegacyDependencies(t, workspaceID, issueIDs)
 
 	ownerToken, err := generateTestJWT(ownerID, ownerEmail, "WCS V5 Owner")
 	if err != nil {
@@ -226,11 +226,11 @@ VALUES ($1,'WCS V5 Upstream','member',$2,'none',3,$3) RETURNING id`, workspaceID
 	}
 	assertCoordinationCLIReceiptOrdinals(t, finalInspection.ReceiptRefs, 5, 4, 3, 2, 1)
 
-	after := captureCoordinationCLIPassiveSnapshots(t, issueIDs)
+	after := captureCoordinationCLIPassiveSnapshots(t, workspaceID, issueIDs)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("CLI coordination flow changed Issue/task/Autopilot facts\nbefore=%+v\nafter=%+v", before, after)
 	}
-	legacyAfter := captureCoordinationCLILegacyDependencies(t, issueIDs)
+	legacyAfter := captureCoordinationCLILegacyDependencies(t, workspaceID, issueIDs)
 	if legacyBefore != legacyAfter {
 		t.Fatalf("CLI coordination flow changed legacy issue_dependency\nbefore=%s\nafter=%s", legacyBefore, legacyAfter)
 	}
@@ -281,7 +281,7 @@ func buildCoordinationCLIBinary(t *testing.T) string {
 	binary := filepath.Join(t.TempDir(), "multica")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "../multica")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "github.com/multica-ai/multica/server/cmd/multica")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build multica CLI: %v output=%s", err, output)
@@ -399,7 +399,7 @@ func assertCoordinationCLIReceiptOrdinals(t *testing.T, refs []struct {
 	}
 }
 
-func captureCoordinationCLIPassiveSnapshots(t *testing.T, issueIDs []string) map[string]coordinationCLIPassiveSnapshot {
+func captureCoordinationCLIPassiveSnapshots(t *testing.T, workspaceID string, issueIDs []string) map[string]coordinationCLIPassiveSnapshot {
 	t.Helper()
 	result := make(map[string]coordinationCLIPassiveSnapshot, len(issueIDs))
 	for _, issueID := range issueIDs {
@@ -410,11 +410,11 @@ SELECT i.status,
        COALESCE(i.assignee_id::text,''),
        i.updated_at,
        COALESCE(i.metadata::text,'null'),
-       (SELECT count(*) FROM comment c WHERE c.issue_id=i.id),
-       (SELECT count(*) FROM agent_task_queue q WHERE q.issue_id=i.id AND q.status IN ('queued','dispatched','running','waiting_local_directory','deferred')),
-       (SELECT count(*) FROM agent_task_queue q WHERE q.issue_id=i.id),
-       (SELECT count(*) FROM autopilot_run r WHERE r.issue_id=i.id)
-FROM issue i WHERE i.id=$1`, issueID).Scan(
+       (SELECT count(*) FROM comment c WHERE c.workspace_id=$1 AND c.issue_id=i.id),
+       (SELECT count(*) FROM agent_task_queue q JOIN issue qi ON qi.id=q.issue_id WHERE qi.workspace_id=$1 AND q.issue_id=i.id AND q.status IN ('queued','dispatched','running','waiting_local_directory','deferred')),
+       (SELECT count(*) FROM agent_task_queue q JOIN issue qi ON qi.id=q.issue_id WHERE qi.workspace_id=$1 AND q.issue_id=i.id),
+       (SELECT count(*) FROM autopilot_run r JOIN issue ri ON ri.id=r.issue_id WHERE ri.workspace_id=$1 AND r.issue_id=i.id)
+FROM issue i WHERE i.workspace_id=$1 AND i.id=$2`, workspaceID, issueID).Scan(
 			&snapshot.Status, &snapshot.AssigneeType, &snapshot.AssigneeID, &snapshot.UpdatedAt, &snapshot.Metadata,
 			&snapshot.CommentCount, &snapshot.ActiveTasks, &snapshot.TotalTasks, &snapshot.AutopilotRuns,
 		); err != nil {
@@ -425,13 +425,17 @@ FROM issue i WHERE i.id=$1`, issueID).Scan(
 	return result
 }
 
-func captureCoordinationCLILegacyDependencies(t *testing.T, issueIDs []string) string {
+func captureCoordinationCLILegacyDependencies(t *testing.T, workspaceID string, issueIDs []string) string {
 	t.Helper()
 	var snapshot string
 	if err := testPool.QueryRow(context.Background(), `
 SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.id)::text,'[]')
 FROM issue_dependency d
-WHERE d.issue_id=ANY($1::uuid[]) OR d.depends_on_issue_id=ANY($1::uuid[])`, issueIDs).Scan(&snapshot); err != nil {
+JOIN issue downstream ON downstream.id=d.issue_id
+JOIN issue upstream ON upstream.id=d.depends_on_issue_id
+WHERE downstream.workspace_id=$1
+  AND upstream.workspace_id=$1
+  AND (d.issue_id=ANY($2::uuid[]) OR d.depends_on_issue_id=ANY($2::uuid[]))`, workspaceID, issueIDs).Scan(&snapshot); err != nil {
 		t.Fatalf("capture legacy dependencies: %v", err)
 	}
 	return snapshot
