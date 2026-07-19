@@ -720,12 +720,17 @@ func definiteCommitFailure(err error) bool {
 func captureCancelledTaskEffects(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, tasks []db.AgentTaskQueue) ([]CancelledTaskEffect, []pgtype.UUID, error) {
 	out := make([]CancelledTaskEffect, 0, len(tasks))
 	for _, task := range tasks {
-		agent, err := queries.GetAgent(ctx, task.AgentID)
-		if err != nil {
-			return nil, nil, err
-		}
-		runtimeMode := agent.RuntimeMode
+		runtimeMode := ""
 		provider := ""
+		if task.AgentID.Valid {
+			agent, err := queries.GetAgent(ctx, task.AgentID)
+			switch {
+			case err == nil:
+				runtimeMode = agent.RuntimeMode
+			case !errors.Is(err, pgx.ErrNoRows):
+				return nil, nil, err
+			}
+		}
 		if task.RuntimeID.Valid {
 			runtime, runtimeErr := queries.GetAgentRuntime(ctx, task.RuntimeID)
 			switch {

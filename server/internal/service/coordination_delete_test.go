@@ -58,6 +58,25 @@ func TestWorkCoordinationDeletionEffectsCaptureCompactMetricsContext(t *testing.
 	}
 }
 
+func TestWorkCoordinationCancellationEffectsTolerateMissingAgentProjection(t *testing.T) {
+	pool := openWorkCoordinationPool(t)
+	fixture := createWorkCoordinationFixture(t, pool)
+	tasks := []db.AgentTaskQueue{
+		{ID: fixture.workspaceID},
+		{ID: fixture.issueID, AgentID: fixture.issueID},
+	}
+	effects, agentIDs, err := captureCancelledTaskEffects(context.Background(), db.New(pool), fixture.workspaceID, tasks)
+	if err != nil {
+		t.Fatalf("capture effects: %v", err)
+	}
+	if len(effects) != 2 || effects[0].RuntimeMode != "" || effects[1].RuntimeMode != "" {
+		t.Fatalf("effects=%+v", effects)
+	}
+	if len(agentIDs) != 1 || agentIDs[0].Bytes != fixture.issueID.Bytes {
+		t.Fatalf("agent IDs=%+v", agentIDs)
+	}
+}
+
 func TestWorkCoordinationIssueDeletionGuardAndFinishOrdering(t *testing.T) {
 	pool := openWorkCoordinationPool(t)
 	ctx := context.Background()

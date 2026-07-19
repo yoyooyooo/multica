@@ -28,6 +28,8 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"--profile", "coordination", "issue", "list", "--output", "anything"},
 		{"--profile=coordination", "issue", "list", "--output", "anything"},
 		{"coordination", "scope", "get", "--", "--output", "bad"},
+		{"coordination", "scope", "get", "--help"},
+		{"coordination", "-h"},
 	}
 	for _, args := range valid {
 		if err := prepareCoordinationArgs(args); err != nil {
@@ -52,6 +54,23 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 			t.Fatalf("invalid args %v returned %q", args, got)
 		}
 	}
+}
+
+func TestWorkCoordinationHelpSurvivesOutputPreParser(t *testing.T) {
+	for _, args := range [][]string{
+		{"coordination", "scope", "get", "--help"},
+		{"coordination", "scope", "get", "-h"},
+	} {
+		resetWorkCoordinationCommandState()
+		var stdout, stderr bytes.Buffer
+		if got := executeRoot(args, &stdout, &stderr); got != 0 {
+			t.Fatalf("args=%v exit=%d stderr=%q", args, got, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "USAGE") || strings.Contains(stdout.String(), "coordination_invalid_payload") || stderr.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q stderr=%q", args, stdout.String(), stderr.String())
+		}
+	}
+	resetWorkCoordinationCommandState()
 }
 
 func TestWorkCoordinationEnsureExactRequest(t *testing.T) {

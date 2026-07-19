@@ -155,6 +155,10 @@ func coordinationFlagArity() map[string]bool {
 	collect(rootCmd.PersistentFlags())
 	var walk func(*cobra.Command)
 	walk = func(command *cobra.Command) {
+		// Cobra installs the standard help flag lazily. Initialize it before
+		// collecting metadata so the pre-parser accepts --help/-h without
+		// weakening fail-closed handling for genuinely unknown flags.
+		command.InitDefaultHelpFlag()
 		collect(command.LocalNonPersistentFlags())
 		collect(command.PersistentFlags())
 		for _, child := range command.Commands() {
