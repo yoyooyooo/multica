@@ -132,7 +132,7 @@ Source map引用真实migration/query/service/handler/route/CLI/tests symbols；
 7. no-side-effect全部字段exact不变且无event；
 8. active dependency/open blocker 1000 hard caps与第1001次mutation的`coordination_capacity_exceeded`零写入；
 9. deletion guard覆盖scope/dependency/record/typed-ref矩阵、receipt-only不阻塞回归、Ensure/Add/Append×单删/BatchDeleteIssues/Workspace并发race及无受guard保护引用路径回归；Batch覆盖savepoint partial-success与transaction-fatal全abort矩阵；
-10. API/CLI/top-level JSON/error/exit contract复用V1唯一CLI SSoT：在V2/V3已随新增routes落地各自exact method/route/code allowlist、V4已加入inspect GET + `coordination_revision_conflict`唯一新增组合后，五个strict envelope/status匹配的coordination 409逐code构造`ProductError`并exit 6；inspect route上其他四种known 409及legacy/string/unknown/status-mismatch 409逐一fallback/exit 1；goldens、两种output flag形态及nested-command前后位置、重复/冲突/缺值/非法值的zero-request、stdout空/stderr单JSON/debug无prose与exit 3/4/5/6/1均覆盖；
+10. API/CLI/top-level JSON/error/exit contract复用V1唯一CLI SSoT：在V2/V3已随新增routes落地各自exact method/route/code allowlist、V4已加入inspect GET + `coordination_revision_conflict`唯一新增组合后，五个strict envelope/status匹配的coordination 409逐code构造`ProductError`并exit 6；inspect route上其他四种known 409及legacy/string/unknown/status-mismatch 409逐一fallback/exit 1；goldens、两种output flag形态及nested-command前后位置、known flag values恰为或包含`--output[=...]`时不误判、unknown/ambiguous flag-value序列fail closed、重复/冲突/缺值/非法值的zero-request、stdout空/stderr单JSON/debug无prose与exit 3/4/5/6/1均覆盖；
 11. skill embed/frontmatter/source-map/path/symbol/narrative contract；
 12. sqlc二次生成无drift，focused/race/full/build/check通过。
 
