@@ -192,6 +192,9 @@ func TestWorkCoordinationBlockerValidation(t *testing.T) {
 	if _, err := validateResolveBlockerInput(resolve); coordinationCode(err) != CoordinationInvalidPayload {
 		t.Fatalf("resolve invalid code=%q err=%v", coordinationCode(err), err)
 	}
+	if _, err := decodeBlockerCursor(string(bytes.Repeat([]byte{'A'}, 3001))); err == nil {
+		t.Fatal("oversized blocker cursor was accepted")
+	}
 }
 
 func TestWorkCoordinationBlockerLifecycleAndIndependentResolve(t *testing.T) {

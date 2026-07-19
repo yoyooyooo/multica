@@ -304,7 +304,7 @@ func validateCoordinationBlockerEvidence(refs []coordinationBlockerEvidenceCLI) 
 		if err != nil {
 			return coordinationValidationError("evidence_refs id must be a UUID")
 		}
-		refs[index].ID = strings.ToLower(parsed.String())
+		refs[index].ID = parsed.String()
 		key := refs[index].Kind + "\x00" + refs[index].ID
 		if _, duplicate := seen[key]; duplicate {
 			return coordinationValidationError("evidence_refs must not contain duplicates")

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -262,7 +263,7 @@ func parseCoordinationEvidenceRefs(items []coordinationEvidenceRefRequest) ([]se
 	refs := make([]service.CoordinationEvidenceRef, 0, len(items))
 	for _, item := range items {
 		if item.Kind == nil || item.ID == nil {
-			return nil, strconv.ErrSyntax
+			return nil, errors.New("blocker evidence reference fields are required")
 		}
 		id, err := util.ParseUUID(*item.ID)
 		if err != nil {

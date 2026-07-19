@@ -475,7 +475,7 @@ func normalizeEvidenceRefs(refs []CoordinationEvidenceRef) ([]CoordinationEviden
 		if normalized[i].Kind != normalized[j].Kind {
 			return normalized[i].Kind < normalized[j].Kind
 		}
-		return strings.ToLower(util.UUIDToString(normalized[i].ID)) < strings.ToLower(util.UUIDToString(normalized[j].ID))
+		return bytes.Compare(normalized[i].ID.Bytes[:], normalized[j].ID.Bytes[:]) < 0
 	})
 	for i := 1; i < len(normalized); i++ {
 		if normalized[i].Kind == normalized[i-1].Kind && uuidEqual(normalized[i].ID, normalized[i-1].ID) {
@@ -984,6 +984,9 @@ func encodeBlockerCursor(value blockerCursor) (string, error) {
 func decodeBlockerCursor(raw string) (*blockerCursor, error) {
 	if raw == "" {
 		return nil, nil
+	}
+	if len(raw) > 3000 {
+		return nil, errors.New("blocker cursor is too large")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil || len(decoded) > 2048 {
