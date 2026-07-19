@@ -144,6 +144,7 @@ server/internal/handler/coordination_blocker_test.go
 server/internal/handler/coordination_inspect_test.go
 server/internal/handler/coordination_guard_effects_test.go
 server/cmd/server/work_coordination_router_test.go
+server/cmd/server/work_coordination_cli_e2e_test.go
 server/cmd/multica/cmd_coordination_test.go
 server/cmd/multica/cmd_coordination_blocker_test.go
 server/cmd/multica/cmd_coordination_inspect_test.go
@@ -157,5 +158,6 @@ Contracts:
 - migration tests cover V1–V3 storage up/down/up and preserve legacy `issue_dependency`; V4 adds no migration;
 - DB-backed service tests cover dependency and blocker lifecycle, canonical hashes, replay/no-op, owner scope, cycle safety, capacity, exact Agent authority, repeatable-read inspect consistency, bounded complete facts, and ordinal-upper-bound receipt pagination;
 - handler/router tests cover strict wire shape plus dependency, blocker, inspect, evidence-ref, Issue/Batch/Workspace guards;
+- the aggregate CLI E2E builds the real `multica` binary and runs independent process homes through the real router and database, covering same-actor replay, different-actor conflict, independent resolve, receipt order, and passive no-side-effect facts;
 - CLI tests cover exact requests, inspect JSON/table output, validation, route/code classification, single-envelope failures, and stable exits;
-- the DB-required harness runs coordination-focused tests with `WORK_COORDINATION_DB_REQUIRED=1`, treats skip as failure, and requires at least one passing `TestWorkCoordination*` event per owning package.
+- the DB-required harness runs coordination-focused tests with `WORK_COORDINATION_DB_REQUIRED=1`, treats skip as failure, and requires named aggregate CLI pass evidence plus at least one passing `TestWorkCoordination*` event per owning package.

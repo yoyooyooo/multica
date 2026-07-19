@@ -53,6 +53,7 @@ func TestWorkCoordinationBuiltinSkillBundle(t *testing.T) {
 		"server/internal/service/coordination_inspect_test.go",
 		"server/internal/handler/coordination_inspect_test.go",
 		"server/cmd/multica/cmd_coordination_inspect_test.go",
+		"server/cmd/server/work_coordination_cli_e2e_test.go",
 	} {
 		if !strings.Contains(sourceMap, required) {
 			t.Fatalf("source map is missing %q", required)
@@ -64,6 +65,7 @@ func TestWorkCoordinationBuiltinSkillBundle(t *testing.T) {
 		{"server/internal/handler/coordination_inspect.go", "func (h *Handler) InspectCoordinationScope"},
 		{"server/cmd/multica/cmd_coordination_inspect.go", "func runCoordinationInspect"},
 		{"server/pkg/db/queries/coordination.sql", "-- name: ListCoordinationReceiptWindow"},
+		{"server/cmd/server/work_coordination_cli_e2e_test.go", "func TestWorkCoordinationCLIProcessesAggregatePassiveFlow"},
 	} {
 		content, err := os.ReadFile(filepath.Join(repositoryRoot, filepath.FromSlash(anchor.path)))
 		if err != nil || !strings.Contains(string(content), anchor.symbol) {
@@ -74,7 +76,7 @@ func TestWorkCoordinationBuiltinSkillBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fork narrative: %v", err)
 	}
-	for _, required := range []string{"Work Coordination Store V1–V4", "V1–V3 are accepted", "V4 remains a source candidate", "does not claim mini deployment"} {
+	for _, required := range []string{"Work Coordination Store V1–V4", "V1–V4 are accepted", "V5 source-acceptance candidate does not authorize deployment", "passive-live-evidence.md"} {
 		if !strings.Contains(string(narrative), required) {
 			t.Fatalf("fork narrative is missing %q", required)
 		}
