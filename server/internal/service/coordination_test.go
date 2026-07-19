@@ -89,6 +89,37 @@ func TestWorkCoordinationGoldens(t *testing.T) {
 	if !strings.EqualFold(hex.EncodeToString(agentHashOne), hex.EncodeToString(agentHashTwo)) {
 		t.Fatal("exact credential ref must not enter the canonical request hash")
 	}
+
+	scopeID := util.MustParseUUID("00000000-0000-0000-0000-000000000006")
+	downstreamID := util.MustParseUUID("00000000-0000-0000-0000-000000000007")
+	upstreamID := util.MustParseUUID("00000000-0000-0000-0000-000000000008")
+	dependencyID := util.MustParseUUID("00000000-0000-0000-0000-000000000009")
+	addInput := AddDependencyInput{ScopeID: scopeID, ExpectedRevision: 0, DownstreamIssueID: downstreamID, UpstreamIssueID: upstreamID, IdempotencyKey: "golden-add"}
+	addCanonical, err := AddDependencyCanonicalJSON(actor, addInput)
+	if err != nil {
+		t.Fatalf("add canonical: %v", err)
+	}
+	wantAddCanonical := `{"actor":{"id":"00000000-0000-0000-0000-000000000002","task_id":null,"type":"member"},"hash_version":1,"operation":"add_dependency","request":{"downstream_issue_id":"00000000-0000-0000-0000-000000000007","expected_revision":"0","scope_id":"00000000-0000-0000-0000-000000000006","upstream_issue_id":"00000000-0000-0000-0000-000000000008"},"workspace_id":"00000000-0000-0000-0000-000000000000"}`
+	if string(addCanonical) != wantAddCanonical {
+		t.Fatalf("add canonical mismatch\n got: %s\nwant: %s", addCanonical, wantAddCanonical)
+	}
+	addHash, err := AddDependencyRequestHash(actor, addInput)
+	if err != nil || hex.EncodeToString(addHash) != "b5c87dec5b2fc12d37fbd16cbc30913548b3b7cd8271d14e191a37a4e0335f19" {
+		t.Fatalf("add hash=%x err=%v", addHash, err)
+	}
+	resolveInput := ResolveDependencyInput{ScopeID: scopeID, DependencyID: dependencyID, ExpectedRevision: 1, IdempotencyKey: "golden-resolve"}
+	resolveCanonical, err := ResolveDependencyCanonicalJSON(actor, resolveInput)
+	if err != nil {
+		t.Fatalf("resolve canonical: %v", err)
+	}
+	wantResolveCanonical := `{"actor":{"id":"00000000-0000-0000-0000-000000000002","task_id":null,"type":"member"},"hash_version":1,"operation":"resolve_dependency","request":{"dependency_id":"00000000-0000-0000-0000-000000000009","expected_revision":"1","scope_id":"00000000-0000-0000-0000-000000000006"},"workspace_id":"00000000-0000-0000-0000-000000000000"}`
+	if string(resolveCanonical) != wantResolveCanonical {
+		t.Fatalf("resolve canonical mismatch\n got: %s\nwant: %s", resolveCanonical, wantResolveCanonical)
+	}
+	resolveHash, err := ResolveDependencyRequestHash(actor, resolveInput)
+	if err != nil || hex.EncodeToString(resolveHash) != "1c3e8f4919efb34a68c88190e442ad5ef625bcf005335a0cf8658ad13ec2af8f" {
+		t.Fatalf("resolve hash=%x err=%v", resolveHash, err)
+	}
 }
 
 func TestWorkCoordinationServiceEnsureScopeDB(t *testing.T) {
@@ -222,6 +253,7 @@ func createWorkCoordinationFixture(t *testing.T, pool *pgxpool.Pool) workCoordin
 		t.Fatalf("insert issue: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_dependency WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_receipt WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_scope WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM issue WHERE workspace_id = $1`, f.workspaceID)

@@ -34,6 +34,56 @@ func TestWorkCoordinationV1RouteClassifierMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationV2DependencyRouteClassifierMatrix(t *testing.T) {
+	const collection = "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/dependencies"
+	const resolve = collection + "/00000000-0000-0000-0000-000000000002/resolve"
+	cases := []struct {
+		name, method, path, code string
+		status, exit             int
+	}{
+		{"add capacity", http.MethodPost, collection, "coordination_capacity_exceeded", http.StatusConflict, ExitConflict},
+		{"add revision", http.MethodPost, collection, "coordination_revision_conflict", http.StatusConflict, ExitConflict},
+		{"add idempotency", http.MethodPost, collection, "coordination_idempotency_conflict", http.StatusConflict, ExitConflict},
+		{"add owner conflict", http.MethodPost, collection, "coordination_dependency_scope_conflict", http.StatusConflict, ExitConflict},
+		{"add self edge", http.MethodPost, collection, "coordination_self_dependency", http.StatusUnprocessableEntity, ExitValidation},
+		{"add cycle", http.MethodPost, collection, "coordination_cycle", http.StatusUnprocessableEntity, ExitValidation},
+		{"list stale cursor", http.MethodGet, collection + "?cursor=x", "coordination_revision_conflict", http.StatusConflict, ExitConflict},
+		{"resolve revision", http.MethodPost, resolve, "coordination_revision_conflict", http.StatusConflict, ExitConflict},
+		{"resolve idempotency", http.MethodPost, resolve, "coordination_idempotency_conflict", http.StatusConflict, ExitConflict},
+		{"resolve owner conflict", http.MethodPost, resolve, "coordination_dependency_scope_conflict", http.StatusConflict, ExitConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := coordinationHTTPError(tc.method, tc.path, tc.status, tc.code)
+			err := CoordinationProductError(raw)
+			var product *ProductError
+			if !errors.As(err, &product) || product.Code != tc.code {
+				t.Fatalf("expected ProductError, got %T %v", err, err)
+			}
+			if got := ExitCodeFor(err); got != tc.exit {
+				t.Fatalf("exit=%d want=%d", got, tc.exit)
+			}
+		})
+	}
+
+	wrong := []*HTTPError{
+		coordinationHTTPError(http.MethodGet, collection, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusUnprocessableEntity, "coordination_cycle"),
+		coordinationHTTPError(http.MethodPost, collection, http.StatusConflict, "coordination_delete_blocked"),
+		coordinationHTTPError(http.MethodPost, collection+"/extra", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, collection+"/", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, resolve+"/extra", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, resolve+"/", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, collection, http.StatusUnprocessableEntity, "coordination_revision_conflict"),
+	}
+	for _, raw := range wrong {
+		if got := CoordinationProductError(raw); got != raw {
+			t.Fatalf("wrong method/path/code/status upgraded: %T %v", got, got)
+		}
+	}
+}
+
 func TestWorkCoordinationV1FutureConflictCodesStayLegacy(t *testing.T) {
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/coordination/scopes"},

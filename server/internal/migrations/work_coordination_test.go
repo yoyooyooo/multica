@@ -12,7 +12,7 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := filepath.Clean(filepath.Join("..", "..", "migrations"))
-	for n := 202; n <= 210; n++ {
+	for n := 202; n <= 217; n++ {
 		for _, direction := range []string{"up", "down"} {
 			matches, err := filepath.Glob(filepath.Join(dir, fmt.Sprintf("%03d_coordination*.%s.sql", n, direction)))
 			if err != nil {
@@ -34,11 +34,13 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 		}
 	}
 
-	structure := readWorkCoordinationMigration(t, dir, 202, "up")
-	if strings.Contains(strings.ToUpper(structure), "PRIMARY KEY") || strings.Contains(strings.ToUpper(structure), " UNIQUE") {
-		t.Fatal("202 structure migration must not create inline PK/UNIQUE constraints")
+	for _, n := range []int{202, 211} {
+		structure := readWorkCoordinationMigration(t, dir, n, "up")
+		if strings.Contains(strings.ToUpper(structure), "PRIMARY KEY") || strings.Contains(strings.ToUpper(structure), " UNIQUE") {
+			t.Fatalf("%03d structure migration must not create inline PK/UNIQUE constraints", n)
+		}
 	}
-	for n := 203; n <= 209; n++ {
+	for _, n := range []int{203, 204, 205, 206, 207, 208, 209, 212, 213, 214, 215, 216} {
 		up := strings.TrimSpace(readWorkCoordinationMigration(t, dir, n, "up"))
 		if strings.Count(up, ";") != 1 || !strings.Contains(strings.ToUpper(up), "INDEX CONCURRENTLY") {
 			t.Fatalf("%03d up must be one concurrent-index statement: %q", n, up)
@@ -48,12 +50,26 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 			t.Fatalf("%03d down must be one concurrent-index drop: %q", n, down)
 		}
 	}
-	attach := strings.ToUpper(readWorkCoordinationMigration(t, dir, 210, "up"))
-	if !strings.Contains(attach, "PRIMARY KEY USING INDEX") || strings.Count(attach, "UNIQUE USING INDEX") != 2 {
+	v1Attach := strings.ToUpper(readWorkCoordinationMigration(t, dir, 210, "up"))
+	if !strings.Contains(v1Attach, "PRIMARY KEY USING INDEX") || strings.Count(v1Attach, "UNIQUE USING INDEX") != 2 {
 		t.Fatal("210 must attach both primary keys and the two receipt unique constraints")
 	}
-	if strings.Contains(attach, "COORDINATION_SCOPE_ACTIVE_NATURAL_IDX") {
+	if strings.Contains(v1Attach, "COORDINATION_SCOPE_ACTIVE_NATURAL_IDX") {
 		t.Fatal("partial active-scope unique index must not be attached as a constraint")
+	}
+	v2Structure := strings.ToUpper(readWorkCoordinationMigration(t, dir, 211, "up"))
+	for _, required := range []string{"COORDINATION_DEPENDENCY_SELF_CHECK", "COORDINATION_DEPENDENCY_CREATED_BY_TASK_CHECK", "COORDINATION_DEPENDENCY_RESOLUTION_CHECK"} {
+		if !strings.Contains(v2Structure, required) {
+			t.Fatalf("211 missing %s", required)
+		}
+	}
+	v2Pair := strings.ToUpper(readWorkCoordinationMigration(t, dir, 213, "up"))
+	if !strings.Contains(v2Pair, "UNIQUE INDEX CONCURRENTLY") || !strings.Contains(v2Pair, "WHERE RESOLVED_AT IS NULL") || strings.Contains(v2Pair, "COORDINATION_SCOPE_ID") {
+		t.Fatal("213 must be the workspace-global active pair unique index")
+	}
+	v2Attach := strings.ToUpper(readWorkCoordinationMigration(t, dir, 217, "up"))
+	if !strings.Contains(v2Attach, "PRIMARY KEY USING INDEX") || strings.Contains(v2Attach, "UNIQUE USING INDEX") || strings.Contains(v2Attach, "ACTIVE_PAIR") {
+		t.Fatal("217 must attach only the dependency primary key")
 	}
 }
 

@@ -188,7 +188,7 @@ var coordinationStatusByCode = map[string]int{
 // envelope to a ProductError. Every mismatch returns the original error.
 func CoordinationProductError(err error) error {
 	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) || !coordinationV1RouteRegistered(httpErr.Method, httpErr.Path) {
+	if !errors.As(err, &httpErr) || !coordinationRouteRegistered(httpErr.Method, httpErr.Path) {
 		return err
 	}
 	mediaType, _, parseErr := mime.ParseMediaType(httpErr.ContentType)
@@ -215,7 +215,7 @@ func CoordinationProductError(err error) error {
 		return err
 	}
 	expectedStatus, known := coordinationStatusByCode[envelope.Error.Code]
-	if !known || expectedStatus != httpErr.StatusCode || !coordinationV1RouteAllowsCode(httpErr.Method, httpErr.Path, envelope.Error.Code) || envelope.Error.Message == "" || len(envelope.Error.Message) > 1024 || strings.TrimSpace(envelope.Error.Message) != envelope.Error.Message {
+	if !known || expectedStatus != httpErr.StatusCode || !coordinationRouteAllowsCode(httpErr.Method, httpErr.Path, envelope.Error.Code) || envelope.Error.Message == "" || len(envelope.Error.Message) > 1024 || strings.TrimSpace(envelope.Error.Message) != envelope.Error.Message {
 		return err
 	}
 	if len(envelope.Error.Details) > 0 && string(envelope.Error.Details) != "null" {
@@ -227,12 +227,16 @@ func CoordinationProductError(err error) error {
 	return &ProductError{StatusCode: httpErr.StatusCode, Code: envelope.Error.Code, Message: envelope.Error.Message}
 }
 
-func coordinationV1RouteRegistered(method, rawPath string) bool {
+func coordinationRouteRegistered(method, rawPath string) bool {
 	path := strings.SplitN(rawPath, "?", 2)[0]
 	switch {
 	case method == http.MethodPost && path == "/api/coordination/scopes":
 		return true
 	case method == http.MethodGet && path == "/api/coordination/scopes/by-root":
+		return true
+	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationDependencyCollectionPath(path):
+		return true
+	case method == http.MethodPost && isCoordinationDependencyResolvePath(path):
 		return true
 	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
 		return true
@@ -247,7 +251,7 @@ func coordinationV1RouteRegistered(method, rawPath string) bool {
 	}
 }
 
-func coordinationV1RouteAllowsCode(method, rawPath, code string) bool {
+func coordinationRouteAllowsCode(method, rawPath, code string) bool {
 	path := strings.SplitN(rawPath, "?", 2)[0]
 	baseCodes := map[string]struct{}{
 		"coordination_not_found":       {},
@@ -262,6 +266,23 @@ func coordinationV1RouteAllowsCode(method, rawPath, code string) bool {
 	if method == http.MethodPost && path == "/api/coordination/scopes" {
 		return code == "coordination_idempotency_conflict"
 	}
+	if isCoordinationDependencyCollectionPath(path) {
+		if method == http.MethodGet {
+			return code == "coordination_revision_conflict"
+		}
+		if method == http.MethodPost {
+			switch code {
+			case "coordination_capacity_exceeded", "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict", "coordination_self_dependency", "coordination_cycle":
+				return true
+			}
+		}
+	}
+	if method == http.MethodPost && isCoordinationDependencyResolvePath(path) {
+		switch code {
+		case "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict":
+			return true
+		}
+	}
 	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
 		return code == "coordination_delete_blocked"
 	}
@@ -272,6 +293,23 @@ func coordinationV1RouteAllowsCode(method, rawPath, code string) bool {
 		return code == "coordination_delete_blocked"
 	}
 	return false
+}
+
+func isCoordinationDependencyCollectionPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies"
+}
+
+func isCoordinationDependencyResolvePath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies" && parts[5] != "" && parts[6] == "resolve"
+}
+
+func coordinationPathParts(path string) ([]string, bool) {
+	if !strings.HasPrefix(path, "/") || path == "/" || strings.HasSuffix(path, "/") || strings.Contains(path, "//") {
+		return nil, false
+	}
+	return strings.Split(strings.TrimPrefix(path, "/"), "/"), true
 }
 
 func hasOnePathValue(path, prefix string) bool {

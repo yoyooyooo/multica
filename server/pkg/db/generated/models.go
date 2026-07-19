@@ -432,6 +432,22 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type CoordinationDependency struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	DownstreamIssueID   pgtype.UUID        `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID        `json:"upstream_issue_id"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID        `json:"created_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ResolvedByType      pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID        `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID        `json:"resolved_task_id"`
+	ResolvedAt          pgtype.Timestamptz `json:"resolved_at"`
+}
+
 type CoordinationReceipt struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`

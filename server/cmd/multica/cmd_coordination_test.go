@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,10 +25,11 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "scope", "get", "--scope", "--output"},
 		{"coordination", "scope", "ensure", "--root=abc--output=json", "--workflow-profile", "--output=json", "--idempotency-key", "x"},
 		{"coordination", "scope", "get", "--scope", "x", "--server-url", "--output=json"},
+		{"coordination", "dependency", "add", "--scope", "x", "--expected-revision", "--output", "--idempotency-key", "key", "--downstream", "a", "--upstream", "b"},
+		{"coordination", "dependency", "list", "--help"},
 		{"issue", "list", "--output", "anything"},
 		{"--profile", "coordination", "issue", "list", "--output", "anything"},
 		{"--profile=coordination", "issue", "list", "--output", "anything"},
-		{"coordination", "scope", "get", "--", "--output", "bad"},
 		{"coordination", "scope", "get", "--help"},
 		{"coordination", "-h"},
 	}
@@ -44,6 +46,13 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "scope", "--output=json", "get", "--output=json"},
 		{"coordination", "scope", "get", "--scope", "x", "--bogus", "table"},
 		{"coordination", "scope", "get", "--scope"},
+		{"coordination", "dependency", "resolve", "--expected-revision"},
+		{"coordination", "scope", "get", "--scope", "x", "--output=table", "--dependency", "y"},
+		{"coordination", "dependency", "list", "--scope", "x", "--root", "MUL-1", "--output=table"},
+		{"coordination", "scope", "get", "--", "--output", "bad"},
+		{"coordination", "dependency", "typo", "--output=table"},
+		{"coordination", "scope", "typo", "--output=json"},
+		{"coordination", "typo", "--output=table"},
 	}
 	for _, args := range invalid {
 		err := prepareCoordinationArgs(args)
@@ -172,6 +181,110 @@ func TestWorkCoordinationGetExactRequestsAndTableOutput(t *testing.T) {
 	}
 	if got := stdout.String(); got != "scope="+scopeID+" root="+rootID+" profile=matt-loop revision=0 state=active\n" {
 		t.Fatalf("table output=%q", got)
+	}
+}
+
+func TestWorkCoordinationDependencyExactRequestsAndOutputs(t *testing.T) {
+	resetWorkCoordinationCommandState()
+	t.Cleanup(resetWorkCoordinationCommandState)
+	const (
+		scopeID      = "00000000-0000-0000-0000-000000000010"
+		dependencyID = "00000000-0000-0000-0000-000000000011"
+		downstreamID = "00000000-0000-0000-0000-000000000002"
+		upstreamID   = "00000000-0000-0000-0000-000000000003"
+		workspaceID  = "00000000-0000-0000-0000-000000000020"
+		actorID      = "00000000-0000-0000-0000-000000000030"
+		receiptID    = "00000000-0000-0000-0000-000000000040"
+	)
+	dependencyJSON := `{"id":"` + dependencyID + `","workspace_id":"` + workspaceID + `","coordination_scope_id":"` + scopeID + `","downstream_issue_id":"` + downstreamID + `","upstream_issue_id":"` + upstreamID + `","blocks_issue_id":"` + downstreamID + `","created_by":{"actor_type":"member","actor_id":"` + actorID + `","task_id":null},"created_at":"2026-01-01T00:00:00Z","resolved_by":null,"resolved_at":null}`
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-2":
+			_, _ = w.Write([]byte(`{"id":"` + downstreamID + `","identifier":"MUL-2"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-3":
+			_, _ = w.Write([]byte(`{"id":"` + upstreamID + `","identifier":"MUL-3"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/coordination/scopes/"+scopeID+"/dependencies":
+			if r.Header.Get("Idempotency-Key") != "dependency-add-key" {
+				t.Errorf("add idempotency key=%q", r.Header.Get("Idempotency-Key"))
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 3 || body["expected_revision"] != float64(0) || body["downstream_issue_id"] != downstreamID || body["upstream_issue_id"] != upstreamID {
+				t.Errorf("add body=%#v err=%v", body, err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"dependency":` + dependencyJSON + `,"scope_revision":1,"receipt":{"id":"` + receiptID + `","receipt_ordinal":2,"operation":"add_dependency","resource_type":"dependency","resource_id":"` + dependencyID + `","revision_before":0,"revision_after":1,"created_at":"2026-01-01T00:00:00Z"},"outcome":"created"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/coordination/scopes/"+scopeID+"/dependencies":
+			if r.URL.Query().Get("cursor") != "opaque cursor/+?" || r.URL.Query().Get("limit") != "2" {
+				t.Errorf("list query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"dependencies":[` + dependencyJSON + `],"scope_revision":1,"next_cursor":"next-token"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/coordination/scopes/"+scopeID+"/dependencies/"+dependencyID+"/resolve":
+			if r.Header.Get("Idempotency-Key") != "dependency-resolve-key" {
+				t.Errorf("resolve idempotency key=%q", r.Header.Get("Idempotency-Key"))
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 1 || body["expected_revision"] != float64(1) {
+				t.Errorf("resolve body=%#v err=%v", body, err)
+			}
+			_, _ = w.Write([]byte(`{"dependency":` + dependencyJSON + `,"scope_revision":2,"receipt":{"id":"` + receiptID + `","receipt_ordinal":3,"operation":"resolve_dependency","resource_type":"dependency","resource_id":"` + dependencyID + `","revision_before":1,"revision_after":2,"created_at":"2026-01-01T00:00:00Z"},"outcome":"resolved"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", workspaceID)
+	t.Setenv("MULTICA_TOKEN", "mul_test")
+
+	add := newCoordinationDependencyAddTestCommand()
+	_ = add.Flags().Set("scope", scopeID)
+	_ = add.Flags().Set("downstream", "MUL-2")
+	_ = add.Flags().Set("upstream", "MUL-3")
+	_ = add.Flags().Set("expected-revision", "000")
+	_ = add.Flags().Set("idempotency-key", "dependency-add-key")
+	var stdout bytes.Buffer
+	add.SetOut(&stdout)
+	coordinationOutput = "json"
+	if err := runCoordinationDependencyAdd(add, nil); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"outcome":"created"`) || strings.Count(strings.TrimSpace(got), "\n") != 0 {
+		t.Fatalf("add output=%q", got)
+	}
+
+	list := newCoordinationDependencyListTestCommand()
+	_ = list.Flags().Set("scope", scopeID)
+	_ = list.Flags().Set("cursor", "opaque cursor/+?")
+	_ = list.Flags().Set("limit", "2")
+	stdout.Reset()
+	list.SetOut(&stdout)
+	coordinationOutput = "table"
+	if err := runCoordinationDependencyList(list, nil); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := stdout.String(); got != dependencyID+"  "+downstreamID+" blocked_by "+upstreamID+"\nnext_cursor=next-token revision=1\n" {
+		t.Fatalf("list output=%q", got)
+	}
+
+	resolve := newCoordinationDependencyResolveTestCommand()
+	_ = resolve.Flags().Set("scope", scopeID)
+	_ = resolve.Flags().Set("dependency", dependencyID)
+	_ = resolve.Flags().Set("expected-revision", "1")
+	_ = resolve.Flags().Set("idempotency-key", "dependency-resolve-key")
+	stdout.Reset()
+	resolve.SetOut(&stdout)
+	coordinationOutput = "table"
+	if err := runCoordinationDependencyResolve(resolve, nil); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "outcome=resolved revision=2") {
+		t.Fatalf("resolve output=%q", got)
+	}
+	if requests.Load() != 5 {
+		t.Fatalf("requests=%d want=5", requests.Load())
 	}
 }
 
@@ -316,6 +429,103 @@ func TestWorkCoordinationScopePostConflictAndTableErrorRendering(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationDependencyConflictExitAndSingleEnvelope(t *testing.T) {
+	const (
+		scopeID      = "00000000-0000-0000-0000-000000000010"
+		downstreamID = "00000000-0000-0000-0000-000000000002"
+		upstreamID   = "00000000-0000-0000-0000-000000000003"
+	)
+	for _, tc := range []struct {
+		code   string
+		status int
+		exit   int
+	}{
+		{"coordination_capacity_exceeded", http.StatusConflict, 6},
+		{"coordination_revision_conflict", http.StatusConflict, 6},
+		{"coordination_idempotency_conflict", http.StatusConflict, 6},
+		{"coordination_dependency_scope_conflict", http.StatusConflict, 6},
+		{"coordination_self_dependency", http.StatusUnprocessableEntity, 5},
+		{"coordination_cycle", http.StatusUnprocessableEntity, 5},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			resetWorkCoordinationCommandState()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-2":
+					_, _ = w.Write([]byte(`{"id":"` + downstreamID + `","identifier":"MUL-2"}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-3":
+					_, _ = w.Write([]byte(`{"id":"` + upstreamID + `","identifier":"MUL-3"}`))
+				case r.Method == http.MethodPost && r.URL.Path == "/api/coordination/scopes/"+scopeID+"/dependencies":
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"error":{"code":"` + tc.code + `","message":"safe"}}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("MULTICA_SERVER_URL", server.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "00000000-0000-0000-0000-000000000020")
+			t.Setenv("MULTICA_TOKEN", "mul_test")
+			args := []string{"coordination", "dependency", "add", "--scope", scopeID, "--downstream", "MUL-2", "--upstream", "MUL-3", "--expected-revision", "0", "--idempotency-key", "key", "--output=json"}
+			var stdout, stderr bytes.Buffer
+			if got := executeRoot(args, &stdout, &stderr); got != tc.exit {
+				t.Fatalf("exit=%d want=%d stderr=%q", got, tc.exit, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout=%q", stdout.String())
+			}
+			var envelope struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			decoder := json.NewDecoder(strings.NewReader(stderr.String()))
+			if err := decoder.Decode(&envelope); err != nil || envelope.Error.Code != tc.code {
+				t.Fatalf("envelope=%+v err=%v raw=%q", envelope, err, stderr.String())
+			}
+			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+				t.Fatalf("trailing stderr=%q", stderr.String())
+			}
+		})
+	}
+	resetWorkCoordinationCommandState()
+}
+
+func TestWorkCoordinationDependencyTableConflictUsesSafeProse(t *testing.T) {
+	resetWorkCoordinationCommandState()
+	t.Cleanup(resetWorkCoordinationCommandState)
+	const scopeID = "00000000-0000-0000-0000-000000000010"
+	const downstreamID = "00000000-0000-0000-0000-000000000002"
+	const upstreamID = "00000000-0000-0000-0000-000000000003"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/issues/MUL-2":
+			_, _ = w.Write([]byte(`{"id":"` + downstreamID + `","identifier":"MUL-2"}`))
+		case "/api/issues/MUL-3":
+			_, _ = w.Write([]byte(`{"id":"` + upstreamID + `","identifier":"MUL-3"}`))
+		case "/api/coordination/scopes/" + scopeID + "/dependencies":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"coordination_revision_conflict","message":"safe conflict"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "00000000-0000-0000-0000-000000000020")
+	t.Setenv("MULTICA_TOKEN", "mul_test")
+	args := []string{"coordination", "dependency", "add", "--scope", scopeID, "--downstream", "MUL-2", "--upstream", "MUL-3", "--expected-revision", "0", "--idempotency-key", "key", "--output=table"}
+	var stdout, stderr bytes.Buffer
+	if got := executeRoot(args, &stdout, &stderr); got != 6 {
+		t.Fatalf("exit=%d stderr=%q", got, stderr.String())
+	}
+	if stdout.Len() != 0 || strings.HasPrefix(strings.TrimSpace(stderr.String()), "{") || !strings.Contains(stderr.String(), "safe conflict") || strings.Contains(strings.ToLower(stderr.String()), "sql") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestWorkCoordinationSubprocessPreservesExitAndSingleEnvelope(t *testing.T) {
 	const (
 		scopeID = "00000000-0000-0000-0000-000000000010"
@@ -343,6 +553,7 @@ func TestWorkCoordinationSubprocessPreservesExitAndSingleEnvelope(t *testing.T) 
 	}{
 		{name: "strict conflict debug", args: []string{"--debug", "coordination", "scope", "ensure", "--root", rootID, "--workflow-profile", "matt-loop", "--idempotency-key", "subprocess-key", "--output=json"}, wantExit: 6, wantCode: "coordination_idempotency_conflict"},
 		{name: "preparse validation", args: []string{"coordination", "scope", "get", "--scope", scopeID, "--output=yaml"}, wantExit: 5, wantCode: "coordination_invalid_payload"},
+		{name: "unknown dependency command", args: []string{"coordination", "dependency", "typo", "--output=table"}, wantExit: 5, wantCode: "coordination_invalid_payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"-test.run=^TestWorkCoordinationCLIHelperProcess$", "--", "--server-url", server.URL, "--workspace-id", "00000000-0000-0000-0000-000000000020"}
@@ -391,6 +602,54 @@ func TestWorkCoordinationCLIHelperProcess(t *testing.T) {
 		os.Exit(99)
 	}
 	os.Exit(executeRoot(os.Args[separator+1:], os.Stdout, os.Stderr))
+}
+
+func TestWorkCoordinationInvalidCommandOrSiblingFlagFailsWithDefaultJSON(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "00000000-0000-0000-0000-000000000020")
+	t.Setenv("MULTICA_TOKEN", "mul_test")
+	for _, args := range [][]string{
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--output=table", "--dependency", "x"},
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--dependency", "x", "--output=table"},
+		{"coordination", "dependency", "list", "--scope", "00000000-0000-0000-0000-000000000010", "--root", "MUL-1", "--output=table"},
+		{"coordination", "typo", "--output=table"},
+		{"coordination", "scope", "typo", "--output=table"},
+		{"coordination", "dependency", "typo", "--output=json"},
+		{"coordination", "dependency", "--output=table", "typo"},
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "typo", "--output=table"},
+		{"coordination", "dependency", "--", "typo", "--output=table"},
+	} {
+		resetWorkCoordinationCommandState()
+		var stdout, stderr bytes.Buffer
+		if got := executeRoot(args, &stdout, &stderr); got != 5 {
+			t.Fatalf("args=%v exit=%d stderr=%q", args, got, stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q", args, stdout.String())
+		}
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(stderr.String()))
+		if err := decoder.Decode(&envelope); err != nil || envelope.Error.Code != "coordination_invalid_payload" {
+			t.Fatalf("args=%v envelope=%+v err=%v raw=%q", args, envelope, err, stderr.String())
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("args=%v trailing stderr=%q", args, stderr.String())
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("sibling flag validation made %d requests", requests.Load())
+	}
+	resetWorkCoordinationCommandState()
 }
 
 func TestWorkCoordinationValidationMakesZeroRequests(t *testing.T) {
@@ -444,13 +703,96 @@ func TestWorkCoordinationValidationMakesZeroRequests(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationDependencyValidationMakesZeroRequests(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("MULTICA_SERVER_URL", server.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "00000000-0000-0000-0000-000000000020")
+	t.Setenv("MULTICA_TOKEN", "mul_test")
+	const validScope = "00000000-0000-0000-0000-000000000010"
+	const validDependency = "00000000-0000-0000-0000-000000000011"
+
+	addCases := []struct {
+		scope, downstream, upstream, revision, key string
+		setRevision                                bool
+	}{
+		{scope: "bad", downstream: "MUL-2", upstream: "MUL-3", revision: "0", key: "key", setRevision: true},
+		{scope: validScope, downstream: " MUL-2", upstream: "MUL-3", revision: "0", key: "key", setRevision: true},
+		{scope: validScope, downstream: "MUL-2", upstream: "", revision: "0", key: "key", setRevision: true},
+		{scope: validScope, downstream: "MUL-2", upstream: "MUL-3", key: "key"},
+		{scope: validScope, downstream: "MUL-2", upstream: "MUL-3", revision: "-1", key: "key", setRevision: true},
+		{scope: validScope, downstream: "MUL-2", upstream: "MUL-3", revision: "9223372036854775808", key: "key", setRevision: true},
+		{scope: validScope, downstream: "MUL-2", upstream: "MUL-3", revision: "0", key: " key ", setRevision: true},
+	}
+	for i, tc := range addCases {
+		cmd := newCoordinationDependencyAddTestCommand()
+		_ = cmd.Flags().Set("scope", tc.scope)
+		_ = cmd.Flags().Set("downstream", tc.downstream)
+		_ = cmd.Flags().Set("upstream", tc.upstream)
+		if tc.setRevision {
+			_ = cmd.Flags().Set("expected-revision", tc.revision)
+		}
+		_ = cmd.Flags().Set("idempotency-key", tc.key)
+		if err := runCoordinationDependencyAdd(cmd, nil); err == nil {
+			t.Fatalf("add validation case %d accepted", i)
+		}
+	}
+
+	for i, tc := range []struct {
+		scope, cursor string
+		limit         int
+	}{
+		{scope: "bad", limit: 100},
+		{scope: validScope, cursor: " cursor ", limit: 100},
+		{scope: validScope, limit: 0},
+		{scope: validScope, limit: 101},
+	} {
+		cmd := newCoordinationDependencyListTestCommand()
+		_ = cmd.Flags().Set("scope", tc.scope)
+		_ = cmd.Flags().Set("cursor", tc.cursor)
+		_ = cmd.Flags().Set("limit", fmt.Sprint(tc.limit))
+		if err := runCoordinationDependencyList(cmd, nil); err == nil {
+			t.Fatalf("list validation case %d accepted", i)
+		}
+	}
+
+	for i, tc := range []struct {
+		scope, dependency, revision, key string
+		setRevision                      bool
+	}{
+		{scope: "bad", dependency: validDependency, revision: "0", key: "key", setRevision: true},
+		{scope: validScope, dependency: "bad", revision: "0", key: "key", setRevision: true},
+		{scope: validScope, dependency: validDependency, key: "key"},
+		{scope: validScope, dependency: validDependency, revision: "-1", key: "key", setRevision: true},
+		{scope: validScope, dependency: validDependency, revision: "0", key: "", setRevision: true},
+	} {
+		cmd := newCoordinationDependencyResolveTestCommand()
+		_ = cmd.Flags().Set("scope", tc.scope)
+		_ = cmd.Flags().Set("dependency", tc.dependency)
+		if tc.setRevision {
+			_ = cmd.Flags().Set("expected-revision", tc.revision)
+		}
+		_ = cmd.Flags().Set("idempotency-key", tc.key)
+		if err := runCoordinationDependencyResolve(cmd, nil); err == nil {
+			t.Fatalf("resolve validation case %d accepted", i)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("dependency validation made %d requests", requests.Load())
+	}
+}
+
 func resetWorkCoordinationCommandState() {
 	rootCmd.SetArgs(nil)
 	rootCmd.SetOut(os.Stdout)
 	rootCmd.SetErr(os.Stderr)
 	debugFlag = false
 	coordinationOutput = "json"
-	for _, cmd := range []*cobra.Command{rootCmd, coordinationCmd, coordinationScopeCmd, coordinationScopeEnsureCmd, coordinationScopeGetCmd} {
+	for _, cmd := range []*cobra.Command{rootCmd, coordinationCmd, coordinationScopeCmd, coordinationScopeEnsureCmd, coordinationScopeGetCmd, coordinationDependencyCmd, coordinationDependencyAddCmd, coordinationDependencyListCmd, coordinationDependencyResolveCmd} {
 		cmd.InitDefaultHelpFlag()
 		_ = cmd.Flags().Set("help", "false")
 		if flag := cmd.Flags().Lookup("help"); flag != nil {
@@ -470,6 +812,18 @@ func resetWorkCoordinationCommandState() {
 		{coordinationScopeGetCmd, "scope", ""},
 		{coordinationScopeGetCmd, "root", ""},
 		{coordinationScopeGetCmd, "workflow-profile", ""},
+		{coordinationDependencyAddCmd, "scope", ""},
+		{coordinationDependencyAddCmd, "downstream", ""},
+		{coordinationDependencyAddCmd, "upstream", ""},
+		{coordinationDependencyAddCmd, "expected-revision", ""},
+		{coordinationDependencyAddCmd, "idempotency-key", ""},
+		{coordinationDependencyListCmd, "scope", ""},
+		{coordinationDependencyListCmd, "cursor", ""},
+		{coordinationDependencyListCmd, "limit", "100"},
+		{coordinationDependencyResolveCmd, "scope", ""},
+		{coordinationDependencyResolveCmd, "dependency", ""},
+		{coordinationDependencyResolveCmd, "expected-revision", ""},
+		{coordinationDependencyResolveCmd, "idempotency-key", ""},
 	} {
 		_ = item.cmd.Flags().Set(item.name, item.value)
 		if flag := item.cmd.Flags().Lookup(item.name); flag != nil {
@@ -490,6 +844,33 @@ func newCoordinationEnsureTestCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "ensure"}
 	cmd.Flags().String("root", "", "")
 	cmd.Flags().String("workflow-profile", "", "")
+	cmd.Flags().String("idempotency-key", "", "")
+	return cmd
+}
+
+func newCoordinationDependencyAddTestCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "add"}
+	cmd.Flags().String("scope", "", "")
+	cmd.Flags().String("downstream", "", "")
+	cmd.Flags().String("upstream", "", "")
+	cmd.Flags().String("expected-revision", "", "")
+	cmd.Flags().String("idempotency-key", "", "")
+	return cmd
+}
+
+func newCoordinationDependencyListTestCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "list"}
+	cmd.Flags().String("scope", "", "")
+	cmd.Flags().String("cursor", "", "")
+	cmd.Flags().Int("limit", 100, "")
+	return cmd
+}
+
+func newCoordinationDependencyResolveTestCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "resolve"}
+	cmd.Flags().String("scope", "", "")
+	cmd.Flags().String("dependency", "", "")
+	cmd.Flags().String("expected-revision", "", "")
 	cmd.Flags().String("idempotency-key", "", "")
 	return cmd
 }

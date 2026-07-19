@@ -1,50 +1,100 @@
-# Work Coordination Store V1
+# Work Coordination Store V1–V2
 
 ## Problem
 
-The fork needs a passive coordination store that can persist root-scoped coordination facts, canonical request hashes, and receipts without depending on legacy issue dependency rows or scheduling side effects. The observed gap is the lack of a server-backed scope/receipt slice that can be exercised from DB to service to API to CLI with exact credential revalidation and stable error mapping.
+The fork needs passive, root-scoped coordination facts that Agents can read and mutate without turning the Store into a scheduler or coupling it to legacy issue dependency behavior. V1 established scopes, canonical request hashes, receipts, exact task-credential revalidation, and deletion guards. V2 adds one canonical dependency direction: `downstream blocked_by upstream`.
 
-## Scope
+## Current source scope
 
-V1 only covers:
+The merged V1 source covers:
 
-- root coordination scopes;
-- request-hash receipts;
-- exact credential revalidation for task tokens;
-- issue-root validation;
-- the coordination scope API, CLI, and built-in skill surface;
-- route-scoped CLI product errors and token/arity-aware output parsing;
-- lock-held Issue/Batch/Workspace deletion guards with typed `Delete`/`Finish` lifecycle;
-- the DB-required harness used by the later slices.
+- root coordination scopes and request-hash receipts;
+- exact authority revalidation for members and task-token Agents;
+- route-scoped API/CLI product errors;
+- lock-held Issue/Batch/Workspace deletion guards and typed deletion-handle lifecycle;
+- the DB-required harness used by later slices.
 
-It does not add dependency, blocker, inspect, or scheduling authority.
+The V2 source candidate adds:
 
-## Authority and failure boundaries
+- additive `coordination_dependency` storage, separate from legacy `issue_dependency`;
+- add, list, and resolve operations under a coordination scope;
+- workspace-global ownership of each unresolved downstream/upstream pair;
+- cycle prevention, self-edge rejection, and a 1,000-active-row per-scope cap;
+- scope revision CAS, canonical request hashes, immutable receipt replay, and revision-bound opaque pagination cursors;
+- API, CLI, and built-in skill surfaces for dependency operations;
+- Issue/Batch/Workspace deletion guards for all dependency history, including resolved rows.
 
-V1 stores only passive coordination facts. It does not alter Issue status, assignee, comments, metadata, task scheduling, or Autopilot behavior. It does not use foreign keys or cascading actions. Delete-path handling remains a narrow guard seam around existing delete flows; V1 does not introduce Store cleanup or external-effect durability guarantees.
+It does not add blocker records, inspect, scheduling, wakeups, assignment, reconciliation, Store cleanup, or legacy dependency lifecycle behavior.
 
-Issue and Workspace deletion now use one pinned connection, a workspace session lock, one transaction, and at-most-once `Finish(commit)`. Workspace membership teardown is explicit in that transaction and checked against the locked pre-delete census, rather than being left only to FK cascade. Batch deletion preserves the existing partial-success boundary with per-target savepoints: only `entity_delete` SQLSTATE `23503` is recoverable after verified rollback-to/release; all other failures abort the batch. Compact typed effects run only after commit and verified lock release. Commit-unknown or release failure returns `coordination_internal` and runs no effects.
+The ticket directory remains the frozen delivery-contract snapshot used to derive this slice and its aggregate. Its preimplementation “not implemented / prefix unassigned” capsule is historical baseline text, not the current status surface; this narrative and exact source/PR evidence carry current implementation status.
 
-Failures are closed through typed `coordination_*` errors and stable CLI exit mapping. V1 only upgrades exact method/route/code combinations; future-slice conflict codes on V1 routes retain legacy exit 1. Receipt replay revalidates current authority before returning saved data.
+## Canonical model
+
+A dependency has one meaning only:
+
+```text
+downstream blocked_by upstream
+```
+
+`blocks_issue_id` in the response is an explicit alias of `downstream_issue_id`; it does not define a second edge. Resolution is monotonic: it stamps `resolved_by_*` and `resolved_at`, retains history, and removes the row from active-list and cycle checks. The same pair may be added again only after the previous row is resolved.
+
+The Store never reads or writes `issue_dependency` to implement this model. V2 migrations and tests preserve legacy rows and schema unchanged.
+
+## Authority and concurrency boundaries
+
+Every operation derives workspace and actor identity from server authentication. Agent mutations revalidate the exact task credential, require both endpoints to share the scope's actual root, and require one endpoint to equal the current task issue. Agent list reads return only active pairs containing that current task issue. Member operations require current workspace membership.
+
+Mutations share the workspace advisory-lock key space with Scope and delete operations. Under that lock, the service validates current authority, scope ownership, expected revision, pair ownership, capacity, and cycle safety; then it writes the dependency, advances the scope revision through CAS, and persists the receipt in one transaction. Replay first revalidates current authority and referenced resources, then returns the immutable saved projection.
+
+Pagination cursors bind the scope id, current revision, creation timestamp, and dependency id. A revision change invalidates an older cursor rather than returning a mixed snapshot.
+
+## API and CLI
+
+Routes:
+
+```text
+POST /api/coordination/scopes/{scopeId}/dependencies
+GET  /api/coordination/scopes/{scopeId}/dependencies
+POST /api/coordination/scopes/{scopeId}/dependencies/{dependencyId}/resolve
+```
+
+CLI:
+
+```bash
+multica coordination dependency add \
+  --scope <uuid> --downstream <issue-ref> --upstream <issue-ref> \
+  --expected-revision <n> --idempotency-key <key>
+multica coordination dependency list --scope <uuid> [--cursor <opaque>] [--limit 1..100]
+multica coordination dependency resolve \
+  --scope <uuid> --dependency <uuid> \
+  --expected-revision <n> --idempotency-key <key>
+```
+
+Use `--output json` for machine consumption. Conflict exit 6 remains restricted to exact method/route/code combinations. Self-dependency and cycle failures use validation exit 5. Unknown, malformed, mismatched, or future-route envelopes retain legacy handling.
+
+## Passive boundary
+
+V1–V2 do not alter Issue status, assignee, comments, metadata, task scheduling, Autopilot behavior, or legacy dependency rows. They add no foreign keys or cascading actions. Delete guards prevent dangling Store facts but do not claim automatic cleanup or rollback of external side effects.
 
 ## Deployment and portability
 
-The source implementation is a PR candidate in this fork. Exact-head CI, merge, migration apply, service/CLI restart, and live deployment are not claimed here. No runtime or projection target has been updated by the source change alone.
+V1 was merged into this fork's `main`. V2 remains a source candidate until its exact head passes review, CI, and merge acceptance. A source commit alone does not prove migration apply, process restart, runtime deployment, or projection updates.
 
-This feature is a general upstream candidate rather than a permanent local-only contract. Until upstream owns an equivalent passive slice, this fork remains the source authority for the implementation and its additive migrations.
+This feature is intended as a general upstream candidate rather than a permanent local-only contract. Until upstream owns an equivalent passive slice, this fork remains the source authority for its additive migrations and behavior.
 
 ## Implementation anchors
 
-- migrations `202` through `210` for `coordination_scope` and `coordination_receipt`;
-- `server/pkg/db/queries/coordination.sql` and the generated sqlc types;
-- coordination service, handler, middleware, CLI, and built-in skill wiring;
-- typed deletion handles in `server/internal/service/coordination_delete.go` and guarded handler orchestration in `server/internal/handler/coordination_delete.go`;
-- `scripts/test-work-coordination-db-required.sh` as the DB-required harness.
+- migrations `202`–`210` for scopes and receipts;
+- migrations `211`–`217` for canonical dependencies;
+- `server/pkg/db/queries/coordination.sql` and generated sqlc types;
+- coordination service, handler, router, CLI, and built-in skill wiring;
+- typed deletion handles and guarded handler orchestration;
+- `scripts/test-work-coordination-db-required.sh`.
 
-## Tests
+## Verification and claim limit
 
-V1 is validated by the coordination DB harness, migration lint, sqlc generation, focused Go tests, and CLI/API behavior tests. Deletion coverage includes savepoint partial success, fatal rollback, commit failure, unlock failure, terminal panic handling, duplicate/outside-target rejection, and post-`Finish` effect ordering.
+The source includes migration up/down/up tests, DB-backed lifecycle and authority tests, concurrency and capacity tests, strict wire tests, CLI request/error/output tests, deletion endpoint tests, sqlc generation checks, and the DB-required harness. Exact-head repository gates, independent review, CI, merge, and deployment must be recorded separately; they are not claimed by this narrative.
 
 ## Rollback
 
-The schema is additive and the down path drops the V1 tables and indexes in reverse order. The fork delta can retire once upstream owns the same passive coordination slice and the registry points to that upstream source.
+The schema is additive. The V2 down path removes dependency constraints, indexes, and table in reverse order without touching legacy `issue_dependency`; the V1 down path separately removes receipt and scope storage. Runtime rollback must stop V2 writes before applying schema rollback.

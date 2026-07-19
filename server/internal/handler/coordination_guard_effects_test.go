@@ -22,7 +22,7 @@ func TestWorkCoordinationDeleteGuardsHaveNoDBOrExternalEffects(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `INSERT INTO issue (workspace_id,title,creator_type,creator_id,priority,number) VALUES ($1,'WCS guarded root','member',$2,'none',990301) RETURNING id`, workspaceID, userID).Scan(&rootID); err != nil {
 		t.Fatalf("insert guarded root: %v", err)
 	}
-	if err := testPool.QueryRow(ctx, `INSERT INTO issue (workspace_id,title,creator_type,creator_id,priority,number) VALUES ($1,'WCS guarded second','member',$2,'none',990302) RETURNING id`, workspaceID, userID).Scan(&secondID); err != nil {
+	if err := testPool.QueryRow(ctx, `INSERT INTO issue (workspace_id,title,creator_type,creator_id,priority,number,parent_issue_id) VALUES ($1,'WCS guarded second','member',$2,'none',990302,$3) RETURNING id`, workspaceID, userID, rootID).Scan(&secondID); err != nil {
 		t.Fatalf("insert guarded second: %v", err)
 	}
 	if err := testPool.QueryRow(ctx, `INSERT INTO agent_runtime (workspace_id,daemon_id,name,runtime_mode,provider,status,device_info,metadata,last_seen_at,visibility,owner_id) VALUES ($1,$2,$3,'cloud','wcs-test','online','test','{}'::jsonb,now(),'private',$4) RETURNING id`, workspaceID, fmt.Sprintf("wcs-guard-daemon-%d", suffix), fmt.Sprintf("WCS Guard Runtime %d", suffix), userID).Scan(&runtimeID); err != nil {
@@ -47,6 +47,7 @@ func TestWorkCoordinationDeleteGuardsHaveNoDBOrExternalEffects(t *testing.T) {
 		t.Fatalf("insert attachment: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_dependency WHERE workspace_id=$1`, workspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_receipt WHERE workspace_id=$1`, workspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_scope WHERE workspace_id=$1`, workspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM autopilot_run WHERE id=$1`, runID)
@@ -59,8 +60,12 @@ func TestWorkCoordinationDeleteGuardsHaveNoDBOrExternalEffects(t *testing.T) {
 	})
 
 	actor := service.CoordinationActor{WorkspaceID: workspaceID, ActorType: service.CoordinationActorMember, ActorID: userID}
-	if _, err := testHandler.CoordinationService.EnsureScope(ctx, actor, service.EnsureScopeInput{RootIssueID: rootID, WorkflowProfileKey: "matt-loop", IdempotencyKey: "delete-guard-effects"}); err != nil {
+	ensured, err := testHandler.CoordinationService.EnsureScope(ctx, actor, service.EnsureScopeInput{RootIssueID: rootID, WorkflowProfileKey: "matt-loop", IdempotencyKey: "delete-guard-effects"})
+	if err != nil {
 		t.Fatalf("ensure guard scope: %v", err)
+	}
+	if _, err := testHandler.CoordinationService.AddDependency(ctx, actor, service.AddDependencyInput{ScopeID: ensured.Scope.ID, ExpectedRevision: 0, DownstreamIssueID: secondID, UpstreamIssueID: rootID, IdempotencyKey: "delete-guard-effects-dependency"}); err != nil {
+		t.Fatalf("add guarded dependency: %v", err)
 	}
 	bus := events.New()
 	eventCount := 0
@@ -70,7 +75,7 @@ func TestWorkCoordinationDeleteGuardsHaveNoDBOrExternalEffects(t *testing.T) {
 	h.Bus = bus
 	h.Storage = &coordinationEffectStorage{onDeleteKeys: func([]string) { storageDeletes++ }}
 
-	singleReq := withURLParam(newRequest(http.MethodDelete, "/api/issues/"+uuidToString(rootID), nil), "id", uuidToString(rootID))
+	singleReq := withURLParam(newRequest(http.MethodDelete, "/api/issues/"+uuidToString(secondID), nil), "id", uuidToString(secondID))
 	singleW := httptest.NewRecorder()
 	h.DeleteIssue(singleW, singleReq)
 	if singleW.Code != http.StatusConflict {

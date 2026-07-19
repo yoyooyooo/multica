@@ -19,6 +19,6 @@ A source change is not considered complete in this fork until its feature narrat
 | Feature | Status | Portability |
 |---|---|---|
 | [Daemon task receipt](daemon-task-receipt/README.md) | source PR in progress | general upstream candidate |
-| [Work coordination store V1](work-coordination-store/README.md) | source implementation in progress | general upstream candidate |
+| [Work coordination store V1–V2](work-coordination-store/README.md) | V1 merged; V2 source candidate | general upstream candidate |
 
 The historical fork-feature inventory and documentation backfill is tracked by Multica issue `MINI-695`.
