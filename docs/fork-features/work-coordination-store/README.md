@@ -26,6 +26,8 @@ The V2 source candidate adds:
 
 It does not add blocker records, inspect, scheduling, wakeups, assignment, reconciliation, Store cleanup, or legacy dependency lifecycle behavior.
 
+The ticket directory remains the frozen delivery-contract snapshot used to derive this slice and its aggregate. Its preimplementation “not implemented / prefix unassigned” capsule is historical baseline text, not the current status surface; this narrative and exact source/PR evidence carry current implementation status.
+
 ## Canonical model
 
 A dependency has one meaning only:

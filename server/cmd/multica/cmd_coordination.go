@@ -133,7 +133,10 @@ func prepareCoordinationArgs(args []string) error {
 		return nil
 	}
 	allArity := coordinationFlagArity()
-	selected := coordinationSelectedCommand(args, commandIndex, allArity)
+	selected, err := coordinationSelectedCommand(args, commandIndex, allArity)
+	if err != nil {
+		return coordinationValidationError(err.Error())
+	}
 	arity := coordinationAllowedFlagArity(selected)
 	seenOutput := false
 	for i := commandIndex + 1; i < len(args); i++ {
@@ -214,11 +217,14 @@ func coordinationFlagArity() map[string]bool {
 	return result
 }
 
-func coordinationSelectedCommand(args []string, commandIndex int, allArity map[string]bool) *cobra.Command {
+func coordinationSelectedCommand(args []string, commandIndex int, allArity map[string]bool) (*cobra.Command, error) {
 	selected := coordinationCmd
 	for i := commandIndex + 1; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
+			if i+1 < len(args) {
+				return nil, fmt.Errorf("unexpected positional arguments")
+			}
 			break
 		}
 		if strings.HasPrefix(arg, "-") && arg != "-" {
@@ -234,14 +240,19 @@ func coordinationSelectedCommand(args []string, commandIndex int, allArity map[s
 			}
 			continue
 		}
+		matched := false
 		for _, child := range selected.Commands() {
 			if child.Name() == arg || child.HasAlias(arg) {
 				selected = child
+				matched = true
 				break
 			}
 		}
+		if !matched {
+			return nil, fmt.Errorf("unknown coordination command or unexpected positional argument: %s", arg)
+		}
 	}
-	return selected
+	return selected, nil
 }
 
 func coordinationAllowedFlagArity(selected *cobra.Command) map[string]bool {

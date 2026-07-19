@@ -30,7 +30,6 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"issue", "list", "--output", "anything"},
 		{"--profile", "coordination", "issue", "list", "--output", "anything"},
 		{"--profile=coordination", "issue", "list", "--output", "anything"},
-		{"coordination", "scope", "get", "--", "--output", "bad"},
 		{"coordination", "scope", "get", "--help"},
 		{"coordination", "-h"},
 	}
@@ -50,6 +49,10 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "dependency", "resolve", "--expected-revision"},
 		{"coordination", "scope", "get", "--scope", "x", "--output=table", "--dependency", "y"},
 		{"coordination", "dependency", "list", "--scope", "x", "--root", "MUL-1", "--output=table"},
+		{"coordination", "scope", "get", "--", "--output", "bad"},
+		{"coordination", "dependency", "typo", "--output=table"},
+		{"coordination", "scope", "typo", "--output=json"},
+		{"coordination", "typo", "--output=table"},
 	}
 	for _, args := range invalid {
 		err := prepareCoordinationArgs(args)
@@ -550,6 +553,7 @@ func TestWorkCoordinationSubprocessPreservesExitAndSingleEnvelope(t *testing.T) 
 	}{
 		{name: "strict conflict debug", args: []string{"--debug", "coordination", "scope", "ensure", "--root", rootID, "--workflow-profile", "matt-loop", "--idempotency-key", "subprocess-key", "--output=json"}, wantExit: 6, wantCode: "coordination_idempotency_conflict"},
 		{name: "preparse validation", args: []string{"coordination", "scope", "get", "--scope", scopeID, "--output=yaml"}, wantExit: 5, wantCode: "coordination_invalid_payload"},
+		{name: "unknown dependency command", args: []string{"coordination", "dependency", "typo", "--output=table"}, wantExit: 5, wantCode: "coordination_invalid_payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"-test.run=^TestWorkCoordinationCLIHelperProcess$", "--", "--server-url", server.URL, "--workspace-id", "00000000-0000-0000-0000-000000000020"}
@@ -600,7 +604,7 @@ func TestWorkCoordinationCLIHelperProcess(t *testing.T) {
 	os.Exit(executeRoot(os.Args[separator+1:], os.Stdout, os.Stderr))
 }
 
-func TestWorkCoordinationSiblingFlagsFailWithDefaultJSON(t *testing.T) {
+func TestWorkCoordinationInvalidCommandOrSiblingFlagFailsWithDefaultJSON(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -614,6 +618,12 @@ func TestWorkCoordinationSiblingFlagsFailWithDefaultJSON(t *testing.T) {
 		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--output=table", "--dependency", "x"},
 		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "--dependency", "x", "--output=table"},
 		{"coordination", "dependency", "list", "--scope", "00000000-0000-0000-0000-000000000010", "--root", "MUL-1", "--output=table"},
+		{"coordination", "typo", "--output=table"},
+		{"coordination", "scope", "typo", "--output=table"},
+		{"coordination", "dependency", "typo", "--output=json"},
+		{"coordination", "dependency", "--output=table", "typo"},
+		{"coordination", "scope", "get", "--scope", "00000000-0000-0000-0000-000000000010", "typo", "--output=table"},
+		{"coordination", "dependency", "--", "typo", "--output=table"},
 	} {
 		resetWorkCoordinationCommandState()
 		var stdout, stderr bytes.Buffer
