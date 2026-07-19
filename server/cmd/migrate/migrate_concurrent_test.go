@@ -75,17 +75,27 @@ const (
 func openTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
+	required := os.Getenv("WORK_COORDINATION_DB_REQUIRED") == "1"
 	if dbURL == "" {
+		if required {
+			t.Fatal("DATABASE_URL is required when WORK_COORDINATION_DB_REQUIRED=1")
+		}
 		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+		if required {
+			t.Fatalf("could not connect to required test database: %v", err)
+		}
 		t.Skipf("could not connect to %s: %v", dbURL, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
+		if required {
+			t.Fatalf("required test database is not reachable: %v", err)
+		}
 		t.Skipf("database not reachable at %s: %v", dbURL, err)
 	}
 	t.Cleanup(pool.Close)

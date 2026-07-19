@@ -29,9 +29,9 @@ Failures are closed through typed `coordination_*` errors and stable CLI exit ma
 
 ## Deployment and portability
 
-The source implementation is a PR candidate in this fork. Exact-head CI, merge, migration apply, service/CLI restart, and live deployment are not claimed here. No runtime or projection target has been updated by the source change alone.
+V1 is merged into fork `main`. The merged implementation and source-test authority is commit `b9c9d9f635aed1206e46fd13b2d81d819ede84c4`, tree `ed242167e920620a9937f1b206e1009f93beb768`. Migrations `202` through `210` are allocated and merged as source, but migration apply, service/CLI restart, deployment, and live operation have not occurred and are not claimed. No runtime or projection target has been updated by the source merge alone.
 
-This feature is a general upstream candidate rather than a permanent local-only contract. Until upstream owns an equivalent passive slice, this fork remains the source authority for the implementation and its additive migrations.
+V2 through V5 are not implemented and remain locked behind the V1 accepted exact-head review gate. This feature is a general upstream candidate rather than a permanent local-only contract. Until upstream owns an equivalent passive slice, this fork remains the source authority for the implementation and its additive migrations.
 
 ## Implementation anchors
 
@@ -43,7 +43,7 @@ This feature is a general upstream candidate rather than a permanent local-only 
 
 ## Tests
 
-V1 is validated by the coordination DB harness, migration lint, sqlc generation, focused Go tests, and CLI/API behavior tests. Deletion coverage includes savepoint partial success, fatal rollback, commit failure, unlock failure, terminal panic handling, duplicate/outside-target rejection, and post-`Finish` effect ordering.
+The merged V1 source is covered by the coordination DB harness, migration lint, sqlc generation, focused Go tests, and CLI/API behavior tests. Deletion coverage includes the sealed phase/failure classification matrix, savepoint partial success, whole-batch fatal rollback, definite and unknown commit outcomes, lock/unlock terminalization, caller-side at-most-once `Finish` guards, duplicate/outside-target rejection, and post-`Finish` effect ordering. These are source-test claims, not runtime apply or live evidence.
 
 ## Rollback
 

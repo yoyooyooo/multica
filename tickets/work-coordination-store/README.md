@@ -24,9 +24,9 @@ Passive Store **不拥有** objective、acceptance、claim limit、authority env
 
 ## Authority 与冻结基线
 
-- Source authority：`github.com:443/yoyooyooo/multica` 的 `refs/heads/main`。
-- Initial analytical base：`5e8661b8efb30c0728fb515ea7fa9a9b631a0c02`；本轮post-merge technical correction从source main `486bebe6c7765417c05b7b2c18d38a0d78f1d884`开始。
-- 在`486bebe6c7765417c05b7b2c18d38a0d78f1d884`观察到的migration ceiling仍为`201`；V1及每个后续slice开始前必须在上一片accepted exact head重新扫描`server/migrations/*.up.sql`，再原子预留无碰撞prefix range。
+- Source authority：`github.com:443/yoyooyooo/multica` 的 `refs/heads/main`。当前V1 merged source/tests authority为commit `b9c9d9f635aed1206e46fd13b2d81d819ede84c4`、tree `ed242167e920620a9937f1b206e1009f93beb768`。
+- Initial analytical base：`5e8661b8efb30c0728fb515ea7fa9a9b631a0c02`；post-merge technical correction历史起点为source main `486bebe6c7765417c05b7b2c18d38a0d78f1d884`，当前事实以上述merged authority为准。
+- V1的`202`–`210` migration range已分配并合入source；尚未apply。每个后续slice开始前仍必须在上一片accepted exact head重新扫描`server/migrations/*.up.sql`，再原子预留无碰撞prefix range。
 - 不得把 `source-mini`、`mini-runtime`、陈旧 docs worktree 或本地分叉 `main` 当实现 authority。
 - 仓库架构、migration、FK/index 和编码规则以根 `CLAUDE.md` 为准。本目录是 feature delivery contract，不复制通用规则成为第二 SSoT。
 - 产品方向来自本轮MINI-570 handoff snapshot；该session-local输入不进入repository authority或portable path claim，实施证据必须来自exact source/live readback。
@@ -159,7 +159,8 @@ Reverse down必须按相反顺序：先drop attached constraint；后续index do
 
 当前统一边界：
 
-- Store尚未实现、测试、review、merge或部署；migration prefix未最终分配。
+- V1 scope/receipt/delete-guard source与tests已在上述authority合入，migration prefix `202`–`210`已分配；这些migration尚未apply，server/CLI尚未restart，且未deploy、未live。
+- V2–V5尚未实现并保持locked；只有V1 accepted exact-head review/CI和共享交付门完成后才可解除下一片。
 - Store尚未拥有goal-control、lifecycle/archive/cleanup、program scope、lease/fencing、wake claim、preflight、task authority snapshot、Reconciler/Autopilot binding或MINI-570 scheduling authority。
 - V1 delete外部effects仅在session lock terminal后best-effort调用；不声明deadline、成功检测、typed debt、可靠投递、自动重试/修复或exactly-once。
 - Agent Kit read-only calibration尚未完成；metadata/comment/现有Issue lifecycle仍未切换。

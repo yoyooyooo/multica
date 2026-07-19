@@ -1,5 +1,7 @@
 # Work Coordination Source Map
 
+V1 merged source/tests authority: `main` commit `b9c9d9f635aed1206e46fd13b2d81d819ede84c4`, tree `ed242167e920620a9937f1b206e1009f93beb768`. Migrations `202`–`210` are merged source only; apply, restart, deployment, and live operation are not claimed. V2–V5 are not implemented and remain locked.
+
 ## Scope and receipt surface
 
 Source:

@@ -9,11 +9,34 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+type issueDeletionHandle interface {
+	TargetIssueIDs() []pgtype.UUID
+	Delete(context.Context, pgtype.UUID) (service.IssueDeletionResult, error)
+	Finish(bool) error
+}
+
+type workspaceDeletionHandle interface {
+	Delete(context.Context) (service.WorkspaceDeletionEffects, error)
+	Finish(bool) error
+}
+
 func (h *Handler) performIssueDeletion(ctx context.Context, actor service.CoordinationActor, workspaceID pgtype.UUID, issueIDs []pgtype.UUID, mode service.IssueDeletionMode) (deleted int, effects []service.IssueDeletionEffects, err error) {
-	handle, err := h.CoordinationService.AcquireIssueDeletion(ctx, actor, workspaceID, issueIDs, mode)
+	var handle issueDeletionHandle
+	if h.acquireIssueDeletion != nil {
+		handle, err = h.acquireIssueDeletion(ctx, actor, workspaceID, issueIDs, mode)
+	} else {
+		handle, err = h.CoordinationService.AcquireIssueDeletion(ctx, actor, workspaceID, issueIDs, mode)
+	}
 	if err != nil {
 		return 0, nil, err
 	}
+	return runIssueDeletionHandle(ctx, handle, nil)
+}
+
+// runIssueDeletionHandle owns the caller-side at-most-once guard. afterDelete
+// is an unexported pure test seam for a panic after Delete has returned but
+// before explicit Finish starts.
+func runIssueDeletionHandle(ctx context.Context, handle issueDeletionHandle, afterDelete func()) (deleted int, effects []service.IssueDeletionEffects, err error) {
 	finishStarted := false
 	defer func() {
 		if !finishStarted {
@@ -32,6 +55,9 @@ func (h *Handler) performIssueDeletion(ctx context.Context, actor service.Coordi
 		result, deleteErr := handle.Delete(ctx, issueID)
 		if deleteErr != nil {
 			return 0, nil, abort(deleteErr)
+		}
+		if afterDelete != nil {
+			afterDelete()
 		}
 		switch result.Outcome {
 		case service.IssueDeletionDeleted:
@@ -52,7 +78,12 @@ func (h *Handler) performIssueDeletion(ctx context.Context, actor service.Coordi
 }
 
 func (h *Handler) performWorkspaceDeletion(ctx context.Context, actor service.CoordinationActor, workspaceID pgtype.UUID) (effects service.WorkspaceDeletionEffects, err error) {
-	handle, err := h.CoordinationService.AcquireWorkspaceDeletion(ctx, actor, workspaceID)
+	var handle workspaceDeletionHandle
+	if h.acquireWorkspaceDelete != nil {
+		handle, err = h.acquireWorkspaceDelete(ctx, actor, workspaceID)
+	} else {
+		handle, err = h.CoordinationService.AcquireWorkspaceDeletion(ctx, actor, workspaceID)
+	}
 	if err != nil {
 		return service.WorkspaceDeletionEffects{}, err
 	}

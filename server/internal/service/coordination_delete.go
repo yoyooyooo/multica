@@ -150,6 +150,13 @@ type coordinationDeleteLifecycle struct {
 	lockKey  int32
 	lockHeld bool
 	state    deleteHandleState
+
+	// Per-handle seams keep terminal-state tests deterministic without exposing
+	// the pinned connection or qtx outside this package.
+	sessionLock   func(context.Context, int32) error
+	sessionUnlock func(context.Context, int32) (bool, error)
+	releaseConn   func()
+	discardConn   func()
 }
 
 // IssueDeletionHandle owns one pinned connection and one transaction. Batch
@@ -164,6 +171,7 @@ type IssueDeletionHandle struct {
 	deleted       int
 	failed        bool
 	savepointExec func(context.Context, string, ...any) (pgconn.CommandTag, error)
+	phaseRunner   func(context.Context, db.Issue) (IssueDeletionEffects, IssueDeletionPhase, error)
 }
 
 // WorkspaceDeletionHandle owns the pinned connection and transaction for one
@@ -370,7 +378,11 @@ func (h *IssueDeletionHandle) Delete(ctx context.Context, issueID pgtype.UUID) (
 		}
 	}
 
-	effects, phase, err := h.deleteIssuePhases(ctx, issue)
+	phaseRunner := h.deleteIssuePhases
+	if h.phaseRunner != nil {
+		phaseRunner = h.phaseRunner
+	}
+	effects, phase, err := phaseRunner(ctx, issue)
 	if err != nil {
 		if h.mode == IssueDeletionBatch && phase == IssueDeletionPhaseEntityDelete && sqlState(err) == "23503" {
 			if _, rollbackErr := h.execSavepoint(ctx, "ROLLBACK TO SAVEPOINT coordination_issue_delete_target"); rollbackErr != nil {
@@ -538,11 +550,17 @@ func (l *coordinationDeleteLifecycle) acquireSessionLock(ctx context.Context, wo
 		return coordinationErr(CoordinationInvalidPayload, "invalid workspace id", err)
 	}
 	l.lockKey = key
-	if err := db.New(l.conn).CoordinationAdvisorySessionLock(ctx, db.CoordinationAdvisorySessionLockParams{Namespace: CoordinationAdvisoryNamespace, WorkspaceKey: key}); err != nil {
+	var lockErr error
+	if l.sessionLock != nil {
+		lockErr = l.sessionLock(ctx, key)
+	} else {
+		lockErr = db.New(l.conn).CoordinationAdvisorySessionLock(ctx, db.CoordinationAdvisorySessionLockParams{Namespace: CoordinationAdvisoryNamespace, WorkspaceKey: key})
+	}
+	if lockErr != nil {
 		// The server may have acquired the lock before the transport error became
 		// visible. Never return this connection to the pool.
 		l.discard()
-		return coordinationErr(CoordinationInternal, "could not acquire workspace deletion lock", err)
+		return coordinationErr(CoordinationInternal, "could not acquire workspace deletion lock", lockErr)
 	}
 	l.lockHeld = true
 	return nil
@@ -595,7 +613,7 @@ func (l *coordinationDeleteLifecycle) finish(commit bool) (err error) {
 }
 
 func (l *coordinationDeleteLifecycle) finishSessionLock(ctx context.Context) error {
-	if l.conn == nil {
+	if l.conn == nil && l.sessionUnlock == nil && l.releaseConn == nil {
 		if l.state == deleteStateDiscarded {
 			return errors.New("deletion connection was discarded")
 		}
@@ -603,7 +621,13 @@ func (l *coordinationDeleteLifecycle) finishSessionLock(ctx context.Context) err
 		return errors.New("deletion connection is unavailable")
 	}
 	if l.lockHeld {
-		unlocked, err := db.New(l.conn).CoordinationAdvisorySessionUnlock(ctx, db.CoordinationAdvisorySessionUnlockParams{Namespace: CoordinationAdvisoryNamespace, WorkspaceKey: l.lockKey})
+		var unlocked bool
+		var err error
+		if l.sessionUnlock != nil {
+			unlocked, err = l.sessionUnlock(ctx, l.lockKey)
+		} else {
+			unlocked, err = db.New(l.conn).CoordinationAdvisorySessionUnlock(ctx, db.CoordinationAdvisorySessionUnlockParams{Namespace: CoordinationAdvisoryNamespace, WorkspaceKey: l.lockKey})
+		}
 		if err != nil || !unlocked {
 			l.discard()
 			if err != nil {
@@ -613,7 +637,11 @@ func (l *coordinationDeleteLifecycle) finishSessionLock(ctx context.Context) err
 		}
 		l.lockHeld = false
 	}
-	l.conn.Release()
+	if l.releaseConn != nil {
+		l.releaseConn()
+	} else {
+		l.conn.Release()
+	}
 	l.conn = nil
 	l.state = deleteStateReleased
 	return nil
@@ -646,6 +674,10 @@ func (l *coordinationDeleteLifecycle) discard() {
 	l.conn = nil
 	l.lockHeld = false
 	l.state = deleteStateDiscarded
+	if l.discardConn != nil {
+		l.discardConn()
+		return
+	}
 	if conn == nil {
 		return
 	}

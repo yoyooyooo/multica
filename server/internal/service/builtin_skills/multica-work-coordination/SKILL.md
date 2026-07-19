@@ -9,10 +9,15 @@ allowed-tools: Bash(multica *)
 
 ## Quick start
 
-Use the coordination scope commands for passive scope and receipt reads:
+Use `ensure` for the idempotent scope/receipt write path:
 
 ```bash
 multica coordination scope ensure --root <issue-ref> --workflow-profile <key> --idempotency-key <key>
+```
+
+Use `get` only for read paths:
+
+```bash
 multica coordination scope get --scope <uuid>
 multica coordination scope get --root <issue-ref> --workflow-profile <key>
 ```

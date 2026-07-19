@@ -140,6 +140,8 @@ type Handler struct {
 	IssueService           *service.IssueService
 	AutopilotService       *service.AutopilotService
 	CoordinationService    *service.CoordinationService
+	acquireIssueDeletion   func(context.Context, service.CoordinationActor, pgtype.UUID, []pgtype.UUID, service.IssueDeletionMode) (issueDeletionHandle, error)
+	acquireWorkspaceDelete func(context.Context, service.CoordinationActor, pgtype.UUID) (workspaceDeletionHandle, error)
 	EmailService           *service.EmailService
 	UpdateStore            UpdateStore
 	ModelListStore         ModelListStore
