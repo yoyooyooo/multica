@@ -320,6 +320,63 @@ FROM generate_series(1,999) g`, fixture.workspaceID, scope.Scope.ID, fixture.use
 	}
 }
 
+func TestWorkCoordinationDependencyDenseDAGReachabilityIsNodeBounded(t *testing.T) {
+	pool := openWorkCoordinationPool(t)
+	ctx := context.Background()
+	fixture := createWorkCoordinationFixture(t, pool)
+	downstream := createWorkCoordinationChildIssue(t, pool, fixture, 2, "dense-downstream")
+	upstream := createWorkCoordinationChildIssue(t, pool, fixture, 3, "dense-upstream")
+	svc := NewCoordinationService(db.New(pool), pool)
+	actor := CoordinationActor{WorkspaceID: fixture.workspaceID, ActorType: CoordinationActorMember, ActorID: fixture.userID}
+	scope, err := svc.EnsureScope(ctx, actor, EnsureScopeInput{RootIssueID: fixture.issueID, WorkflowProfileKey: "matt-loop", IdempotencyKey: "dense-scope"})
+	if err != nil {
+		t.Fatalf("scope: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+WITH nodes AS (
+    SELECT g, CASE WHEN g=1 THEN $4::uuid ELSE md5('wcs-dense-node-'||g)::uuid END AS id
+    FROM generate_series(1,45) g
+)
+INSERT INTO coordination_dependency (
+    id,workspace_id,coordination_scope_id,downstream_issue_id,upstream_issue_id,
+    created_by_type,created_by_id
+)
+SELECT md5('wcs-dense-edge-'||left_node.g||'-'||right_node.g)::uuid,$1,$2,left_node.id,right_node.id,'member',$3
+FROM nodes left_node
+JOIN nodes right_node ON left_node.g < right_node.g`, fixture.workspaceID, scope.Scope.ID, fixture.userID, upstream); err != nil {
+		t.Fatalf("seed dense DAG: %v", err)
+	}
+	var seeded int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_dependency WHERE coordination_scope_id=$1 AND resolved_at IS NULL`, scope.Scope.ID).Scan(&seeded); err != nil || seeded != 990 {
+		t.Fatalf("seeded=%d err=%v", seeded, err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin bounded reachability: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '750ms'`); err != nil {
+		t.Fatalf("set statement timeout: %v", err)
+	}
+	reachable, err := db.New(tx).CoordinationDependencyPathExists(ctx, db.CoordinationDependencyPathExistsParams{WorkspaceID: fixture.workspaceID, StartIssueID: upstream, TargetIssueID: downstream})
+	if err != nil || reachable {
+		t.Fatalf("dense reachability=%v err=%v", reachable, err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback bounded reachability: %v", err)
+	}
+
+	created, err := svc.AddDependency(ctx, actor, AddDependencyInput{ScopeID: scope.Scope.ID, ExpectedRevision: 0, DownstreamIssueID: downstream, UpstreamIssueID: upstream, IdempotencyKey: "dense-add"})
+	if err != nil || created.Outcome != CoordinationOutcomeCreated || created.ScopeRevision != 1 {
+		t.Fatalf("dense add=%+v err=%v", created, err)
+	}
+	var active int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_dependency WHERE coordination_scope_id=$1 AND resolved_at IS NULL`, scope.Scope.ID).Scan(&active); err != nil || active != 991 {
+		t.Fatalf("active=%d err=%v", active, err)
+	}
+}
+
 func TestWorkCoordinationDependencyConcurrentReverseEdges(t *testing.T) {
 	pool := openWorkCoordinationPool(t)
 	ctx := context.Background()

@@ -153,16 +153,15 @@ func (q *Queries) CoordinationAdvisoryXactLock(ctx context.Context, arg Coordina
 }
 
 const coordinationDependencyPathExists = `-- name: CoordinationDependencyPathExists :one
-WITH RECURSIVE reachable(issue_id, path) AS (
-    SELECT $2::uuid, ARRAY[$2::uuid]
-  UNION ALL
-    SELECT dependency.upstream_issue_id, reachable.path || dependency.upstream_issue_id
+WITH RECURSIVE reachable(issue_id) AS (
+    SELECT $2::uuid
+  UNION
+    SELECT dependency.upstream_issue_id
     FROM reachable
     JOIN coordination_dependency dependency
       ON dependency.workspace_id = $3
      AND dependency.downstream_issue_id = reachable.issue_id
      AND dependency.resolved_at IS NULL
-    WHERE NOT dependency.upstream_issue_id = ANY(reachable.path)
 )
 SELECT EXISTS (
     SELECT 1 FROM reachable WHERE reachable.issue_id = $1::uuid
