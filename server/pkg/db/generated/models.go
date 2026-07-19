@@ -467,6 +467,40 @@ type CoordinationReceipt struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type CoordinationRecord struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	Kind                string             `json:"kind"`
+	SchemaVersion       int32              `json:"schema_version"`
+	Status              string             `json:"status"`
+	RootIssueID         pgtype.UUID        `json:"root_issue_id"`
+	DownstreamIssueID   pgtype.UUID        `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID        `json:"upstream_issue_id"`
+	DependencyID        pgtype.UUID        `json:"dependency_id"`
+	ReasonCode          string             `json:"reason_code"`
+	ResolutionCode      pgtype.Text        `json:"resolution_code"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID        `json:"created_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ResolvedByType      pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID        `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID        `json:"resolved_task_id"`
+	ResolvedAt          pgtype.Timestamptz `json:"resolved_at"`
+}
+
+type CoordinationRecordIssueRef struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	RecordID            pgtype.UUID        `json:"record_id"`
+	Phase               string             `json:"phase"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	Position            int32              `json:"position"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
 type CoordinationScope struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS coordination_record_upstream_issue_idx;

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS coordination_record_root_issue_idx;

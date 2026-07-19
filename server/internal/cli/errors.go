@@ -238,6 +238,10 @@ func coordinationRouteRegistered(method, rawPath string) bool {
 		return true
 	case method == http.MethodPost && isCoordinationDependencyResolvePath(path):
 		return true
+	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationBlockerCollectionPath(path):
+		return true
+	case method == http.MethodPost && isCoordinationBlockerResolvePath(path):
+		return true
 	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
 		return true
 	case method == http.MethodDelete && hasOnePathValue(path, "/api/issues/"):
@@ -283,6 +287,20 @@ func coordinationRouteAllowsCode(method, rawPath, code string) bool {
 			return true
 		}
 	}
+	if isCoordinationBlockerCollectionPath(path) {
+		if method == http.MethodGet {
+			return code == "coordination_revision_conflict"
+		}
+		if method == http.MethodPost {
+			switch code {
+			case "coordination_capacity_exceeded", "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict":
+				return true
+			}
+		}
+	}
+	if method == http.MethodPost && isCoordinationBlockerResolvePath(path) {
+		return code == "coordination_revision_conflict" || code == "coordination_idempotency_conflict"
+	}
 	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
 		return code == "coordination_delete_blocked"
 	}
@@ -305,6 +323,16 @@ func isCoordinationDependencyResolvePath(path string) bool {
 	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies" && parts[5] != "" && parts[6] == "resolve"
 }
 
+func isCoordinationBlockerCollectionPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers"
+}
+
+func isCoordinationBlockerResolvePath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers" && parts[5] != "" && parts[6] == "resolve"
+}
+
 func coordinationPathParts(path string) ([]string, bool) {
 	if !strings.HasPrefix(path, "/") || path == "/" || strings.HasSuffix(path, "/") || strings.Contains(path, "//") {
 		return nil, false
@@ -318,6 +346,27 @@ func hasOnePathValue(path, prefix string) bool {
 	}
 	value := strings.TrimPrefix(path, prefix)
 	return value != "" && !strings.Contains(value, "/")
+}
+
+// DecodeStrictCoordinationJSON rejects duplicate keys, unknown fields, trailing
+// values, and malformed JSON before a coordination CLI request is sent.
+func DecodeStrictCoordinationJSON(data []byte, dst any) error {
+	if err := validateCoordinationJSONShape(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func validateCoordinationJSONShape(data []byte) error {

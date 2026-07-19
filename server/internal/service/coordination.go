@@ -31,8 +31,11 @@ const (
 	CoordinationOperationEnsureScope       = "ensure_scope"
 	CoordinationOperationAddDependency     = "add_dependency"
 	CoordinationOperationResolveDependency = "resolve_dependency"
+	CoordinationOperationAppendBlocker     = "append_blocker"
+	CoordinationOperationResolveBlocker    = "resolve_blocker"
 	CoordinationResourceScope              = "scope"
 	CoordinationResourceDependency         = "dependency"
+	CoordinationResourceBlocker            = "blocker"
 
 	CoordinationOutcomeCreated  = "created"
 	CoordinationOutcomeResolved = "resolved"

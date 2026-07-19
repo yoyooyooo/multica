@@ -171,6 +171,154 @@ func TestWorkCoordinationDependencyAddRacesWithIssueAndBatchDeletion(t *testing.
 	}
 }
 
+func TestWorkCoordinationBlockerAppendRacesWithIssueAndBatchDeletion(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		name := "single"
+		mode := IssueDeletionSingle
+		if batch {
+			name = "batch"
+			mode = IssueDeletionBatch
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := openWorkCoordinationPool(t)
+			ctx := context.Background()
+			fixture := createWorkCoordinationFixture(t, pool)
+			downstream := createWorkCoordinationChildIssue(t, pool, fixture, 2401, "blocker-race-downstream")
+			upstream := createWorkCoordinationChildIssue(t, pool, fixture, 2402, "blocker-race-upstream")
+			evidence := createWorkCoordinationChildIssue(t, pool, fixture, 2403, "blocker-race-evidence")
+			svc := NewCoordinationService(db.New(pool), pool)
+			actor := CoordinationActor{WorkspaceID: fixture.workspaceID, ActorType: CoordinationActorMember, ActorID: fixture.userID}
+			scope, err := svc.EnsureScope(ctx, actor, EnsureScopeInput{RootIssueID: fixture.issueID, WorkflowProfileKey: "blocker-race", IdempotencyKey: "blocker-race-scope-" + name})
+			if err != nil {
+				t.Fatalf("ensure scope: %v", err)
+			}
+			ids := []pgtype.UUID{evidence}
+			if batch {
+				ids = append(ids, downstream)
+			}
+			start := make(chan struct{})
+			var appendErr, deleteErr error
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, appendErr = svc.AppendBlocker(ctx, actor, AppendBlockerInput{
+					ScopeID: scope.Scope.ID, ExpectedRevision: 0, DownstreamIssueID: downstream, UpstreamIssueID: upstream,
+					SchemaVersion: 1, ReasonCode: CoordinationBlockerReasonWaitingOnIssue, EvidenceRefs: []CoordinationEvidenceRef{{Kind: "issue", ID: evidence}},
+					IdempotencyKey: "blocker-race-append-" + name,
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				handle, err := svc.AcquireIssueDeletion(ctx, actor, fixture.workspaceID, ids, mode)
+				if err != nil {
+					deleteErr = err
+					return
+				}
+				for _, targetID := range handle.TargetIssueIDs() {
+					if _, err = handle.Delete(ctx, targetID); err != nil {
+						break
+					}
+				}
+				if err == nil {
+					err = handle.Finish(true)
+				} else {
+					_ = handle.Finish(false)
+				}
+				deleteErr = err
+			}()
+			close(start)
+			wg.Wait()
+
+			var orphanRecords, orphanRefs int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record r WHERE r.workspace_id=$1 AND (NOT EXISTS(SELECT 1 FROM issue i WHERE i.workspace_id=r.workspace_id AND i.id=r.downstream_issue_id) OR NOT EXISTS(SELECT 1 FROM issue i WHERE i.workspace_id=r.workspace_id AND i.id=r.upstream_issue_id))`, fixture.workspaceID).Scan(&orphanRecords); err != nil || orphanRecords != 0 {
+				t.Fatalf("orphan blocker records=%d err=%v", orphanRecords, err)
+			}
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record_issue_ref r WHERE r.workspace_id=$1 AND NOT EXISTS(SELECT 1 FROM issue i WHERE i.workspace_id=r.workspace_id AND i.id=r.issue_id)`, fixture.workspaceID).Scan(&orphanRefs); err != nil || orphanRefs != 0 {
+				t.Fatalf("orphan blocker refs=%d err=%v", orphanRefs, err)
+			}
+			switch {
+			case appendErr == nil && coordinationCode(deleteErr) == CoordinationDeleteBlocked:
+				var issueCount, recordCount, refCount int
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE id=ANY($1::uuid[])`, ids).Scan(&issueCount); err != nil || issueCount != len(ids) {
+					t.Fatalf("append-won issue count=%d err=%v", issueCount, err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record WHERE coordination_scope_id=$1`, scope.Scope.ID).Scan(&recordCount); err != nil || recordCount != 1 {
+					t.Fatalf("append-won record count=%d err=%v", recordCount, err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record_issue_ref WHERE coordination_scope_id=$1`, scope.Scope.ID).Scan(&refCount); err != nil || refCount != 1 {
+					t.Fatalf("append-won ref count=%d err=%v", refCount, err)
+				}
+			case deleteErr == nil && coordinationCode(appendErr) == CoordinationNotFound:
+				var issueCount, recordCount int
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM issue WHERE id=ANY($1::uuid[])`, ids).Scan(&issueCount); err != nil || issueCount != 0 {
+					t.Fatalf("delete-won issue count=%d err=%v", issueCount, err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record WHERE coordination_scope_id=$1`, scope.Scope.ID).Scan(&recordCount); err != nil || recordCount != 0 {
+					t.Fatalf("delete-won record count=%d err=%v", recordCount, err)
+				}
+			default:
+				t.Fatalf("unexpected blocker race outcome append=%v delete=%v", appendErr, deleteErr)
+			}
+		})
+	}
+}
+
+func TestWorkCoordinationBlockerAppendRacesWithWorkspaceDeletion(t *testing.T) {
+	pool := openWorkCoordinationPool(t)
+	ctx := context.Background()
+	fixture := createWorkCoordinationFixture(t, pool)
+	upstream := createWorkCoordinationChildIssue(t, pool, fixture, 2451, "blocker-workspace-race-upstream")
+	svc := NewCoordinationService(db.New(pool), pool)
+	actor := CoordinationActor{WorkspaceID: fixture.workspaceID, ActorType: CoordinationActorMember, ActorID: fixture.userID}
+	scope, err := svc.EnsureScope(ctx, actor, EnsureScopeInput{RootIssueID: fixture.issueID, WorkflowProfileKey: "blocker-workspace-race", IdempotencyKey: "blocker-workspace-race-scope"})
+	if err != nil {
+		t.Fatalf("ensure scope: %v", err)
+	}
+	start := make(chan struct{})
+	var appendErr, deleteErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, appendErr = svc.AppendBlocker(ctx, actor, AppendBlockerInput{
+			ScopeID: scope.Scope.ID, ExpectedRevision: 0, DownstreamIssueID: fixture.issueID, UpstreamIssueID: upstream,
+			SchemaVersion: 1, ReasonCode: CoordinationBlockerReasonWaitingOnIssue, IdempotencyKey: "blocker-workspace-race-append",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		handle, err := svc.AcquireWorkspaceDeletion(ctx, actor, fixture.workspaceID)
+		if err != nil {
+			deleteErr = err
+			return
+		}
+		if _, err = handle.Delete(ctx); err == nil {
+			err = handle.Finish(true)
+		} else {
+			_ = handle.Finish(false)
+		}
+		deleteErr = err
+	}()
+	close(start)
+	wg.Wait()
+	if appendErr != nil || coordinationCode(deleteErr) != CoordinationDeleteBlocked {
+		t.Fatalf("workspace race append=%v delete=%v", appendErr, deleteErr)
+	}
+	var workspaceExists bool
+	var recordCount int
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace WHERE id=$1)`, fixture.workspaceID).Scan(&workspaceExists); err != nil || !workspaceExists {
+		t.Fatalf("workspace exists=%v err=%v", workspaceExists, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM coordination_record WHERE coordination_scope_id=$1`, scope.Scope.ID).Scan(&recordCount); err != nil || recordCount != 1 {
+		t.Fatalf("record count=%d err=%v", recordCount, err)
+	}
+}
+
 func TestWorkCoordinationDependencyAddRacesWithWorkspaceDeletion(t *testing.T) {
 	pool := openWorkCoordinationPool(t)
 	ctx := context.Background()

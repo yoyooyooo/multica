@@ -27,6 +27,9 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "scope", "get", "--scope", "x", "--server-url", "--output=json"},
 		{"coordination", "dependency", "add", "--scope", "x", "--expected-revision", "--output", "--idempotency-key", "key", "--downstream", "a", "--upstream", "b"},
 		{"coordination", "dependency", "list", "--help"},
+		{"coordination", "blocker", "add", "--scope", "x", "--downstream", "a", "--upstream", "b", "--payload-file", "p", "--expected-revision", "0", "--idempotency-key", "k"},
+		{"coordination", "blocker", "list", "--scope", "x", "--status", "all", "--limit", "2", "--output=json"},
+		{"coordination", "blocker", "resolve", "--scope", "x", "--blocker", "y", "--resolution-file", "p", "--expected-revision", "0", "--idempotency-key", "k", "--help"},
 		{"issue", "list", "--output", "anything"},
 		{"--profile", "coordination", "issue", "list", "--output", "anything"},
 		{"--profile=coordination", "issue", "list", "--output", "anything"},
@@ -51,6 +54,10 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "dependency", "list", "--scope", "x", "--root", "MUL-1", "--output=table"},
 		{"coordination", "scope", "get", "--", "--output", "bad"},
 		{"coordination", "dependency", "typo", "--output=table"},
+		{"coordination", "blocker", "typo", "--output=json"},
+		{"coordination", "blocker", "list", "--scope", "x", "--dependency", "y"},
+		{"coordination", "blocker", "add", "--scope", "x", "--", "unexpected"},
+		{"coordination", "blocker", "resolve", "--resolution-file"},
 		{"coordination", "scope", "typo", "--output=json"},
 		{"coordination", "typo", "--output=table"},
 	}
@@ -69,6 +76,8 @@ func TestWorkCoordinationHelpSurvivesOutputPreParser(t *testing.T) {
 	for _, args := range [][]string{
 		{"coordination", "scope", "get", "--help"},
 		{"coordination", "scope", "get", "-h"},
+		{"coordination", "blocker", "add", "--help"},
+		{"coordination", "blocker", "resolve", "-h"},
 	} {
 		resetWorkCoordinationCommandState()
 		var stdout, stderr bytes.Buffer
@@ -792,7 +801,7 @@ func resetWorkCoordinationCommandState() {
 	rootCmd.SetErr(os.Stderr)
 	debugFlag = false
 	coordinationOutput = "json"
-	for _, cmd := range []*cobra.Command{rootCmd, coordinationCmd, coordinationScopeCmd, coordinationScopeEnsureCmd, coordinationScopeGetCmd, coordinationDependencyCmd, coordinationDependencyAddCmd, coordinationDependencyListCmd, coordinationDependencyResolveCmd} {
+	for _, cmd := range []*cobra.Command{rootCmd, coordinationCmd, coordinationScopeCmd, coordinationScopeEnsureCmd, coordinationScopeGetCmd, coordinationDependencyCmd, coordinationDependencyAddCmd, coordinationDependencyListCmd, coordinationDependencyResolveCmd, coordinationBlockerCmd, coordinationBlockerAddCmd, coordinationBlockerListCmd, coordinationBlockerResolveCmd} {
 		cmd.InitDefaultHelpFlag()
 		_ = cmd.Flags().Set("help", "false")
 		if flag := cmd.Flags().Lookup("help"); flag != nil {
@@ -824,6 +833,22 @@ func resetWorkCoordinationCommandState() {
 		{coordinationDependencyResolveCmd, "dependency", ""},
 		{coordinationDependencyResolveCmd, "expected-revision", ""},
 		{coordinationDependencyResolveCmd, "idempotency-key", ""},
+		{coordinationBlockerAddCmd, "scope", ""},
+		{coordinationBlockerAddCmd, "downstream", ""},
+		{coordinationBlockerAddCmd, "upstream", ""},
+		{coordinationBlockerAddCmd, "dependency", ""},
+		{coordinationBlockerAddCmd, "payload-file", ""},
+		{coordinationBlockerAddCmd, "expected-revision", ""},
+		{coordinationBlockerAddCmd, "idempotency-key", ""},
+		{coordinationBlockerListCmd, "scope", ""},
+		{coordinationBlockerListCmd, "status", "open"},
+		{coordinationBlockerListCmd, "cursor", ""},
+		{coordinationBlockerListCmd, "limit", "100"},
+		{coordinationBlockerResolveCmd, "scope", ""},
+		{coordinationBlockerResolveCmd, "blocker", ""},
+		{coordinationBlockerResolveCmd, "resolution-file", ""},
+		{coordinationBlockerResolveCmd, "expected-revision", ""},
+		{coordinationBlockerResolveCmd, "idempotency-key", ""},
 	} {
 		_ = item.cmd.Flags().Set(item.name, item.value)
 		if flag := item.cmd.Flags().Lookup(item.name); flag != nil {

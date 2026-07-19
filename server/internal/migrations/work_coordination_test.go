@@ -12,7 +12,7 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := filepath.Clean(filepath.Join("..", "..", "migrations"))
-	for n := 202; n <= 217; n++ {
+	for n := 202; n <= 230; n++ {
 		for _, direction := range []string{"up", "down"} {
 			matches, err := filepath.Glob(filepath.Join(dir, fmt.Sprintf("%03d_coordination*.%s.sql", n, direction)))
 			if err != nil {
@@ -34,13 +34,13 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 		}
 	}
 
-	for _, n := range []int{202, 211} {
+	for _, n := range []int{202, 211, 218} {
 		structure := readWorkCoordinationMigration(t, dir, n, "up")
 		if strings.Contains(strings.ToUpper(structure), "PRIMARY KEY") || strings.Contains(strings.ToUpper(structure), " UNIQUE") {
 			t.Fatalf("%03d structure migration must not create inline PK/UNIQUE constraints", n)
 		}
 	}
-	for _, n := range []int{203, 204, 205, 206, 207, 208, 209, 212, 213, 214, 215, 216} {
+	for _, n := range []int{203, 204, 205, 206, 207, 208, 209, 212, 213, 214, 215, 216, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229} {
 		up := strings.TrimSpace(readWorkCoordinationMigration(t, dir, n, "up"))
 		if strings.Count(up, ";") != 1 || !strings.Contains(strings.ToUpper(up), "INDEX CONCURRENTLY") {
 			t.Fatalf("%03d up must be one concurrent-index statement: %q", n, up)
@@ -70,6 +70,21 @@ func TestWorkCoordinationMigrationFiles(t *testing.T) {
 	v2Attach := strings.ToUpper(readWorkCoordinationMigration(t, dir, 217, "up"))
 	if !strings.Contains(v2Attach, "PRIMARY KEY USING INDEX") || strings.Contains(v2Attach, "UNIQUE USING INDEX") || strings.Contains(v2Attach, "ACTIVE_PAIR") {
 		t.Fatal("217 must attach only the dependency primary key")
+	}
+	v3Structure := strings.ToUpper(readWorkCoordinationMigration(t, dir, 218, "up"))
+	for _, required := range []string{"CREATE TABLE COORDINATION_RECORD", "CREATE TABLE COORDINATION_RECORD_ISSUE_REF", "COORDINATION_RECORD_RESOLUTION_STATE_CHECK", "WAITING_ON_ISSUE", "NO_LONGER_BLOCKING", "SUPERSEDED"} {
+		if !strings.Contains(v3Structure, required) {
+			t.Fatalf("218 missing %s", required)
+		}
+	}
+	for _, forbidden := range []string{"JSONB", "PAYLOAD", "METADATA", " URL"} {
+		if strings.Contains(v3Structure, forbidden) {
+			t.Fatalf("218 contains forbidden free-form storage marker %s", forbidden)
+		}
+	}
+	v3Attach := strings.ToUpper(readWorkCoordinationMigration(t, dir, 230, "up"))
+	if strings.Count(v3Attach, "PRIMARY KEY USING INDEX") != 2 || strings.Count(v3Attach, "UNIQUE USING INDEX") != 2 {
+		t.Fatal("230 must attach both primary keys and both typed-ref unique constraints")
 	}
 }
 

@@ -263,7 +263,11 @@ func (s *CoordinationService) AcquireIssueDeletion(ctx context.Context, actor Co
 		if err != nil {
 			return nil, coordinationErr(CoordinationInternal, "could not check coordination dependency delete guard", err)
 		}
-		if count > 0 || dependencyCount > 0 {
+		recordCount, err := h.lifecycle.qtx.CountCoordinationRecordsByIssueIDs(ctx, db.CountCoordinationRecordsByIssueIDsParams{WorkspaceID: workspaceID, IssueIds: h.targetIDs})
+		if err != nil {
+			return nil, coordinationErr(CoordinationInternal, "could not check coordination blocker delete guard", err)
+		}
+		if count > 0 || dependencyCount > 0 || recordCount > 0 {
 			return nil, coordinationErr(CoordinationDeleteBlocked, "issue deletion is blocked by coordination facts", nil)
 		}
 	}
@@ -327,7 +331,11 @@ func (s *CoordinationService) AcquireWorkspaceDeletion(ctx context.Context, acto
 	if err != nil {
 		return nil, coordinationErr(CoordinationInternal, "could not check workspace coordination dependency guard", err)
 	}
-	if count > 0 || dependencyCount > 0 {
+	recordCount, err := h.lifecycle.qtx.CountCoordinationRecordsByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, coordinationErr(CoordinationInternal, "could not check workspace coordination blocker guard", err)
+	}
+	if count > 0 || dependencyCount > 0 || recordCount > 0 {
 		return nil, coordinationErr(CoordinationDeleteBlocked, "workspace deletion is blocked by coordination facts", nil)
 	}
 	members, err := h.lifecycle.qtx.ListMembers(ctx, workspaceID)

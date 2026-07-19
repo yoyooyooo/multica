@@ -236,6 +236,51 @@ func (q *Queries) CountCoordinationDependenciesByWorkspace(ctx context.Context, 
 	return column_1, err
 }
 
+const countCoordinationRecordsByIssueIDs = `-- name: CountCoordinationRecordsByIssueIDs :one
+SELECT (
+    (SELECT count(*) FROM coordination_record record
+     WHERE record.workspace_id = $1
+       AND (
+           record.root_issue_id = ANY($2::uuid[])
+           OR record.downstream_issue_id = ANY($2::uuid[])
+           OR record.upstream_issue_id = ANY($2::uuid[])
+       ))
+    +
+    (SELECT count(*) FROM coordination_record_issue_ref ref
+     WHERE ref.workspace_id = $1
+       AND ref.issue_id = ANY($2::uuid[]))
+)::bigint
+`
+
+type CountCoordinationRecordsByIssueIDsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	IssueIds    []pgtype.UUID `json:"issue_ids"`
+}
+
+func (q *Queries) CountCoordinationRecordsByIssueIDs(ctx context.Context, arg CountCoordinationRecordsByIssueIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCoordinationRecordsByIssueIDs, arg.WorkspaceID, arg.IssueIds)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCoordinationRecordsByWorkspace = `-- name: CountCoordinationRecordsByWorkspace :one
+SELECT (
+    (SELECT count(*) FROM coordination_record record
+     WHERE record.workspace_id = $1)
+    +
+    (SELECT count(*) FROM coordination_record_issue_ref ref
+     WHERE ref.workspace_id = $1)
+)::bigint
+`
+
+func (q *Queries) CountCoordinationRecordsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCoordinationRecordsByWorkspace, workspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countCoordinationScopesByRootIssues = `-- name: CountCoordinationScopesByRootIssues :one
 SELECT count(*)::bigint FROM coordination_scope
 WHERE workspace_id = $1
@@ -262,6 +307,26 @@ WHERE workspace_id = $1
 
 func (q *Queries) CountCoordinationScopesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countCoordinationScopesByWorkspace, workspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countOpenCoordinationRecordsByScope = `-- name: CountOpenCoordinationRecordsByScope :one
+SELECT count(*)::bigint
+FROM coordination_record
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND status = 'open'
+`
+
+type CountOpenCoordinationRecordsByScopeParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+}
+
+func (q *Queries) CountOpenCoordinationRecordsByScope(ctx context.Context, arg CountOpenCoordinationRecordsByScopeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenCoordinationRecordsByScope, arg.WorkspaceID, arg.CoordinationScopeID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -307,6 +372,71 @@ func (q *Queries) CreateCoordinationDependency(ctx context.Context, arg CreateCo
 		&i.CoordinationScopeID,
 		&i.DownstreamIssueID,
 		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const createCoordinationRecord = `-- name: CreateCoordinationRecord :one
+INSERT INTO coordination_record (
+    id, workspace_id, coordination_scope_id, kind, schema_version, status,
+    root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id,
+    reason_code, created_by_type, created_by_id, created_task_id, created_at
+) VALUES (
+    $1, $2, $3, 'blocker', 1, 'open',
+    $4, $5, $6, $7,
+    'waiting_on_issue', $8, $9, $10, clock_timestamp()
+)
+RETURNING id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at
+`
+
+type CreateCoordinationRecordParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	RootIssueID         pgtype.UUID `json:"root_issue_id"`
+	DownstreamIssueID   pgtype.UUID `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID `json:"upstream_issue_id"`
+	DependencyID        pgtype.UUID `json:"dependency_id"`
+	CreatedByType       string      `json:"created_by_type"`
+	CreatedByID         pgtype.UUID `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID `json:"created_task_id"`
+}
+
+func (q *Queries) CreateCoordinationRecord(ctx context.Context, arg CreateCoordinationRecordParams) (CoordinationRecord, error) {
+	row := q.db.QueryRow(ctx, createCoordinationRecord,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.RootIssueID,
+		arg.DownstreamIssueID,
+		arg.UpstreamIssueID,
+		arg.DependencyID,
+		arg.CreatedByType,
+		arg.CreatedByID,
+		arg.CreatedTaskID,
+	)
+	var i CoordinationRecord
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.Kind,
+		&i.SchemaVersion,
+		&i.Status,
+		&i.RootIssueID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.DependencyID,
+		&i.ReasonCode,
+		&i.ResolutionCode,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedTaskID,
@@ -564,6 +694,44 @@ func (q *Queries) GetCoordinationReceiptByScopeOrdinal(ctx context.Context, arg 
 	return i, err
 }
 
+const getCoordinationRecordByID = `-- name: GetCoordinationRecordByID :one
+SELECT id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_record
+WHERE workspace_id = $1 AND id = $2
+`
+
+type GetCoordinationRecordByIDParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetCoordinationRecordByID(ctx context.Context, arg GetCoordinationRecordByIDParams) (CoordinationRecord, error) {
+	row := q.db.QueryRow(ctx, getCoordinationRecordByID, arg.WorkspaceID, arg.ID)
+	var i CoordinationRecord
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.Kind,
+		&i.SchemaVersion,
+		&i.Status,
+		&i.RootIssueID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.DependencyID,
+		&i.ReasonCode,
+		&i.ResolutionCode,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getCoordinationScopeByID = `-- name: GetCoordinationScopeByID :one
 SELECT id, workspace_id, scope_kind, state, root_issue_id, workflow_profile_key, revision, next_receipt_ordinal, created_by_type, created_by_id, created_task_id, created_at, updated_at FROM coordination_scope
 WHERE workspace_id = $1 AND id = $2
@@ -703,6 +871,49 @@ func (q *Queries) InsertCoordinationReceipt(ctx context.Context, arg InsertCoord
 	return i, err
 }
 
+const insertCoordinationRecordIssueRef = `-- name: InsertCoordinationRecordIssueRef :one
+INSERT INTO coordination_record_issue_ref (
+    id, workspace_id, coordination_scope_id, record_id, phase, issue_id, position, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, clock_timestamp()
+)
+RETURNING id, workspace_id, coordination_scope_id, record_id, phase, issue_id, position, created_at
+`
+
+type InsertCoordinationRecordIssueRefParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	RecordID            pgtype.UUID `json:"record_id"`
+	Phase               string      `json:"phase"`
+	IssueID             pgtype.UUID `json:"issue_id"`
+	Position            int32       `json:"position"`
+}
+
+func (q *Queries) InsertCoordinationRecordIssueRef(ctx context.Context, arg InsertCoordinationRecordIssueRefParams) (CoordinationRecordIssueRef, error) {
+	row := q.db.QueryRow(ctx, insertCoordinationRecordIssueRef,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.RecordID,
+		arg.Phase,
+		arg.IssueID,
+		arg.Position,
+	)
+	var i CoordinationRecordIssueRef
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.RecordID,
+		&i.Phase,
+		&i.IssueID,
+		&i.Position,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listActiveCoordinationDependenciesByScope = `-- name: ListActiveCoordinationDependenciesByScope :many
 SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
 WHERE workspace_id = $1
@@ -829,6 +1040,126 @@ func (q *Queries) ListCoordinationReceiptsByScope(ctx context.Context, arg ListC
 	return items, nil
 }
 
+const listCoordinationRecordIssueRefs = `-- name: ListCoordinationRecordIssueRefs :many
+SELECT id, workspace_id, coordination_scope_id, record_id, phase, issue_id, position, created_at FROM coordination_record_issue_ref
+WHERE workspace_id = $1
+  AND record_id = $2
+  AND phase = $3
+ORDER BY position ASC, issue_id ASC
+`
+
+type ListCoordinationRecordIssueRefsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecordID    pgtype.UUID `json:"record_id"`
+	Phase       string      `json:"phase"`
+}
+
+func (q *Queries) ListCoordinationRecordIssueRefs(ctx context.Context, arg ListCoordinationRecordIssueRefsParams) ([]CoordinationRecordIssueRef, error) {
+	rows, err := q.db.Query(ctx, listCoordinationRecordIssueRefs, arg.WorkspaceID, arg.RecordID, arg.Phase)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoordinationRecordIssueRef{}
+	for rows.Next() {
+		var i CoordinationRecordIssueRef
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CoordinationScopeID,
+			&i.RecordID,
+			&i.Phase,
+			&i.IssueID,
+			&i.Position,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCoordinationRecordsByScope = `-- name: ListCoordinationRecordsByScope :many
+SELECT id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_record
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND ($3::text = 'all' OR status = $3::text)
+  AND (
+      $4::uuid IS NULL
+      OR downstream_issue_id = $4::uuid
+      OR upstream_issue_id = $4::uuid
+  )
+  AND (
+      $5::timestamptz IS NULL
+      OR (created_at, id) < ($5::timestamptz, $6::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $7
+`
+
+type ListCoordinationRecordsByScopeParams struct {
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID    pgtype.UUID        `json:"coordination_scope_id"`
+	StatusFilter           string             `json:"status_filter"`
+	VisibleEndpointIssueID pgtype.UUID        `json:"visible_endpoint_issue_id"`
+	CursorCreatedAt        pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID               pgtype.UUID        `json:"cursor_id"`
+	LimitRows              int32              `json:"limit_rows"`
+}
+
+func (q *Queries) ListCoordinationRecordsByScope(ctx context.Context, arg ListCoordinationRecordsByScopeParams) ([]CoordinationRecord, error) {
+	rows, err := q.db.Query(ctx, listCoordinationRecordsByScope,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.StatusFilter,
+		arg.VisibleEndpointIssueID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoordinationRecord{}
+	for rows.Next() {
+		var i CoordinationRecord
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CoordinationScopeID,
+			&i.Kind,
+			&i.SchemaVersion,
+			&i.Status,
+			&i.RootIssueID,
+			&i.DownstreamIssueID,
+			&i.UpstreamIssueID,
+			&i.DependencyID,
+			&i.ReasonCode,
+			&i.ResolutionCode,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedTaskID,
+			&i.CreatedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.ResolvedTaskID,
+			&i.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCoordinationDependency = `-- name: LockCoordinationDependency :one
 SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
 WHERE workspace_id = $1 AND id = $2
@@ -849,6 +1180,48 @@ func (q *Queries) LockCoordinationDependency(ctx context.Context, arg LockCoordi
 		&i.CoordinationScopeID,
 		&i.DownstreamIssueID,
 		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const lockCoordinationRecord = `-- name: LockCoordinationRecord :one
+SELECT id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_record
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND id = $3
+FOR UPDATE
+`
+
+type LockCoordinationRecordParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	ID                  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockCoordinationRecord(ctx context.Context, arg LockCoordinationRecordParams) (CoordinationRecord, error) {
+	row := q.db.QueryRow(ctx, lockCoordinationRecord, arg.WorkspaceID, arg.CoordinationScopeID, arg.ID)
+	var i CoordinationRecord
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.Kind,
+		&i.SchemaVersion,
+		&i.Status,
+		&i.RootIssueID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.DependencyID,
+		&i.ReasonCode,
+		&i.ResolutionCode,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedTaskID,
@@ -1018,6 +1391,67 @@ func (q *Queries) ResolveCoordinationDependency(ctx context.Context, arg Resolve
 		&i.CoordinationScopeID,
 		&i.DownstreamIssueID,
 		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
+const resolveCoordinationRecord = `-- name: ResolveCoordinationRecord :one
+UPDATE coordination_record
+SET status = 'resolved',
+    resolution_code = $1,
+    resolved_by_type = $2,
+    resolved_by_id = $3,
+    resolved_task_id = $4,
+    resolved_at = clock_timestamp()
+WHERE workspace_id = $5
+  AND coordination_scope_id = $6
+  AND id = $7
+  AND status = 'open'
+RETURNING id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at
+`
+
+type ResolveCoordinationRecordParams struct {
+	ResolutionCode      pgtype.Text `json:"resolution_code"`
+	ResolvedByType      pgtype.Text `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID `json:"resolved_task_id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	ID                  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ResolveCoordinationRecord(ctx context.Context, arg ResolveCoordinationRecordParams) (CoordinationRecord, error) {
+	row := q.db.QueryRow(ctx, resolveCoordinationRecord,
+		arg.ResolutionCode,
+		arg.ResolvedByType,
+		arg.ResolvedByID,
+		arg.ResolvedTaskID,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.ID,
+	)
+	var i CoordinationRecord
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.Kind,
+		&i.SchemaVersion,
+		&i.Status,
+		&i.RootIssueID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.DependencyID,
+		&i.ReasonCode,
+		&i.ResolutionCode,
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.CreatedTaskID,

@@ -1,6 +1,6 @@
 ---
 name: multica-work-coordination
-description: "Use when working with passive coordination scopes, canonical blocked-by dependencies, request-hash receipts, or the V1–V2 coordination API and CLI surface."
+description: "Use when working with passive coordination scopes, canonical blocked-by dependencies, strict typed blocker records, request-hash receipts, or the V1–V3 coordination API and CLI surface."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -9,7 +9,7 @@ allowed-tools: Bash(multica *)
 
 ## Quick start
 
-Use the coordination commands for passive scope and dependency facts:
+Use the coordination commands for passive scope, dependency, and typed blocker facts:
 
 ```bash
 multica coordination scope ensure --root <issue-ref> --workflow-profile <key> --idempotency-key <key>
@@ -22,6 +22,16 @@ multica coordination dependency add \
 multica coordination dependency list --scope <uuid> [--cursor <opaque>] [--limit 1..100]
 multica coordination dependency resolve \
   --scope <uuid> --dependency <uuid> \
+  --expected-revision <n> --idempotency-key <key>
+
+multica coordination blocker add \
+  --scope <uuid> --downstream <issue-ref> --upstream <issue-ref> \
+  [--dependency <uuid>] --payload-file <strict-json> \
+  --expected-revision <n> --idempotency-key <key>
+multica coordination blocker list \
+  --scope <uuid> [--status open|resolved|all] [--cursor <opaque>] [--limit 1..100]
+multica coordination blocker resolve \
+  --scope <uuid> --blocker <uuid> --resolution-file <strict-json> \
   --expected-revision <n> --idempotency-key <key>
 ```
 
@@ -37,11 +47,11 @@ downstream blocked_by upstream
 
 The response field `blocks_issue_id` is an alias of `downstream_issue_id`. It is not a second edge.
 
-The Store does not own scheduling, wakeups, Issue status, assignee, comments, metadata, blocker evidence, Autopilot behavior, legacy dependency lifecycle, or Store cleanup.
+The Store owns only passive scope, dependency, typed blocker/evidence-reference, and receipt facts. It does not own scheduling, wakeups, Issue status, assignee, comments, metadata, free-form evidence, Autopilot behavior, legacy dependency lifecycle, or Store cleanup.
 
 Important consequences:
 
-- scope ensure and dependency mutations are idempotent for the same canonical request;
+- scope ensure plus dependency and blocker mutations are idempotent for the same canonical request;
 - an exact-key replay returns the saved receipt and does not allocate another ordinal;
 - a fresh-key duplicate add in the same owner scope returns `noop`, leaves revision unchanged, and allocates a new receipt ordinal;
 - an unresolved pair owned by another scope returns `coordination_dependency_scope_conflict` and changes neither scope revision;
@@ -54,18 +64,23 @@ Important consequences:
 - resolve is monotonic and retains history;
 - active-list cursors are opaque and revision-bound; restart from page one after a revision conflict;
 - on a mutation revision conflict, read the scope again and retry from its current revision with a fresh idempotency key instead of looping the stale request;
-- all dependency history, including resolved rows, blocks Issue/Batch/Workspace deletion;
+- all dependency and blocker history, including resolved rows and evidence refs, blocks Issue/Batch/Workspace deletion;
+- blockers use schema version `1`, reason `waiting_on_issue`, resolution `no_longer_blocking|superseded`, and issue-only evidence refs;
+- optional blocker-to-dependency linkage must reference an active canonical dependency in the same scope with exact endpoints; blocker resolution never resolves that dependency;
+- exact-key blocker replay revalidates scope, endpoints, optional dependency, Agent task authority, and the referenced blocker before returning the saved projection;
+- blocker list cursors bind scope revision and status filter; a changed revision or filter invalidates the cursor;
+- each scope may have at most 1,000 open blockers; resolved history remains retained and paginated;
 - `coordination_dependency` is independent of legacy `issue_dependency`.
 
 ## Scope fields
 
 - `id` - coordination scope UUID.
 - `workspace_id` - workspace that owns the scope.
-- `scope_kind` - `root` in V1–V2.
-- `state` - `active` in V1–V2.
+- `scope_kind` - `root` in V1–V3.
+- `state` - `active` in V1–V3.
 - `root_issue_id` - actual root issue UUID.
 - `workflow_profile_key` - workflow profile identifier.
-- `revision` - server-side CAS revision advanced by dependency state changes.
+- `revision` - server-side CAS revision advanced by dependency or blocker state changes.
 - `created_by` - nested server-stamped `actor_type`, `actor_id`, and nullable `task_id`.
 - `created_at` / `updated_at` - RFC 3339 server timestamps.
 
@@ -83,12 +98,25 @@ Important consequences:
 
 List returns active rows only plus `scope_revision` and nullable `next_cursor`. Add/resolve returns the dependency, resulting scope revision, receipt, and outcome (`created`, `resolved`, `noop`, or `replay`).
 
+## Blocker fields
+
+- `kind` / `schema_version` - fixed to `blocker` / `1`.
+- `status` - `open` or monotonic `resolved`.
+- `root_issue_id`, `downstream_issue_id`, `upstream_issue_id` - strict scope-root endpoints.
+- `dependency_id` - nullable validated link to a matching canonical dependency.
+- `reason_code` - fixed to `waiting_on_issue` in schema v1.
+- `resolution_code` - nullable while open; `no_longer_blocking` or `superseded` when resolved.
+- `create_evidence_refs` / `resolution_evidence_refs` - sorted, unique `{kind:"issue", id:<uuid>}` facts; no URL or free text.
+- `created_by` / `resolved_by` and timestamps - server-stamped provenance.
+
+Payload and resolution files are strict JSON, at most 4,096 bytes, with exactly the documented fields. Evidence refs contain at most 32 entries. Add/resolve returns the blocker resource, resulting revision, immutable receipt, and `changed`/`replayed`; list returns a revision-bound page and status filter.
+
 ## Error handling
 
 Expected coordination exits are:
 
 - `3` - current authority denied;
-- `4` - scope, issue, or dependency not found;
+- `4` - scope, issue, dependency, or blocker not found;
 - `5` - invalid payload, self dependency, or cycle;
 - `6` - exact-route capacity, revision, idempotency, owner-scope, or delete-blocked conflict.
 

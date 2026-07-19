@@ -24,6 +24,8 @@ func TestWorkCoordinationRoutesThroughRouter(t *testing.T) {
 		t.Fatalf("insert router upstream: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_record_issue_ref WHERE workspace_id=$1`, testWorkspaceID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_record WHERE workspace_id=$1`, testWorkspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_dependency WHERE workspace_id=$1`, testWorkspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_receipt WHERE workspace_id=$1`, testWorkspaceID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM coordination_scope WHERE workspace_id=$1`, testWorkspaceID)
@@ -97,7 +99,74 @@ func TestWorkCoordinationRoutesThroughRouter(t *testing.T) {
 		t.Fatalf("dependency list count=%d", len(dependencyPage.Dependencies))
 	}
 
-	resolveBody, _ := json.Marshal(map[string]any{"expected_revision": 1})
+	blockerBody, _ := json.Marshal(map[string]any{
+		"expected_revision": 1, "downstream_issue_id": downstreamID, "upstream_issue_id": upstreamID,
+		"dependency_id": dependencyCreated.Dependency.ID, "schema_version": 1,
+		"payload": map[string]any{"reason_code": "waiting_on_issue", "evidence_refs": []map[string]string{{"kind": "issue", "id": downstreamID}}},
+	})
+	blockerReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/coordination/scopes/"+created.Scope.ID+"/blockers", bytes.NewReader(blockerBody))
+	if err != nil {
+		t.Fatalf("create blocker request: %v", err)
+	}
+	blockerReq.Header.Set("Authorization", "Bearer "+testToken)
+	blockerReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	blockerReq.Header.Set("Content-Type", "application/json")
+	blockerReq.Header.Set("Idempotency-Key", "router-blocker-add")
+	resp, err = http.DefaultClient.Do(blockerReq)
+	if err != nil {
+		t.Fatalf("blocker request: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		defer resp.Body.Close()
+		t.Fatalf("blocker status=%d", resp.StatusCode)
+	}
+	var blockerCreated struct {
+		Resource struct {
+			ID string `json:"id"`
+		} `json:"resource"`
+	}
+	readJSON(t, resp, &blockerCreated)
+	if blockerCreated.Resource.ID == "" {
+		t.Fatal("blocker route returned no blocker id")
+	}
+
+	resp = authRequest(t, http.MethodGet, "/api/coordination/scopes/"+created.Scope.ID+"/blockers?status=open&limit=100", nil)
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("blocker list status=%d", resp.StatusCode)
+	}
+	var blockerPage struct {
+		Items []map[string]any `json:"items"`
+	}
+	readJSON(t, resp, &blockerPage)
+	if len(blockerPage.Items) != 1 {
+		t.Fatalf("blocker list count=%d", len(blockerPage.Items))
+	}
+
+	blockerResolveBody, _ := json.Marshal(map[string]any{
+		"expected_revision": 2, "schema_version": 1,
+		"resolution": map[string]any{"resolution_code": "no_longer_blocking", "evidence_refs": []map[string]string{}},
+	})
+	blockerResolveReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/coordination/scopes/"+created.Scope.ID+"/blockers/"+blockerCreated.Resource.ID+"/resolve", bytes.NewReader(blockerResolveBody))
+	if err != nil {
+		t.Fatalf("create blocker resolve request: %v", err)
+	}
+	blockerResolveReq.Header.Set("Authorization", "Bearer "+testToken)
+	blockerResolveReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	blockerResolveReq.Header.Set("Content-Type", "application/json")
+	blockerResolveReq.Header.Set("Idempotency-Key", "router-blocker-resolve")
+	resp, err = http.DefaultClient.Do(blockerResolveReq)
+	if err != nil {
+		t.Fatalf("blocker resolve request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("blocker resolve status=%d", resp.StatusCode)
+	}
+	var blockerResolved map[string]any
+	readJSON(t, resp, &blockerResolved)
+
+	resolveBody, _ := json.Marshal(map[string]any{"expected_revision": 3})
 	resolveReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/coordination/scopes/"+created.Scope.ID+"/dependencies/"+dependencyCreated.Dependency.ID+"/resolve", bytes.NewReader(resolveBody))
 	if err != nil {
 		t.Fatalf("create resolve request: %v", err)

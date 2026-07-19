@@ -84,6 +84,44 @@ func TestWorkCoordinationV2DependencyRouteClassifierMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationV3BlockerRouteClassifierMatrix(t *testing.T) {
+	const collection = "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/blockers"
+	const resolve = collection + "/00000000-0000-0000-0000-000000000002/resolve"
+	cases := []struct {
+		name, method, path, code string
+	}{
+		{"append capacity", http.MethodPost, collection, "coordination_capacity_exceeded"},
+		{"append revision", http.MethodPost, collection, "coordination_revision_conflict"},
+		{"append idempotency", http.MethodPost, collection, "coordination_idempotency_conflict"},
+		{"append dependency scope", http.MethodPost, collection, "coordination_dependency_scope_conflict"},
+		{"list revision", http.MethodGet, collection + "?cursor=x", "coordination_revision_conflict"},
+		{"resolve revision", http.MethodPost, resolve, "coordination_revision_conflict"},
+		{"resolve idempotency", http.MethodPost, resolve, "coordination_idempotency_conflict"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CoordinationProductError(coordinationHTTPError(tc.method, tc.path, http.StatusConflict, tc.code))
+			var product *ProductError
+			if !errors.As(err, &product) || product.Code != tc.code || ExitCodeFor(err) != ExitConflict {
+				t.Fatalf("unexpected classification: %T %v", err, err)
+			}
+		})
+	}
+	wrong := []*HTTPError{
+		coordinationHTTPError(http.MethodGet, collection, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusConflict, "coordination_dependency_scope_conflict"),
+		coordinationHTTPError(http.MethodPost, collection, http.StatusConflict, "coordination_delete_blocked"),
+		coordinationHTTPError(http.MethodPost, collection+"/extra", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, resolve+"/", http.StatusConflict, "coordination_revision_conflict"),
+	}
+	for _, raw := range wrong {
+		if got := CoordinationProductError(raw); got != raw {
+			t.Fatalf("wrong blocker combination upgraded: %T %v", got, got)
+		}
+	}
+}
+
 func TestWorkCoordinationV1FutureConflictCodesStayLegacy(t *testing.T) {
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/coordination/scopes"},
