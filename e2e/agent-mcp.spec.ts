@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { TestApiClient } from "./fixtures";
-import { waitForPageText } from "./helpers";
+import { enableFrontendFeatureFlag, waitForPageText } from "./helpers";
 
 // Stage 3.2 (MUL-3870): the creator-only MCP tab on the agent detail page.
 //
@@ -80,6 +80,8 @@ function mockAgent(ownerId: string, workspaceId: string) {
  *  /api/agents/<id> body. Returns a getter for the last captured allowlist. */
 async function mockApis(page: Page, ownerId: string) {
   const captured: { allowlist?: unknown } = {};
+
+  await enableFrontendFeatureFlag(page, "composio_mcp_apps");
 
   await page.route("**/api/integrations/composio/toolkits", (route) =>
     route.fulfill({
@@ -161,8 +163,9 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // The creator-only tab entry is present and opens the connection list.
-    const tab = page.getByRole("button", { name: "MCP Apps" });
+    // The creator-only entry lives under the current Capabilities IA.
+    await page.getByRole("tab", { name: "Capabilities" }).click();
+    const tab = page.getByRole("tab", { name: "MCP Apps" });
     await expect(tab).toBeVisible({ timeout: 15000 });
     await tab.click();
 
@@ -184,10 +187,11 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // Other tabs render, but the creator-only MCP Apps entry must not.
-    await expect(page.getByRole("button", { name: "Activity" })).toBeVisible({
+    // Other capability tabs render, but the creator-only entry must not.
+    await page.getByRole("tab", { name: "Capabilities" }).click();
+    await expect(page.getByRole("tab", { name: "Skills" })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.getByRole("button", { name: "MCP Apps" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "MCP Apps" })).toHaveCount(0);
   });
 });
