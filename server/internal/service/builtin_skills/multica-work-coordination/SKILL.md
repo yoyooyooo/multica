@@ -1,6 +1,6 @@
 ---
 name: multica-work-coordination
-description: "Use when working with passive coordination scopes, canonical blocked-by dependencies, strict typed blocker records, request-hash receipts, or the V1–V3 coordination API and CLI surface."
+description: "Use when working with passive coordination scopes, canonical blocked-by dependencies, strict typed blocker records, consistent inspect snapshots, request-hash receipts, or the V1–V4 coordination API and CLI surface."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -15,6 +15,7 @@ Use the coordination commands for passive scope, dependency, and typed blocker f
 multica coordination scope ensure --root <issue-ref> --workflow-profile <key> --idempotency-key <key>
 multica coordination scope get --scope <uuid>
 multica coordination scope get --root <issue-ref> --workflow-profile <key>
+multica coordination inspect --scope <uuid> [--receipt-cursor <opaque>]
 
 multica coordination dependency add \
   --scope <uuid> --downstream <issue-ref> --upstream <issue-ref> \
@@ -64,8 +65,11 @@ Important consequences:
 - self edges and active cycles are rejected;
 - resolve is monotonic and retains history;
 - active-list cursors are opaque and revision-bound; restart from page one after a revision conflict;
-- on a mutation revision conflict, read the scope again and retry from its current revision with a fresh idempotency key instead of looping the stale request;
-- all dependency and blocker history, including resolved rows and evidence refs, blocks Issue/Batch/Workspace deletion;
+- `inspect` returns one read-only repeatable-read snapshot containing every active dependency, every open blocker, and a fixed page of 100 receipt refs; it does not infer actionable work or wake anything;
+- inspect receipt refs are ordered by `receipt_ordinal DESC`; their cursor binds workspace, scope, revision, collection, first-page upper ordinal, and last ordinal so later no-op receipts cannot enter an older window;
+- member inspect requires current workspace membership; task-token Agent inspect requires the current task's actual root to equal the scope root and returns the full owner-scope snapshot;
+- on a mutation revision conflict, inspect the scope again and retry from its current revision with a fresh idempotency key instead of looping the stale request;
+- all dependency and blocker history, including resolved rows and evidence refs, blocks Issue/Batch/Workspace deletion; receipt history alone does not, and Store cleanup/archive is not available;
 - blockers use schema version `1`, reason `waiting_on_issue`, resolution `no_longer_blocking|superseded`, and issue-only evidence refs;
 - optional blocker-to-dependency linkage must reference an active canonical dependency in the same scope with exact endpoints; blocker resolution never resolves that dependency;
 - exact-key blocker replay revalidates scope, endpoints, optional dependency, Agent task authority, and the referenced blocker before returning the saved projection;
@@ -77,8 +81,8 @@ Important consequences:
 
 - `id` - coordination scope UUID.
 - `workspace_id` - workspace that owns the scope.
-- `scope_kind` - `root` in V1–V3.
-- `state` - `active` in V1–V3.
+- `scope_kind` - `root` in V1–V4.
+- `state` - `active` in V1–V4.
 - `root_issue_id` - actual root issue UUID.
 - `workflow_profile_key` - workflow profile identifier.
 - `revision` - server-side CAS revision advanced by dependency or blocker state changes.
@@ -112,6 +116,12 @@ List returns active rows only plus `scope_revision` and nullable `next_cursor`. 
 
 Payload and resolution files are strict JSON, at most 4,096 bytes, with exactly the documented fields. Evidence refs contain at most 32 entries. Add/resolve returns the blocker resource, resulting revision, immutable receipt, and `changed`/`replayed`; list returns a revision-bound page and status filter.
 
+## Inspect fields
+
+`multica coordination inspect` returns the scope and `scope_revision`, complete `active_dependencies` and `open_blockers` arrays, up to 100 safe `receipt_refs`, and nullable `next_receipt_cursor`. Receipt refs expose only id, ordinal, typed operation/resource identity, before/after revision, safe actor type, and timestamp. They never expose request hashes, result snapshots, idempotency keys, payloads, or unbounded history.
+
+Read the inspection revision before choosing a mutation. If a subsequent mutation or receipt-page request reports `coordination_revision_conflict`, discard the stale cursor/revision and inspect from the first page again. Network retries of the exact same mutation must reuse the same idempotency key and unchanged payload; changed payloads require a fresh key.
+
 ## Error handling
 
 Expected coordination exits are:
@@ -125,7 +135,9 @@ Only exact method/route/status/code JSON envelopes receive product exits. Unknow
 
 ## Receipts
 
-Receipts are persisted server-side. They preserve one canonical request hash and saved result projection. They are audit facts, not an authority cache and not a scheduling signal.
+Receipts are persisted server-side. They preserve one canonical request hash and saved result projection. They are audit facts, not an authority cache and not a scheduling signal. Do not put secrets, URLs, free text, comments, or metadata authority into coordination files or keys.
+
+Program scopes, goal contracts, lifecycle cleanup/archive, leases, fencing, wake claims, Reconciler, and Autopilot control are not provided by this Store surface.
 
 ## References
 

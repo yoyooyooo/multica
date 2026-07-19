@@ -1,6 +1,6 @@
 # Work Coordination Source Map
 
-## Scope, receipt, dependency, and typed-blocker surface
+## Scope, receipt, dependency, typed-blocker, and inspect surface
 
 Source:
 
@@ -42,10 +42,12 @@ server/pkg/db/queries/workspace.sql
 server/internal/service/coordination.go
 server/internal/service/coordination_dependency.go
 server/internal/service/coordination_blocker.go
+server/internal/service/coordination_inspect.go
 server/internal/service/coordination_delete.go
 server/internal/handler/coordination.go
 server/internal/handler/coordination_dependency.go
 server/internal/handler/coordination_blocker.go
+server/internal/handler/coordination_inspect.go
 server/internal/handler/coordination_delete.go
 server/internal/handler/issue.go
 server/internal/handler/workspace.go
@@ -55,6 +57,7 @@ server/internal/cli/errors.go
 server/cmd/server/router.go
 server/cmd/multica/cmd_coordination.go
 server/cmd/multica/cmd_coordination_blocker.go
+server/cmd/multica/cmd_coordination_inspect.go
 server/cmd/multica/main.go
 ```
 
@@ -70,6 +73,7 @@ POST /api/coordination/scopes/{scopeId}/dependencies/{dependencyId}/resolve
 POST /api/coordination/scopes/{scopeId}/blockers
 GET /api/coordination/scopes/{scopeId}/blockers
 POST /api/coordination/scopes/{scopeId}/blockers/{recordId}/resolve
+GET /api/coordination/scopes/{scopeId}/inspect
 DELETE /api/issues/{id}
 POST /api/issues/batch-delete
 DELETE /api/workspaces/{id}
@@ -82,6 +86,7 @@ service.CoordinationService.ResolveDependency
 service.CoordinationService.AppendBlocker
 service.CoordinationService.ListBlockers
 service.CoordinationService.ResolveBlocker
+service.CoordinationService.InspectScope
 service.CoordinationService.AcquireIssueDeletion
 service.IssueDeletionHandle.TargetIssueIDs
 service.IssueDeletionHandle.Delete
@@ -96,6 +101,7 @@ handler.Handler.ResolveCoordinationDependency
 handler.Handler.AppendCoordinationBlocker
 handler.Handler.ListCoordinationBlockers
 handler.Handler.ResolveCoordinationBlocker
+handler.Handler.InspectCoordinationScope
 handler.Handler.performIssueDeletion
 handler.Handler.performWorkspaceDeletion
 middleware.TaskTokenCredentialRefFromContext
@@ -109,6 +115,17 @@ main.runCoordinationDependencyResolve
 main.runCoordinationBlockerAdd
 main.runCoordinationBlockerList
 main.runCoordinationBlockerResolve
+main.runCoordinationInspect
+```
+
+Inspect query anchors:
+
+```text
+db.GetMaxCoordinationReceiptOrdinalByScope
+db.ListCoordinationReceiptWindow
+db.ListCoordinationRecordIssueRefsByRecordIDs
+service.CoordinationReceiptPageSize
+service.ScopeInspection
 ```
 
 ## Verification source
@@ -119,14 +136,17 @@ server/cmd/migrate/work_coordination_test.go
 server/internal/service/coordination_test.go
 server/internal/service/coordination_dependency_test.go
 server/internal/service/coordination_blocker_test.go
+server/internal/service/coordination_inspect_test.go
 server/internal/service/coordination_delete_test.go
 server/internal/service/coordination_delete_race_test.go
 server/internal/handler/coordination_dependency_test.go
 server/internal/handler/coordination_blocker_test.go
+server/internal/handler/coordination_inspect_test.go
 server/internal/handler/coordination_guard_effects_test.go
 server/cmd/server/work_coordination_router_test.go
 server/cmd/multica/cmd_coordination_test.go
 server/cmd/multica/cmd_coordination_blocker_test.go
+server/cmd/multica/cmd_coordination_inspect_test.go
 server/internal/cli/work_coordination_errors_test.go
 server/internal/service/coordination_skill_test.go
 scripts/test-work-coordination-db-required.sh
@@ -134,8 +154,8 @@ scripts/test-work-coordination-db-required.sh
 
 Contracts:
 
-- migration tests cover V1–V3 up/down/up and preserve legacy `issue_dependency`;
-- DB-backed service tests cover dependency and blocker lifecycle, canonical hashes, replay/no-op, owner scope, cycle safety, revision-bound pagination, capacity, concurrency, and exact Agent authority;
-- handler/router tests cover strict wire shape plus dependency, blocker, evidence-ref, Issue/Batch/Workspace guards;
-- CLI tests cover exact requests, output modes, validation, route/code classification, and stable exits;
+- migration tests cover V1–V3 storage up/down/up and preserve legacy `issue_dependency`; V4 adds no migration;
+- DB-backed service tests cover dependency and blocker lifecycle, canonical hashes, replay/no-op, owner scope, cycle safety, capacity, exact Agent authority, repeatable-read inspect consistency, bounded complete facts, and ordinal-upper-bound receipt pagination;
+- handler/router tests cover strict wire shape plus dependency, blocker, inspect, evidence-ref, Issue/Batch/Workspace guards;
+- CLI tests cover exact requests, inspect JSON/table output, validation, route/code classification, single-envelope failures, and stable exits;
 - the DB-required harness runs coordination-focused tests with `WORK_COORDINATION_DB_REQUIRED=1`, treats skip as failure, and requires at least one passing `TestWorkCoordination*` event per owning package.

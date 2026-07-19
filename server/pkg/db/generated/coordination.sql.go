@@ -763,6 +763,25 @@ func (q *Queries) GetCoordinationScopeByID(ctx context.Context, arg GetCoordinat
 	return i, err
 }
 
+const getMaxCoordinationReceiptOrdinalByScope = `-- name: GetMaxCoordinationReceiptOrdinalByScope :one
+SELECT COALESCE(MAX(receipt_ordinal), 0)::bigint
+FROM coordination_receipt
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+`
+
+type GetMaxCoordinationReceiptOrdinalByScopeParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+}
+
+func (q *Queries) GetMaxCoordinationReceiptOrdinalByScope(ctx context.Context, arg GetMaxCoordinationReceiptOrdinalByScopeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxCoordinationReceiptOrdinalByScope, arg.WorkspaceID, arg.CoordinationScopeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const incrementCoordinationScopeRevisionCAS = `-- name: IncrementCoordinationScopeRevisionCAS :one
 UPDATE coordination_scope
 SET revision = revision + 1,
@@ -982,6 +1001,67 @@ func (q *Queries) ListActiveCoordinationDependenciesByScope(ctx context.Context,
 	return items, nil
 }
 
+const listCoordinationReceiptWindow = `-- name: ListCoordinationReceiptWindow :many
+SELECT id, workspace_id, coordination_scope_id, receipt_ordinal, operation, idempotency_key, request_hash, resource_type, resource_id, revision_before, revision_after, result_snapshot, actor_type, actor_id, actor_task_id, created_at FROM coordination_receipt
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND receipt_ordinal <= $3
+  AND ($4::bigint IS NULL OR receipt_ordinal < $4::bigint)
+ORDER BY receipt_ordinal DESC
+LIMIT $5
+`
+
+type ListCoordinationReceiptWindowParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	UpperOrdinal        int64       `json:"upper_ordinal"`
+	BeforeOrdinal       pgtype.Int8 `json:"before_ordinal"`
+	LimitRows           int32       `json:"limit_rows"`
+}
+
+func (q *Queries) ListCoordinationReceiptWindow(ctx context.Context, arg ListCoordinationReceiptWindowParams) ([]CoordinationReceipt, error) {
+	rows, err := q.db.Query(ctx, listCoordinationReceiptWindow,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.UpperOrdinal,
+		arg.BeforeOrdinal,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoordinationReceipt{}
+	for rows.Next() {
+		var i CoordinationReceipt
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CoordinationScopeID,
+			&i.ReceiptOrdinal,
+			&i.Operation,
+			&i.IdempotencyKey,
+			&i.RequestHash,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.RevisionBefore,
+			&i.RevisionAfter,
+			&i.ResultSnapshot,
+			&i.ActorType,
+			&i.ActorID,
+			&i.ActorTaskID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCoordinationReceiptsByScope = `-- name: ListCoordinationReceiptsByScope :many
 SELECT id, workspace_id, coordination_scope_id, receipt_ordinal, operation, idempotency_key, request_hash, resource_type, resource_id, revision_before, revision_after, result_snapshot, actor_type, actor_id, actor_task_id, created_at FROM coordination_receipt
 WHERE workspace_id = $1
@@ -1056,6 +1136,49 @@ type ListCoordinationRecordIssueRefsParams struct {
 
 func (q *Queries) ListCoordinationRecordIssueRefs(ctx context.Context, arg ListCoordinationRecordIssueRefsParams) ([]CoordinationRecordIssueRef, error) {
 	rows, err := q.db.Query(ctx, listCoordinationRecordIssueRefs, arg.WorkspaceID, arg.RecordID, arg.Phase)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoordinationRecordIssueRef{}
+	for rows.Next() {
+		var i CoordinationRecordIssueRef
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CoordinationScopeID,
+			&i.RecordID,
+			&i.Phase,
+			&i.IssueID,
+			&i.Position,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCoordinationRecordIssueRefsByRecordIDs = `-- name: ListCoordinationRecordIssueRefsByRecordIDs :many
+SELECT id, workspace_id, coordination_scope_id, record_id, phase, issue_id, position, created_at FROM coordination_record_issue_ref
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND record_id = ANY($3::uuid[])
+ORDER BY record_id ASC, phase ASC, position ASC, issue_id ASC
+`
+
+type ListCoordinationRecordIssueRefsByRecordIDsParams struct {
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID   `json:"coordination_scope_id"`
+	RecordIds           []pgtype.UUID `json:"record_ids"`
+}
+
+func (q *Queries) ListCoordinationRecordIssueRefsByRecordIDs(ctx context.Context, arg ListCoordinationRecordIssueRefsByRecordIDsParams) ([]CoordinationRecordIssueRef, error) {
+	rows, err := q.db.Query(ctx, listCoordinationRecordIssueRefsByRecordIDs, arg.WorkspaceID, arg.CoordinationScopeID, arg.RecordIds)
 	if err != nil {
 		return nil, err
 	}

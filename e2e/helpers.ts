@@ -22,6 +22,26 @@ export async function waitForPageText(page: Page, text: string, timeout = 30000)
   );
 }
 
+/** Keep feature-gated E2E scenarios independent of the operator's local env.
+ * The real config response is preserved; only the named public decision is
+ * overridden at the browser boundary for the scenario under test. */
+export async function enableFrontendFeatureFlag(page: Page, key: string) {
+  await page.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    const config = (await response.json()) as {
+      feature_flags?: Record<string, boolean>;
+      [field: string]: unknown;
+    };
+    await route.fulfill({
+      response,
+      json: {
+        ...config,
+        feature_flags: { ...config.feature_flags, [key]: true },
+      },
+    });
+  });
+}
+
 export async function reloadAppPage(page: Page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await waitForPageText(page, "Issues");

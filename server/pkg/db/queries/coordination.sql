@@ -82,6 +82,21 @@ WHERE workspace_id = @workspace_id
 ORDER BY receipt_ordinal DESC
 LIMIT @limit_rows;
 
+-- name: GetMaxCoordinationReceiptOrdinalByScope :one
+SELECT COALESCE(MAX(receipt_ordinal), 0)::bigint
+FROM coordination_receipt
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id;
+
+-- name: ListCoordinationReceiptWindow :many
+SELECT * FROM coordination_receipt
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND receipt_ordinal <= @upper_ordinal
+  AND (sqlc.narg('before_ordinal')::bigint IS NULL OR receipt_ordinal < sqlc.narg('before_ordinal')::bigint)
+ORDER BY receipt_ordinal DESC
+LIMIT @limit_rows;
+
 -- name: ValidateIssueActualRoot :one
 WITH RECURSIVE chain AS (
     SELECT
@@ -295,6 +310,13 @@ WHERE workspace_id = @workspace_id
   AND record_id = @record_id
   AND phase = @phase
 ORDER BY position ASC, issue_id ASC;
+
+-- name: ListCoordinationRecordIssueRefsByRecordIDs :many
+SELECT * FROM coordination_record_issue_ref
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND record_id = ANY(@record_ids::uuid[])
+ORDER BY record_id ASC, phase ASC, position ASC, issue_id ASC;
 
 -- name: CountCoordinationRecordsByIssueIDs :one
 SELECT (

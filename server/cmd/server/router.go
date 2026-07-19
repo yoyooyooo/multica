@@ -1040,6 +1040,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/{scopeId}/blockers", h.AppendCoordinationBlocker)
 				r.Get("/{scopeId}/blockers", h.ListCoordinationBlockers)
 				r.Post("/{scopeId}/blockers/{recordId}/resolve", h.ResolveCoordinationBlocker)
+				r.Get("/{scopeId}/inspect", h.InspectCoordinationScope)
 				r.Get("/{scopeId}", h.GetCoordinationScope)
 			})
 

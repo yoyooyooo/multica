@@ -122,6 +122,36 @@ func TestWorkCoordinationV3BlockerRouteClassifierMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationV4InspectRouteClassifierMatrix(t *testing.T) {
+	const inspect = "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/inspect?receipt_cursor=x"
+	err := CoordinationProductError(coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_revision_conflict"))
+	var product *ProductError
+	if !errors.As(err, &product) || product.Code != "coordination_revision_conflict" || ExitCodeFor(err) != ExitConflict {
+		t.Fatalf("inspect revision conflict classification: %T %v", err, err)
+	}
+	wrong := []*HTTPError{
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_idempotency_conflict"),
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_dependency_scope_conflict"),
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_delete_blocked"),
+		coordinationHTTPError(http.MethodPost, inspect, http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodGet, "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/inspect/extra", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodGet, "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/inspect/", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_invalid_payload"),
+		coordinationHTTPError(http.MethodGet, inspect, http.StatusConflict, "coordination_unknown"),
+		{Method: http.MethodGet, Path: inspect, StatusCode: http.StatusConflict, ContentType: "text/plain", Body: "conflict"},
+		{Method: http.MethodGet, Path: inspect, StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":"conflict"}`},
+	}
+	for _, raw := range wrong {
+		if got := CoordinationProductError(raw); got != raw {
+			t.Fatalf("wrong inspect combination upgraded: %T %v", got, got)
+		}
+		if got := ExitCodeFor(raw); got != ExitGeneric {
+			t.Fatalf("wrong inspect combination exit=%d", got)
+		}
+	}
+}
+
 func TestWorkCoordinationV1FutureConflictCodesStayLegacy(t *testing.T) {
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/coordination/scopes"},
