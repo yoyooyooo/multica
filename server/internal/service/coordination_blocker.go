@@ -154,7 +154,10 @@ func (s *CoordinationService) AppendBlocker(ctx context.Context, actor Coordinat
 
 		lockedScope, err := qtx.LockCoordinationScope(ctx, db.LockCoordinationScopeParams{WorkspaceID: actor.WorkspaceID, ID: input.ScopeID})
 		if err != nil {
-			return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination scope not found", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination scope not found", err)
+			}
+			return BlockerMutationResult{}, coordinationErr(CoordinationInternal, "could not lock coordination scope", err)
 		}
 		if lockedScope.State != "active" || lockedScope.ScopeKind != "root" {
 			return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination scope is not active", nil)
@@ -275,7 +278,10 @@ func (s *CoordinationService) ResolveBlocker(ctx context.Context, actor Coordina
 
 		lockedScope, err := qtx.LockCoordinationScope(ctx, db.LockCoordinationScopeParams{WorkspaceID: actor.WorkspaceID, ID: input.ScopeID})
 		if err != nil {
-			return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination scope not found", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination scope not found", err)
+			}
+			return BlockerMutationResult{}, coordinationErr(CoordinationInternal, "could not lock coordination scope", err)
 		}
 		if lockedScope.Revision != input.ExpectedRevision {
 			return BlockerMutationResult{}, coordinationErr(CoordinationRevisionConflict, "coordination scope revision changed", nil)
@@ -284,7 +290,10 @@ func (s *CoordinationService) ResolveBlocker(ctx context.Context, actor Coordina
 			WorkspaceID: actor.WorkspaceID, CoordinationScopeID: input.ScopeID, ID: input.BlockerID,
 		})
 		if err != nil {
-			return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination blocker not found", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return BlockerMutationResult{}, coordinationErr(CoordinationNotFound, "coordination blocker not found", err)
+			}
+			return BlockerMutationResult{}, coordinationErr(CoordinationInternal, "could not lock coordination blocker", err)
 		}
 		createRefs, err := loadBlockerEvidenceRefs(ctx, qtx, actor.WorkspaceID, input.BlockerID, coordinationRecordPhaseCreate)
 		if err != nil {
@@ -652,7 +661,10 @@ func replayBlockerReceipt(ctx context.Context, q *db.Queries, receipt db.Coordin
 	}
 	currentRow, err := q.GetCoordinationRecordByID(ctx, db.GetCoordinationRecordByIDParams{WorkspaceID: receipt.WorkspaceID, ID: receipt.ResourceID})
 	if err != nil {
-		return Blocker{}, 0, false, coordinationErr(CoordinationNotFound, "saved coordination blocker no longer exists", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Blocker{}, 0, false, coordinationErr(CoordinationNotFound, "saved coordination blocker no longer exists", err)
+		}
+		return Blocker{}, 0, false, coordinationErr(CoordinationInternal, "could not load saved coordination blocker", err)
 	}
 	if !uuidEqual(currentRow.CoordinationScopeID, scopeID) {
 		return Blocker{}, 0, false, coordinationErr(CoordinationNotFound, "saved coordination blocker no longer exists", nil)

@@ -238,6 +238,20 @@ func TestWorkCoordinationBlockerLifecycleAndIndependentResolve(t *testing.T) {
 	if replay.Outcome != CoordinationOutcomeReplay || !replay.Changed || replay.ScopeRevision != 2 || replay.Receipt.ReceiptOrdinal != created.Receipt.ReceiptOrdinal || !uuidEqual(replay.Blocker.ID, created.Blocker.ID) {
 		t.Fatalf("unexpected append replay: %+v", replay)
 	}
+	receiptRow, err := db.New(pool).GetCoordinationReceiptByIdempotencyKey(ctx, db.GetCoordinationReceiptByIdempotencyKeyParams{WorkspaceID: fixture.workspaceID, IdempotencyKey: appendInput.IdempotencyKey})
+	if err != nil {
+		t.Fatalf("load append receipt: %v", err)
+	}
+	cancelledContext, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, _, err := replayBlockerReceipt(cancelledContext, db.New(pool), receiptRow, scope.Scope.ID); coordinationCode(err) != CoordinationInternal {
+		t.Fatalf("cancelled replay lookup code=%q err=%v", coordinationCode(err), err)
+	}
+	missingReceipt := receiptRow
+	missingReceipt.ResourceID = util.MustParseUUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+	if _, _, _, err := replayBlockerReceipt(ctx, db.New(pool), missingReceipt, scope.Scope.ID); coordinationCode(err) != CoordinationNotFound {
+		t.Fatalf("missing replay resource code=%q err=%v", coordinationCode(err), err)
+	}
 	var otherUserID pgtype.UUID
 	if err := pool.QueryRow(ctx, `INSERT INTO "user" (name,email) VALUES ('WCS Other Member',$1) RETURNING id`, fmt.Sprintf("wcs-other-%d@multica.ai", time.Now().UnixNano())).Scan(&otherUserID); err != nil {
 		t.Fatalf("insert other member user: %v", err)
