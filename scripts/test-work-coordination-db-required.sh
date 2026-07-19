@@ -13,12 +13,14 @@ packages=(
   cmd/migrate
   internal/service
   internal/handler
+  cmd/server
 )
 
 declare -A seen_pass=()
 declare -A required_tests=(
   [internal/service]="TestWorkCoordinationInspectLifecycleReceiptWindowAndNoSideEffects TestWorkCoordinationInspectResolvedDependencyKeepsOpenBlockerEvidence TestWorkCoordinationInspectReceiptOrderIgnoresTransactionStartTime TestWorkCoordinationInspectUsesRepeatableReadSnapshot TestWorkCoordinationInspectFactBoundsOrderingAndReceiptAllowlist TestWorkCoordinationInspectCrossScopeOwnerIsolation TestWorkCoordinationInspectAgentRootAuthorityAndRevocation"
   [internal/handler]="TestWorkCoordinationInspectStrictWireAndReceiptCursor"
+  [cmd/server]="TestWorkCoordinationCLIProcessesAggregatePassiveFlow"
 )
 status=0
 for pkg in "${packages[@]}"; do
@@ -41,7 +43,7 @@ for pkg in "${packages[@]}"; do
   for required_test in ${required_tests[$pkg]:-}; do
     if ! grep -Eq '"Action":"pass".*"Test":"'"$required_test"'"' "$out"; then
       cat "$out"
-      printf 'missing V4 pass evidence for %s in %s\n' "$required_test" "$pkg" >&2
+      printf 'missing required pass evidence for %s in %s\n' "$required_test" "$pkg" >&2
       status=1
       break
     fi
