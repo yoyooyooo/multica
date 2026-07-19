@@ -1034,6 +1034,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/coordination/scopes", func(r chi.Router) {
 				r.Post("/", h.EnsureCoordinationScope)
 				r.Get("/by-root", h.GetCoordinationScopeByRoot)
+				r.Post("/{scopeId}/dependencies", h.AddCoordinationDependency)
+				r.Get("/{scopeId}/dependencies", h.ListCoordinationDependencies)
+				r.Post("/{scopeId}/dependencies/{dependencyId}/resolve", h.ResolveCoordinationDependency)
 				r.Get("/{scopeId}", h.GetCoordinationScope)
 			})
 

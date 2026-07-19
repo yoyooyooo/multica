@@ -259,8 +259,12 @@ func (s *CoordinationService) AcquireIssueDeletion(ctx context.Context, actor Co
 		if err != nil {
 			return nil, coordinationErr(CoordinationInternal, "could not check coordination delete guard", err)
 		}
-		if count > 0 {
-			return nil, coordinationErr(CoordinationDeleteBlocked, "issue deletion is blocked by an active coordination scope", nil)
+		dependencyCount, err := h.lifecycle.qtx.CountCoordinationDependenciesByIssueIDs(ctx, db.CountCoordinationDependenciesByIssueIDsParams{WorkspaceID: workspaceID, IssueIds: h.targetIDs})
+		if err != nil {
+			return nil, coordinationErr(CoordinationInternal, "could not check coordination dependency delete guard", err)
+		}
+		if count > 0 || dependencyCount > 0 {
+			return nil, coordinationErr(CoordinationDeleteBlocked, "issue deletion is blocked by coordination facts", nil)
 		}
 	}
 	h.lifecycle.state = deleteStateReady
@@ -319,8 +323,12 @@ func (s *CoordinationService) AcquireWorkspaceDeletion(ctx context.Context, acto
 	if err != nil {
 		return nil, coordinationErr(CoordinationInternal, "could not check workspace coordination guard", err)
 	}
-	if count > 0 {
-		return nil, coordinationErr(CoordinationDeleteBlocked, "workspace deletion is blocked by an active coordination scope", nil)
+	dependencyCount, err := h.lifecycle.qtx.CountCoordinationDependenciesByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, coordinationErr(CoordinationInternal, "could not check workspace coordination dependency guard", err)
+	}
+	if count > 0 || dependencyCount > 0 {
+		return nil, coordinationErr(CoordinationDeleteBlocked, "workspace deletion is blocked by coordination facts", nil)
 	}
 	members, err := h.lifecycle.qtx.ListMembers(ctx, workspaceID)
 	if err != nil {

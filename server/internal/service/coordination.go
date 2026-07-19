@@ -28,12 +28,16 @@ const (
 	CoordinationActorMember = "member"
 	CoordinationActorAgent  = "agent"
 
-	CoordinationOperationEnsureScope = "ensure_scope"
-	CoordinationResourceScope        = "scope"
+	CoordinationOperationEnsureScope       = "ensure_scope"
+	CoordinationOperationAddDependency     = "add_dependency"
+	CoordinationOperationResolveDependency = "resolve_dependency"
+	CoordinationResourceScope              = "scope"
+	CoordinationResourceDependency         = "dependency"
 
-	CoordinationOutcomeCreated = "created"
-	CoordinationOutcomeNoop    = "noop"
-	CoordinationOutcomeReplay  = "replay"
+	CoordinationOutcomeCreated  = "created"
+	CoordinationOutcomeResolved = "resolved"
+	CoordinationOutcomeNoop     = "noop"
+	CoordinationOutcomeReplay   = "replay"
 )
 
 var coordinationProfileRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
@@ -46,6 +50,8 @@ const (
 	CoordinationForbidden               CoordinationErrorCode = "coordination_forbidden"
 	CoordinationInvalidPayload          CoordinationErrorCode = "coordination_invalid_payload"
 	CoordinationCapacityExceeded        CoordinationErrorCode = "coordination_capacity_exceeded"
+	CoordinationSelfDependency          CoordinationErrorCode = "coordination_self_dependency"
+	CoordinationCycle                   CoordinationErrorCode = "coordination_cycle"
 	CoordinationRevisionConflict        CoordinationErrorCode = "coordination_revision_conflict"
 	CoordinationIdempotencyConflict     CoordinationErrorCode = "coordination_idempotency_conflict"
 	CoordinationDependencyScopeConflict CoordinationErrorCode = "coordination_dependency_scope_conflict"
@@ -460,10 +466,7 @@ func validateEnsureInput(input EnsureScopeInput) error {
 	if !coordinationProfileRE.MatchString(input.WorkflowProfileKey) {
 		return coordinationErr(CoordinationInvalidPayload, "invalid workflow profile key", nil)
 	}
-	if l := len(input.IdempotencyKey); l < 1 || l > 200 || strings.TrimSpace(input.IdempotencyKey) != input.IdempotencyKey {
-		return coordinationErr(CoordinationInvalidPayload, "invalid idempotency key", nil)
-	}
-	return nil
+	return validateCoordinationIdempotencyKey(input.IdempotencyKey)
 }
 
 func lockWorkspace(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) error {

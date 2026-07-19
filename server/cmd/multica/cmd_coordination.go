@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,8 +17,9 @@ import (
 )
 
 var (
-	coordinationOutput       = "json"
-	coordinationProfileKeyRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	coordinationOutput           = "json"
+	coordinationProfileKeyRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	coordinationNonnegativeIntRE = regexp.MustCompile(`^[0-9]+$`)
 )
 
 var coordinationCmd = &cobra.Command{
@@ -46,6 +48,33 @@ var coordinationScopeGetCmd = &cobra.Command{
 	RunE:  runCoordinationScopeGet,
 }
 
+var coordinationDependencyCmd = &cobra.Command{
+	Use:   "dependency",
+	Short: "Manage canonical blocked-by dependencies",
+	Args:  coordinationNoArgs,
+}
+
+var coordinationDependencyAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Add a canonical dependency",
+	Args:  coordinationNoArgs,
+	RunE:  runCoordinationDependencyAdd,
+}
+
+var coordinationDependencyListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List active dependencies owned by a scope",
+	Args:  coordinationNoArgs,
+	RunE:  runCoordinationDependencyList,
+}
+
+var coordinationDependencyResolveCmd = &cobra.Command{
+	Use:   "resolve",
+	Short: "Resolve a canonical dependency",
+	Args:  coordinationNoArgs,
+	RunE:  runCoordinationDependencyResolve,
+}
+
 func init() {
 	coordinationCmd.PersistentFlags().StringVar(&coordinationOutput, "output", "json", "Output format: json or table")
 	coordinationCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
@@ -65,8 +94,22 @@ func init() {
 	coordinationScopeGetCmd.Flags().String("root", "", "Root issue UUID or issue key")
 	coordinationScopeGetCmd.Flags().String("workflow-profile", "", "Workflow profile key")
 
+	coordinationDependencyAddCmd.Flags().String("scope", "", "Coordination scope UUID")
+	coordinationDependencyAddCmd.Flags().String("downstream", "", "Downstream issue UUID or issue key")
+	coordinationDependencyAddCmd.Flags().String("upstream", "", "Upstream issue UUID or issue key")
+	coordinationDependencyAddCmd.Flags().String("expected-revision", "", "Expected non-negative scope revision")
+	coordinationDependencyAddCmd.Flags().String("idempotency-key", "", "Idempotency key")
+	coordinationDependencyListCmd.Flags().String("scope", "", "Coordination scope UUID")
+	coordinationDependencyListCmd.Flags().String("cursor", "", "Opaque dependency page cursor")
+	coordinationDependencyListCmd.Flags().Int("limit", 100, "Page size (1-100)")
+	coordinationDependencyResolveCmd.Flags().String("scope", "", "Coordination scope UUID")
+	coordinationDependencyResolveCmd.Flags().String("dependency", "", "Coordination dependency UUID")
+	coordinationDependencyResolveCmd.Flags().String("expected-revision", "", "Expected non-negative scope revision")
+	coordinationDependencyResolveCmd.Flags().String("idempotency-key", "", "Idempotency key")
+
 	coordinationScopeCmd.AddCommand(coordinationScopeEnsureCmd, coordinationScopeGetCmd)
-	coordinationCmd.AddCommand(coordinationScopeCmd)
+	coordinationDependencyCmd.AddCommand(coordinationDependencyAddCmd, coordinationDependencyListCmd, coordinationDependencyResolveCmd)
+	coordinationCmd.AddCommand(coordinationScopeCmd, coordinationDependencyCmd)
 }
 
 func coordinationNoArgs(_ *cobra.Command, args []string) error {
@@ -231,6 +274,40 @@ type coordinationScopeCLIResponse struct {
 	Scope coordinationScopeCLI `json:"scope"`
 }
 
+type coordinationDependencyCLI struct {
+	ID                  string `json:"id"`
+	WorkspaceID         string `json:"workspace_id"`
+	CoordinationScopeID string `json:"coordination_scope_id"`
+	DownstreamIssueID   string `json:"downstream_issue_id"`
+	UpstreamIssueID     string `json:"upstream_issue_id"`
+	BlocksIssueID       string `json:"blocks_issue_id"`
+	CreatedBy           struct {
+		ActorType string  `json:"actor_type"`
+		ActorID   string  `json:"actor_id"`
+		TaskID    *string `json:"task_id"`
+	} `json:"created_by"`
+	CreatedAt  string `json:"created_at"`
+	ResolvedBy *struct {
+		ActorType string  `json:"actor_type"`
+		ActorID   string  `json:"actor_id"`
+		TaskID    *string `json:"task_id"`
+	} `json:"resolved_by"`
+	ResolvedAt *string `json:"resolved_at"`
+}
+
+type coordinationDependencyMutationCLIResponse struct {
+	Dependency    coordinationDependencyCLI `json:"dependency"`
+	ScopeRevision int64                     `json:"scope_revision"`
+	Receipt       coordinationReceiptCLI    `json:"receipt"`
+	Outcome       string                    `json:"outcome"`
+}
+
+type coordinationDependencyPageCLIResponse struct {
+	Dependencies  []coordinationDependencyCLI `json:"dependencies"`
+	ScopeRevision int64                       `json:"scope_revision"`
+	NextCursor    *string                     `json:"next_cursor"`
+}
+
 func coordinationClient(cmd *cobra.Command) (*cli.APIClient, error) {
 	if _, err := requireWorkspaceID(cmd); err != nil {
 		return nil, coordinationValidationError(err.Error())
@@ -307,6 +384,169 @@ func runCoordinationScopeGet(cmd *cobra.Command, _ []string) error {
 		return cli.CoordinationProductError(err)
 	}
 	return renderCoordinationScope(cmd, response.Scope)
+}
+
+func runCoordinationDependencyAdd(cmd *cobra.Command, _ []string) error {
+	scopeID, err := coordinationUUIDFlag(cmd, "scope")
+	if err != nil {
+		return err
+	}
+	downstream, _ := cmd.Flags().GetString("downstream")
+	upstream, _ := cmd.Flags().GetString("upstream")
+	key, _ := cmd.Flags().GetString("idempotency-key")
+	if downstream == "" || upstream == "" || downstream != strings.TrimSpace(downstream) || upstream != strings.TrimSpace(upstream) || key == "" || key != strings.TrimSpace(key) || len(key) > 200 {
+		return coordinationValidationError("--downstream, --upstream, and --idempotency-key are required and must be valid")
+	}
+	expected, err := coordinationExpectedRevision(cmd)
+	if err != nil {
+		return err
+	}
+	client, err := coordinationClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(cmd.Context())
+	defer cancel()
+	downstreamRef, err := resolveIssueRef(ctx, client, downstream)
+	if err != nil {
+		return cli.CoordinationProductError(err)
+	}
+	upstreamRef, err := resolveIssueRef(ctx, client, upstream)
+	if err != nil {
+		return cli.CoordinationProductError(err)
+	}
+	body := struct {
+		ExpectedRevision  int64  `json:"expected_revision"`
+		DownstreamIssueID string `json:"downstream_issue_id"`
+		UpstreamIssueID   string `json:"upstream_issue_id"`
+	}{ExpectedRevision: expected, DownstreamIssueID: downstreamRef.ID, UpstreamIssueID: upstreamRef.ID}
+	headers := make(http.Header)
+	headers.Set("Idempotency-Key", key)
+	var response coordinationDependencyMutationCLIResponse
+	path := "/api/coordination/scopes/" + url.PathEscape(scopeID) + "/dependencies"
+	if err := client.PostJSONWithHeaders(ctx, path, body, headers, &response); err != nil {
+		return cli.CoordinationProductError(err)
+	}
+	return renderCoordinationDependencyMutation(cmd, response)
+}
+
+func runCoordinationDependencyList(cmd *cobra.Command, _ []string) error {
+	scopeID, err := coordinationUUIDFlag(cmd, "scope")
+	if err != nil {
+		return err
+	}
+	cursor, _ := cmd.Flags().GetString("cursor")
+	limit, _ := cmd.Flags().GetInt("limit")
+	if cursor != strings.TrimSpace(cursor) || limit < 1 || limit > 100 {
+		return coordinationValidationError("--cursor and --limit must form a valid dependency page request")
+	}
+	client, err := coordinationClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(cmd.Context())
+	defer cancel()
+	query := url.Values{"limit": []string{strconv.Itoa(limit)}}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	path := "/api/coordination/scopes/" + url.PathEscape(scopeID) + "/dependencies?" + query.Encode()
+	var response coordinationDependencyPageCLIResponse
+	if err := client.GetJSON(ctx, path, &response); err != nil {
+		return cli.CoordinationProductError(err)
+	}
+	return renderCoordinationDependencyPage(cmd, response)
+}
+
+func runCoordinationDependencyResolve(cmd *cobra.Command, _ []string) error {
+	scopeID, err := coordinationUUIDFlag(cmd, "scope")
+	if err != nil {
+		return err
+	}
+	dependencyID, err := coordinationUUIDFlag(cmd, "dependency")
+	if err != nil {
+		return err
+	}
+	key, _ := cmd.Flags().GetString("idempotency-key")
+	if key == "" || key != strings.TrimSpace(key) || len(key) > 200 {
+		return coordinationValidationError("--idempotency-key is required and must be valid")
+	}
+	expected, err := coordinationExpectedRevision(cmd)
+	if err != nil {
+		return err
+	}
+	client, err := coordinationClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(cmd.Context())
+	defer cancel()
+	body := struct {
+		ExpectedRevision int64 `json:"expected_revision"`
+	}{ExpectedRevision: expected}
+	headers := make(http.Header)
+	headers.Set("Idempotency-Key", key)
+	var response coordinationDependencyMutationCLIResponse
+	path := "/api/coordination/scopes/" + url.PathEscape(scopeID) + "/dependencies/" + url.PathEscape(dependencyID) + "/resolve"
+	if err := client.PostJSONWithHeaders(ctx, path, body, headers, &response); err != nil {
+		return cli.CoordinationProductError(err)
+	}
+	return renderCoordinationDependencyMutation(cmd, response)
+}
+
+func coordinationUUIDFlag(cmd *cobra.Command, name string) (string, error) {
+	value, _ := cmd.Flags().GetString(name)
+	if value == "" || value != strings.TrimSpace(value) {
+		return "", coordinationValidationError("--" + name + " must be a UUID")
+	}
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return "", coordinationValidationError("--" + name + " must be a UUID")
+	}
+	return strings.ToLower(parsed.String()), nil
+}
+
+func coordinationExpectedRevision(cmd *cobra.Command) (int64, error) {
+	flag := cmd.Flags().Lookup("expected-revision")
+	raw, _ := cmd.Flags().GetString("expected-revision")
+	if flag == nil || !flag.Changed || !coordinationNonnegativeIntRE.MatchString(raw) {
+		return 0, coordinationValidationError("--expected-revision must be explicitly set to a non-negative int64")
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, coordinationValidationError("--expected-revision must be explicitly set to a non-negative int64")
+	}
+	return value, nil
+}
+
+func renderCoordinationDependencyMutation(cmd *cobra.Command, response coordinationDependencyMutationCLIResponse) error {
+	if coordinationOutput == "table" {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "dependency=%s downstream=%s blocked_by=%s outcome=%s revision=%d receipt=%s ordinal=%d\n",
+			response.Dependency.ID, response.Dependency.DownstreamIssueID, response.Dependency.UpstreamIssueID,
+			response.Outcome, response.ScopeRevision, response.Receipt.ID, response.Receipt.ReceiptOrdinal)
+		return err
+	}
+	return writeCoordinationJSON(cmd, response)
+}
+
+func renderCoordinationDependencyPage(cmd *cobra.Command, response coordinationDependencyPageCLIResponse) error {
+	if coordinationOutput == "table" {
+		if len(response.Dependencies) == 0 {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "No active coordination dependencies (revision %d).\n", response.ScopeRevision)
+			return err
+		}
+		for _, dependency := range response.Dependencies {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s  %s blocked_by %s\n", dependency.ID, dependency.DownstreamIssueID, dependency.UpstreamIssueID); err != nil {
+				return err
+			}
+		}
+		if response.NextCursor != nil {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "next_cursor=%s revision=%d\n", *response.NextCursor, response.ScopeRevision)
+			return err
+		}
+		return nil
+	}
+	return writeCoordinationJSON(cmd, response)
 }
 
 func renderCoordinationEnsure(cmd *cobra.Command, response coordinationEnsureCLIResponse) error {

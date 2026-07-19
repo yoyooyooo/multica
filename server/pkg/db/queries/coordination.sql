@@ -143,6 +143,93 @@ SELECT
 FROM requested
 LEFT JOIN terminal ON true;
 
+-- name: GetActiveCoordinationDependencyByPair :one
+SELECT * FROM coordination_dependency
+WHERE workspace_id = @workspace_id
+  AND downstream_issue_id = @downstream_issue_id
+  AND upstream_issue_id = @upstream_issue_id
+  AND resolved_at IS NULL;
+
+-- name: CreateCoordinationDependency :one
+INSERT INTO coordination_dependency (
+    id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id,
+    created_by_type, created_by_id, created_task_id, created_at
+) VALUES (
+    @id, @workspace_id, @coordination_scope_id, @downstream_issue_id, @upstream_issue_id,
+    @created_by_type, @created_by_id, sqlc.narg('created_task_id'), clock_timestamp()
+)
+RETURNING *;
+
+-- name: GetCoordinationDependencyByID :one
+SELECT * FROM coordination_dependency
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: LockCoordinationDependency :one
+SELECT * FROM coordination_dependency
+WHERE workspace_id = @workspace_id AND id = @id
+FOR UPDATE;
+
+-- name: ListActiveCoordinationDependenciesByScope :many
+SELECT * FROM coordination_dependency
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND resolved_at IS NULL
+  AND (
+      sqlc.narg('cursor_created_at')::timestamptz IS NULL
+      OR (created_at, id) > (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid)
+  )
+ORDER BY created_at ASC, id ASC
+LIMIT @limit_rows;
+
+-- name: CountActiveCoordinationDependenciesByScope :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND resolved_at IS NULL;
+
+-- name: ResolveCoordinationDependency :one
+UPDATE coordination_dependency
+SET resolved_by_type = @resolved_by_type,
+    resolved_by_id = @resolved_by_id,
+    resolved_task_id = sqlc.narg('resolved_task_id'),
+    resolved_at = clock_timestamp()
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND id = @id
+  AND resolved_at IS NULL
+RETURNING *;
+
+-- name: CoordinationDependencyPathExists :one
+WITH RECURSIVE reachable(issue_id, path) AS (
+    SELECT @start_issue_id::uuid, ARRAY[@start_issue_id::uuid]
+  UNION ALL
+    SELECT dependency.upstream_issue_id, reachable.path || dependency.upstream_issue_id
+    FROM reachable
+    JOIN coordination_dependency dependency
+      ON dependency.workspace_id = @workspace_id
+     AND dependency.downstream_issue_id = reachable.issue_id
+     AND dependency.resolved_at IS NULL
+    WHERE NOT dependency.upstream_issue_id = ANY(reachable.path)
+)
+SELECT EXISTS (
+    SELECT 1 FROM reachable WHERE reachable.issue_id = @target_issue_id::uuid
+)::bool;
+
+-- name: CountCoordinationDependenciesByIssueIDs :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = @workspace_id
+  AND (
+      downstream_issue_id = ANY(@issue_ids::uuid[])
+      OR upstream_issue_id = ANY(@issue_ids::uuid[])
+  );
+
+-- name: CountCoordinationDependenciesByWorkspace :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = @workspace_id;
+
 -- name: LockIssuesForCoordinationDelete :many
 SELECT * FROM issue
 WHERE workspace_id = @workspace_id

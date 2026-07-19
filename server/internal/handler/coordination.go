@@ -230,6 +230,8 @@ func writeCoordinationError(w http.ResponseWriter, code service.CoordinationErro
 		status = http.StatusForbidden
 	case service.CoordinationInvalidPayload:
 		status = http.StatusBadRequest
+	case service.CoordinationSelfDependency, service.CoordinationCycle:
+		status = http.StatusUnprocessableEntity
 	case service.CoordinationCapacityExceeded, service.CoordinationRevisionConflict, service.CoordinationIdempotencyConflict, service.CoordinationDependencyScopeConflict, service.CoordinationDeleteBlocked:
 		status = http.StatusConflict
 	}

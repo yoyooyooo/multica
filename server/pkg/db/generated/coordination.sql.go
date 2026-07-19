@@ -152,6 +152,91 @@ func (q *Queries) CoordinationAdvisoryXactLock(ctx context.Context, arg Coordina
 	return err
 }
 
+const coordinationDependencyPathExists = `-- name: CoordinationDependencyPathExists :one
+WITH RECURSIVE reachable(issue_id, path) AS (
+    SELECT $2::uuid, ARRAY[$2::uuid]
+  UNION ALL
+    SELECT dependency.upstream_issue_id, reachable.path || dependency.upstream_issue_id
+    FROM reachable
+    JOIN coordination_dependency dependency
+      ON dependency.workspace_id = $3
+     AND dependency.downstream_issue_id = reachable.issue_id
+     AND dependency.resolved_at IS NULL
+    WHERE NOT dependency.upstream_issue_id = ANY(reachable.path)
+)
+SELECT EXISTS (
+    SELECT 1 FROM reachable WHERE reachable.issue_id = $1::uuid
+)::bool
+`
+
+type CoordinationDependencyPathExistsParams struct {
+	TargetIssueID pgtype.UUID `json:"target_issue_id"`
+	StartIssueID  pgtype.UUID `json:"start_issue_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) CoordinationDependencyPathExists(ctx context.Context, arg CoordinationDependencyPathExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, coordinationDependencyPathExists, arg.TargetIssueID, arg.StartIssueID, arg.WorkspaceID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countActiveCoordinationDependenciesByScope = `-- name: CountActiveCoordinationDependenciesByScope :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND resolved_at IS NULL
+`
+
+type CountActiveCoordinationDependenciesByScopeParams struct {
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+}
+
+func (q *Queries) CountActiveCoordinationDependenciesByScope(ctx context.Context, arg CountActiveCoordinationDependenciesByScopeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveCoordinationDependenciesByScope, arg.WorkspaceID, arg.CoordinationScopeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCoordinationDependenciesByIssueIDs = `-- name: CountCoordinationDependenciesByIssueIDs :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = $1
+  AND (
+      downstream_issue_id = ANY($2::uuid[])
+      OR upstream_issue_id = ANY($2::uuid[])
+  )
+`
+
+type CountCoordinationDependenciesByIssueIDsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	IssueIds    []pgtype.UUID `json:"issue_ids"`
+}
+
+func (q *Queries) CountCoordinationDependenciesByIssueIDs(ctx context.Context, arg CountCoordinationDependenciesByIssueIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCoordinationDependenciesByIssueIDs, arg.WorkspaceID, arg.IssueIds)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countCoordinationDependenciesByWorkspace = `-- name: CountCoordinationDependenciesByWorkspace :one
+SELECT count(*)::bigint
+FROM coordination_dependency
+WHERE workspace_id = $1
+`
+
+func (q *Queries) CountCoordinationDependenciesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCoordinationDependenciesByWorkspace, workspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countCoordinationScopesByRootIssues = `-- name: CountCoordinationScopesByRootIssues :one
 SELECT count(*)::bigint FROM coordination_scope
 WHERE workspace_id = $1
@@ -181,6 +266,58 @@ func (q *Queries) CountCoordinationScopesByWorkspace(ctx context.Context, worksp
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const createCoordinationDependency = `-- name: CreateCoordinationDependency :one
+INSERT INTO coordination_dependency (
+    id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id,
+    created_by_type, created_by_id, created_task_id, created_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, clock_timestamp()
+)
+RETURNING id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at
+`
+
+type CreateCoordinationDependencyParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	DownstreamIssueID   pgtype.UUID `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID `json:"upstream_issue_id"`
+	CreatedByType       string      `json:"created_by_type"`
+	CreatedByID         pgtype.UUID `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID `json:"created_task_id"`
+}
+
+func (q *Queries) CreateCoordinationDependency(ctx context.Context, arg CreateCoordinationDependencyParams) (CoordinationDependency, error) {
+	row := q.db.QueryRow(ctx, createCoordinationDependency,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.DownstreamIssueID,
+		arg.UpstreamIssueID,
+		arg.CreatedByType,
+		arg.CreatedByID,
+		arg.CreatedTaskID,
+	)
+	var i CoordinationDependency
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
 }
 
 const createCoordinationScope = `-- name: CreateCoordinationScope :one
@@ -256,6 +393,41 @@ func (q *Queries) FailAutopilotRunsByWorkspaceForCoordination(ctx context.Contex
 	return err
 }
 
+const getActiveCoordinationDependencyByPair = `-- name: GetActiveCoordinationDependencyByPair :one
+SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
+WHERE workspace_id = $1
+  AND downstream_issue_id = $2
+  AND upstream_issue_id = $3
+  AND resolved_at IS NULL
+`
+
+type GetActiveCoordinationDependencyByPairParams struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	DownstreamIssueID pgtype.UUID `json:"downstream_issue_id"`
+	UpstreamIssueID   pgtype.UUID `json:"upstream_issue_id"`
+}
+
+func (q *Queries) GetActiveCoordinationDependencyByPair(ctx context.Context, arg GetActiveCoordinationDependencyByPairParams) (CoordinationDependency, error) {
+	row := q.db.QueryRow(ctx, getActiveCoordinationDependencyByPair, arg.WorkspaceID, arg.DownstreamIssueID, arg.UpstreamIssueID)
+	var i CoordinationDependency
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getActiveCoordinationScopeByRoot = `-- name: GetActiveCoordinationScopeByRoot :one
 SELECT id, workspace_id, scope_kind, state, root_issue_id, workflow_profile_key, revision, next_receipt_ordinal, created_by_type, created_by_id, created_task_id, created_at, updated_at FROM coordination_scope
 WHERE workspace_id = $1
@@ -287,6 +459,37 @@ func (q *Queries) GetActiveCoordinationScopeByRoot(ctx context.Context, arg GetA
 		&i.CreatedTaskID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getCoordinationDependencyByID = `-- name: GetCoordinationDependencyByID :one
+SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
+WHERE workspace_id = $1 AND id = $2
+`
+
+type GetCoordinationDependencyByIDParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) GetCoordinationDependencyByID(ctx context.Context, arg GetCoordinationDependencyByIDParams) (CoordinationDependency, error) {
+	row := q.db.QueryRow(ctx, getCoordinationDependencyByID, arg.WorkspaceID, arg.ID)
+	var i CoordinationDependency
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
 	)
 	return i, err
 }
@@ -501,6 +704,67 @@ func (q *Queries) InsertCoordinationReceipt(ctx context.Context, arg InsertCoord
 	return i, err
 }
 
+const listActiveCoordinationDependenciesByScope = `-- name: ListActiveCoordinationDependenciesByScope :many
+SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
+WHERE workspace_id = $1
+  AND coordination_scope_id = $2
+  AND resolved_at IS NULL
+  AND (
+      $3::timestamptz IS NULL
+      OR (created_at, id) > ($3::timestamptz, $4::uuid)
+  )
+ORDER BY created_at ASC, id ASC
+LIMIT $5
+`
+
+type ListActiveCoordinationDependenciesByScopeParams struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	CursorCreatedAt     pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID            pgtype.UUID        `json:"cursor_id"`
+	LimitRows           int32              `json:"limit_rows"`
+}
+
+func (q *Queries) ListActiveCoordinationDependenciesByScope(ctx context.Context, arg ListActiveCoordinationDependenciesByScopeParams) ([]CoordinationDependency, error) {
+	rows, err := q.db.Query(ctx, listActiveCoordinationDependenciesByScope,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CoordinationDependency{}
+	for rows.Next() {
+		var i CoordinationDependency
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CoordinationScopeID,
+			&i.DownstreamIssueID,
+			&i.UpstreamIssueID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedTaskID,
+			&i.CreatedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.ResolvedTaskID,
+			&i.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCoordinationReceiptsByScope = `-- name: ListCoordinationReceiptsByScope :many
 SELECT id, workspace_id, coordination_scope_id, receipt_ordinal, operation, idempotency_key, request_hash, resource_type, resource_id, revision_before, revision_after, result_snapshot, actor_type, actor_id, actor_task_id, created_at FROM coordination_receipt
 WHERE workspace_id = $1
@@ -557,6 +821,38 @@ func (q *Queries) ListCoordinationReceiptsByScope(ctx context.Context, arg ListC
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCoordinationDependency = `-- name: LockCoordinationDependency :one
+SELECT id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_dependency
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE
+`
+
+type LockCoordinationDependencyParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) LockCoordinationDependency(ctx context.Context, arg LockCoordinationDependencyParams) (CoordinationDependency, error) {
+	row := q.db.QueryRow(ctx, lockCoordinationDependency, arg.WorkspaceID, arg.ID)
+	var i CoordinationDependency
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
+	)
+	return i, err
 }
 
 const lockCoordinationScope = `-- name: LockCoordinationScope :one
@@ -674,6 +970,56 @@ func (q *Queries) LockWorkspaceForCoordinationDelete(ctx context.Context, worksp
 		&i.IssueCounter,
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
+	)
+	return i, err
+}
+
+const resolveCoordinationDependency = `-- name: ResolveCoordinationDependency :one
+UPDATE coordination_dependency
+SET resolved_by_type = $1,
+    resolved_by_id = $2,
+    resolved_task_id = $3,
+    resolved_at = clock_timestamp()
+WHERE workspace_id = $4
+  AND coordination_scope_id = $5
+  AND id = $6
+  AND resolved_at IS NULL
+RETURNING id, workspace_id, coordination_scope_id, downstream_issue_id, upstream_issue_id, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at
+`
+
+type ResolveCoordinationDependencyParams struct {
+	ResolvedByType      pgtype.Text `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID `json:"resolved_task_id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID `json:"coordination_scope_id"`
+	ID                  pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ResolveCoordinationDependency(ctx context.Context, arg ResolveCoordinationDependencyParams) (CoordinationDependency, error) {
+	row := q.db.QueryRow(ctx, resolveCoordinationDependency,
+		arg.ResolvedByType,
+		arg.ResolvedByID,
+		arg.ResolvedTaskID,
+		arg.WorkspaceID,
+		arg.CoordinationScopeID,
+		arg.ID,
+	)
+	var i CoordinationDependency
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CoordinationScopeID,
+		&i.DownstreamIssueID,
+		&i.UpstreamIssueID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedTaskID,
+		&i.CreatedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.ResolvedTaskID,
+		&i.ResolvedAt,
 	)
 	return i, err
 }
