@@ -37,7 +37,7 @@ test.describe("Settings", () => {
     // auto-save contract; the transient toast is not part of this scenario.
     // Sidebar should reflect the auto-saved name WITHOUT page refresh.
     await expect(
-      page.getByRole("button", { name: new RegExp(newName) }).first(),
+      page.getByRole("button", { name: newName }).first(),
     ).toBeVisible();
 
     // Restore original name so other tests aren't affected.
@@ -51,7 +51,7 @@ test.describe("Settings", () => {
     await nameInput.blur();
     await restoreResponse;
     await expect(
-      page.getByRole("button", { name: new RegExp(originalName) }).first(),
+      page.getByRole("button", { name: originalName }).first(),
     ).toBeVisible();
   });
 

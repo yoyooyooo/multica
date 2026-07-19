@@ -89,7 +89,8 @@ func coordinationInspectionResponse(inspection service.ScopeInspection) coordina
 	}
 	var nextCursor *string
 	if inspection.NextReceiptCursor != "" {
-		nextCursor = &inspection.NextReceiptCursor
+		cursor := inspection.NextReceiptCursor
+		nextCursor = &cursor
 	}
 	return coordinationScopeInspectionResponse{
 		Scope: coordinationScopeResponse(inspection.Scope), ScopeRevision: inspection.ScopeRevision,
