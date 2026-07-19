@@ -450,6 +450,13 @@ func resetWorkCoordinationCommandState() {
 	rootCmd.SetErr(os.Stderr)
 	debugFlag = false
 	coordinationOutput = "json"
+	for _, cmd := range []*cobra.Command{rootCmd, coordinationCmd, coordinationScopeCmd, coordinationScopeEnsureCmd, coordinationScopeGetCmd} {
+		cmd.InitDefaultHelpFlag()
+		_ = cmd.Flags().Set("help", "false")
+		if flag := cmd.Flags().Lookup("help"); flag != nil {
+			flag.Changed = false
+		}
+	}
 	for _, item := range []struct {
 		cmd   *cobra.Command
 		name  string
