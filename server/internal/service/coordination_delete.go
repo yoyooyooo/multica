@@ -171,7 +171,7 @@ type IssueDeletionHandle struct {
 	deleted       int
 	failed        bool
 	savepointExec func(context.Context, string, ...any) (pgconn.CommandTag, error)
-	phaseRunner   func(context.Context, db.Issue) (IssueDeletionEffects, IssueDeletionPhase, error)
+	phaseFault    func(context.Context, IssueDeletionPhase, db.Issue) error
 }
 
 // WorkspaceDeletionHandle owns the pinned connection and transaction for one
@@ -271,6 +271,9 @@ func (s *CoordinationService) AcquireIssueDeletion(ctx context.Context, actor Co
 			return nil, coordinationErr(CoordinationDeleteBlocked, "issue deletion is blocked by an active coordination scope", nil)
 		}
 	}
+	if s.deletionReadyBoundary != nil {
+		s.deletionReadyBoundary()
+	}
 	h.lifecycle.state = deleteStateReady
 	ready = true
 	return h, nil
@@ -336,6 +339,9 @@ func (s *CoordinationService) AcquireWorkspaceDeletion(ctx context.Context, acto
 	}
 	h.workspace = workspace
 	h.members = append([]db.Member(nil), members...)
+	if s.deletionReadyBoundary != nil {
+		s.deletionReadyBoundary()
+	}
 	h.lifecycle.state = deleteStateReady
 	ready = true
 	return h, nil
@@ -378,11 +384,7 @@ func (h *IssueDeletionHandle) Delete(ctx context.Context, issueID pgtype.UUID) (
 		}
 	}
 
-	phaseRunner := h.deleteIssuePhases
-	if h.phaseRunner != nil {
-		phaseRunner = h.phaseRunner
-	}
-	effects, phase, err := phaseRunner(ctx, issue)
+	effects, phase, err := h.deleteIssuePhases(ctx, issue)
 	if err != nil {
 		if h.mode == IssueDeletionBatch && phase == IssueDeletionPhaseEntityDelete && sqlState(err) == "23503" {
 			if _, rollbackErr := h.execSavepoint(ctx, "ROLLBACK TO SAVEPOINT coordination_issue_delete_target"); rollbackErr != nil {
@@ -421,6 +423,9 @@ func (h *IssueDeletionHandle) deleteIssuePhases(ctx context.Context, issue db.Is
 	if err != nil {
 		return IssueDeletionEffects{}, IssueDeletionPhaseTaskCancel, err
 	}
+	if err := h.issuePhaseFault(ctx, IssueDeletionPhaseTaskCancel, issue); err != nil {
+		return IssueDeletionEffects{}, IssueDeletionPhaseTaskCancel, err
+	}
 	taskEffects, agentIDs, err := captureCancelledTaskEffects(ctx, h.lifecycle.qtx, issue.WorkspaceID, cancelled)
 	if err != nil {
 		return IssueDeletionEffects{}, IssueDeletionPhaseTaskCancel, err
@@ -429,12 +434,21 @@ func (h *IssueDeletionHandle) deleteIssuePhases(ctx context.Context, issue db.Is
 		if err := h.lifecycle.qtx.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
 			return IssueDeletionEffects{}, IssueDeletionPhaseTaskTokenCleanup, err
 		}
+		if err := h.issuePhaseFault(ctx, IssueDeletionPhaseTaskTokenCleanup, issue); err != nil {
+			return IssueDeletionEffects{}, IssueDeletionPhaseTaskTokenCleanup, err
+		}
 	}
 	if err := h.lifecycle.qtx.FailAutopilotRunsByIssue(ctx, issue.ID); err != nil {
 		return IssueDeletionEffects{}, IssueDeletionPhaseAutopilotFail, err
 	}
+	if err := h.issuePhaseFault(ctx, IssueDeletionPhaseAutopilotFail, issue); err != nil {
+		return IssueDeletionEffects{}, IssueDeletionPhaseAutopilotFail, err
+	}
 	attachmentURLs, err := h.lifecycle.qtx.ListAttachmentURLsByIssueOrComments(ctx, issue.ID)
 	if err != nil {
+		return IssueDeletionEffects{}, IssueDeletionPhaseAttachmentCensus, err
+	}
+	if err := h.issuePhaseFault(ctx, IssueDeletionPhaseAttachmentCensus, issue); err != nil {
 		return IssueDeletionEffects{}, IssueDeletionPhaseAttachmentCensus, err
 	}
 	rows, err := h.lifecycle.qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
@@ -444,6 +458,9 @@ func (h *IssueDeletionHandle) deleteIssuePhases(ctx context.Context, issue db.Is
 	if rows != 1 {
 		return IssueDeletionEffects{}, IssueDeletionPhaseEntityDelete, errDeletionRowCount
 	}
+	if err := h.issuePhaseFault(ctx, IssueDeletionPhaseEntityDelete, issue); err != nil {
+		return IssueDeletionEffects{}, IssueDeletionPhaseEntityDelete, err
+	}
 	return IssueDeletionEffects{
 		IssueID:          issue.ID,
 		WorkspaceID:      issue.WorkspaceID,
@@ -451,6 +468,13 @@ func (h *IssueDeletionHandle) deleteIssuePhases(ctx context.Context, issue db.Is
 		AffectedAgentIDs: agentIDs,
 		AttachmentURLs:   append([]string(nil), attachmentURLs...),
 	}, "", nil
+}
+
+func (h *IssueDeletionHandle) issuePhaseFault(ctx context.Context, phase IssueDeletionPhase, issue db.Issue) error {
+	if h.phaseFault == nil {
+		return nil
+	}
+	return h.phaseFault(ctx, phase, issue)
 }
 
 func (h *WorkspaceDeletionHandle) Delete(ctx context.Context) (WorkspaceDeletionEffects, error) {

@@ -76,6 +76,8 @@ type CoordinationService struct {
 	Queries *db.Queries
 	Tx      TxStarter
 	Pool    *pgxpool.Pool
+
+	deletionReadyBoundary func()
 }
 
 func NewCoordinationService(q *db.Queries, tx TxStarter) *CoordinationService {

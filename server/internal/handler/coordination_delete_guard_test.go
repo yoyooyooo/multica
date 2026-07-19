@@ -27,8 +27,8 @@ func TestWorkCoordinationIssueDeletionCallerGuardPanicMatrix(t *testing.T) {
 				_, _, _ = runIssueDeletionHandle(context.Background(), handle, after)
 			})
 			assertFinishCalls(t, handle.finishCalls, false)
-			if !handle.terminal || handle.effectsApplied != 0 {
-				t.Fatalf("terminal=%v effects=%d", handle.terminal, handle.effectsApplied)
+			if !handle.terminal {
+				t.Fatal("handle was not terminal after panic rollback")
 			}
 		})
 	}
@@ -65,8 +65,8 @@ func TestWorkCoordinationIssueDeletionCallerDisarmsBeforeExplicitFinish(t *testi
 				invoke()
 			}
 			assertFinishCalls(t, handle.finishCalls, tc.wantCommit)
-			if !handle.terminal || handle.effectsApplied != 0 {
-				t.Fatalf("terminal=%v effects=%d", handle.terminal, handle.effectsApplied)
+			if !handle.terminal {
+				t.Fatal("handle was not terminal after explicit Finish")
 			}
 		})
 	}
@@ -74,15 +74,28 @@ func TestWorkCoordinationIssueDeletionCallerDisarmsBeforeExplicitFinish(t *testi
 
 func TestWorkCoordinationIssueDeletionEffectsPanicDoesNotRefinish(t *testing.T) {
 	handle := newGuardIssueHandle(1)
-	deleted, effects, err := runIssueDeletionHandle(context.Background(), handle, nil)
+	h := *testHandler
+	h.acquireIssueDeletion = func(context.Context, service.CoordinationActor, pgtype.UUID, []pgtype.UUID, service.IssueDeletionMode) (issueDeletionHandle, error) {
+		return handle, nil
+	}
+	effectCalls := 0
+	h.Storage = &coordinationEffectStorage{onDeleteKeys: func([]string) {
+		effectCalls++
+		panic("injected production effects panic")
+	}}
+	ctx := context.Background()
+	actor := service.CoordinationActor{}
+	deleted, effects, err := h.performIssueDeletion(ctx, actor, pgtype.UUID{}, nil, service.IssueDeletionSingle)
 	if err != nil || deleted != 1 || len(effects) != 1 {
 		t.Fatalf("deleted=%d effects=%d err=%v", deleted, len(effects), err)
 	}
 	assertFinishCalls(t, handle.finishCalls, true)
 	assertPanics(t, func() {
-		handle.effectsApplied++
-		panic("injected effects panic")
+		h.applyIssueDeletionEffects(ctx, actor, effects)
 	})
+	if effectCalls != 1 {
+		t.Fatalf("production effects calls=%d", effectCalls)
+	}
 	assertFinishCalls(t, handle.finishCalls, true)
 }
 
@@ -95,8 +108,8 @@ func TestWorkCoordinationBatchFatalAbortsWholeCallerResult(t *testing.T) {
 		t.Fatalf("deleted=%d effects=%d delete_calls=%d err=%v", deleted, len(effects), handle.deleteCalls, err)
 	}
 	assertFinishCalls(t, handle.finishCalls, false)
-	if !handle.terminal || handle.effectsApplied != 0 {
-		t.Fatalf("terminal=%v effects=%d", handle.terminal, handle.effectsApplied)
+	if !handle.terminal {
+		t.Fatal("batch handle was not terminal after fatal abort")
 	}
 }
 
@@ -129,25 +142,24 @@ func TestWorkCoordinationWorkspaceDeletionCallerGuardAtMostOnce(t *testing.T) {
 				invoke()
 			}
 			assertFinishCalls(t, handle.finishCalls, tc.wantCommit)
-			if !handle.terminal || handle.effectsApplied != 0 {
-				t.Fatalf("terminal=%v effects=%d", handle.terminal, handle.effectsApplied)
+			if !handle.terminal {
+				t.Fatal("workspace handle was not terminal")
 			}
 		})
 	}
 }
 
 type guardIssueHandle struct {
-	targets        []pgtype.UUID
-	targetPanic    bool
-	deleteCalls    int
-	deletePanicAt  int
-	deleteErrAt    int
-	deleteErr      error
-	finishCalls    []bool
-	finishErr      error
-	finishPanic    bool
-	terminal       bool
-	effectsApplied int
+	targets       []pgtype.UUID
+	targetPanic   bool
+	deleteCalls   int
+	deletePanicAt int
+	deleteErrAt   int
+	deleteErr     error
+	finishCalls   []bool
+	finishErr     error
+	finishPanic   bool
+	terminal      bool
 }
 
 func newGuardIssueHandle(count int) *guardIssueHandle {
@@ -175,7 +187,10 @@ func (h *guardIssueHandle) Delete(_ context.Context, id pgtype.UUID) (service.Is
 	}
 	return service.IssueDeletionResult{
 		Outcome: service.IssueDeletionDeleted,
-		Effects: service.IssueDeletionEffects{IssueID: id},
+		Effects: service.IssueDeletionEffects{
+			IssueID:        id,
+			AttachmentURLs: []string{"https://storage.test/wcs/effects-panic.txt"},
+		},
 	}, nil
 }
 
@@ -189,13 +204,12 @@ func (h *guardIssueHandle) Finish(commit bool) error {
 }
 
 type guardWorkspaceHandle struct {
-	deletePanic    bool
-	deleteErr      error
-	finishPanic    bool
-	finishErr      error
-	finishCalls    []bool
-	terminal       bool
-	effectsApplied int
+	deletePanic bool
+	deleteErr   error
+	finishPanic bool
+	finishErr   error
+	finishCalls []bool
+	terminal    bool
 }
 
 func (h *guardWorkspaceHandle) Delete(context.Context) (service.WorkspaceDeletionEffects, error) {
