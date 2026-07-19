@@ -362,6 +362,14 @@ func TestWorkCoordinationBlockerLifecycleAndIndependentResolve(t *testing.T) {
 	if err != nil || len(openPage.Blockers) != 1 || !uuidEqual(openPage.Blockers[0].ID, second.Blocker.ID) {
 		t.Fatalf("open blockers=%+v err=%v", openPage, err)
 	}
+	allFirstPage, err := svc.ListBlockers(ctx, actor, scope.Scope.ID, "all", "", 1)
+	if err != nil || len(allFirstPage.Blockers) != 1 || !uuidEqual(allFirstPage.Blockers[0].ID, second.Blocker.ID) || allFirstPage.NextCursor == "" {
+		t.Fatalf("all blockers first page=%+v err=%v", allFirstPage, err)
+	}
+	allSecondPage, err := svc.ListBlockers(ctx, actor, scope.Scope.ID, "all", allFirstPage.NextCursor, 1)
+	if err != nil || len(allSecondPage.Blockers) != 1 || !uuidEqual(allSecondPage.Blockers[0].ID, created.Blocker.ID) || allSecondPage.NextCursor != "" {
+		t.Fatalf("all blockers second page=%+v err=%v", allSecondPage, err)
+	}
 	resolvedLinkInput := appendInput
 	resolvedLinkInput.ExpectedRevision = 5
 	resolvedLinkInput.IdempotencyKey = "blocker-append-resolved-dependency"

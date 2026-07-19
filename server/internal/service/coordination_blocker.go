@@ -393,17 +393,34 @@ func (s *CoordinationService) ListBlockers(ctx context.Context, actor Coordinati
 		if decoded != nil && decoded.ScopeRevision != scope.Revision {
 			return BlockerPage{}, coordinationErr(CoordinationRevisionConflict, "coordination scope revision changed", nil)
 		}
-		params := db.ListCoordinationRecordsByScopeParams{
-			WorkspaceID: actor.WorkspaceID, CoordinationScopeID: scopeID, StatusFilter: status,
+		params := db.ListCoordinationRecordsByScopeStatusParams{
+			WorkspaceID: actor.WorkspaceID, CoordinationScopeID: scopeID,
 			VisibleEndpointIssueID: visibleEndpointIssueID, LimitRows: int32(limit + 1),
 		}
 		if decoded != nil {
 			params.CursorCreatedAt = pgtype.Timestamptz{Time: decoded.CreatedAt, Valid: true}
 			params.CursorID = decoded.ID
 		}
-		rows, err := qtx.ListCoordinationRecordsByScope(ctx, params)
-		if err != nil {
-			return BlockerPage{}, coordinationErr(CoordinationInternal, "could not list coordination blockers", err)
+		statusFilters := []string{status}
+		if status == "all" {
+			statusFilters = []string{"open", "resolved"}
+		}
+		rows := make([]db.CoordinationRecord, 0, len(statusFilters)*(limit+1))
+		for _, statusFilter := range statusFilters {
+			params.StatusFilter = statusFilter
+			statusRows, err := qtx.ListCoordinationRecordsByScopeStatus(ctx, params)
+			if err != nil {
+				return BlockerPage{}, coordinationErr(CoordinationInternal, "could not list coordination blockers", err)
+			}
+			rows = append(rows, statusRows...)
+		}
+		if status == "all" {
+			sort.Slice(rows, func(i, j int) bool {
+				if rows[i].CreatedAt.Time.Equal(rows[j].CreatedAt.Time) {
+					return bytes.Compare(rows[i].ID.Bytes[:], rows[j].ID.Bytes[:]) > 0
+				}
+				return rows[i].CreatedAt.Time.After(rows[j].CreatedAt.Time)
+			})
 		}
 		hasMore := len(rows) > limit
 		if hasMore {

@@ -1083,11 +1083,11 @@ func (q *Queries) ListCoordinationRecordIssueRefs(ctx context.Context, arg ListC
 	return items, nil
 }
 
-const listCoordinationRecordsByScope = `-- name: ListCoordinationRecordsByScope :many
+const listCoordinationRecordsByScopeStatus = `-- name: ListCoordinationRecordsByScopeStatus :many
 SELECT id, workspace_id, coordination_scope_id, kind, schema_version, status, root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id, reason_code, resolution_code, created_by_type, created_by_id, created_task_id, created_at, resolved_by_type, resolved_by_id, resolved_task_id, resolved_at FROM coordination_record
 WHERE workspace_id = $1
   AND coordination_scope_id = $2
-  AND ($3::text = 'all' OR status = $3::text)
+  AND status = $3::text
   AND (
       $4::uuid IS NULL
       OR downstream_issue_id = $4::uuid
@@ -1101,7 +1101,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT $7
 `
 
-type ListCoordinationRecordsByScopeParams struct {
+type ListCoordinationRecordsByScopeStatusParams struct {
 	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
 	CoordinationScopeID    pgtype.UUID        `json:"coordination_scope_id"`
 	StatusFilter           string             `json:"status_filter"`
@@ -1111,8 +1111,8 @@ type ListCoordinationRecordsByScopeParams struct {
 	LimitRows              int32              `json:"limit_rows"`
 }
 
-func (q *Queries) ListCoordinationRecordsByScope(ctx context.Context, arg ListCoordinationRecordsByScopeParams) ([]CoordinationRecord, error) {
-	rows, err := q.db.Query(ctx, listCoordinationRecordsByScope,
+func (q *Queries) ListCoordinationRecordsByScopeStatus(ctx context.Context, arg ListCoordinationRecordsByScopeStatusParams) ([]CoordinationRecord, error) {
+	rows, err := q.db.Query(ctx, listCoordinationRecordsByScopeStatus,
 		arg.WorkspaceID,
 		arg.CoordinationScopeID,
 		arg.StatusFilter,

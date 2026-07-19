@@ -250,11 +250,11 @@ WHERE workspace_id = @workspace_id
   AND coordination_scope_id = @coordination_scope_id
   AND status = 'open';
 
--- name: ListCoordinationRecordsByScope :many
+-- name: ListCoordinationRecordsByScopeStatus :many
 SELECT * FROM coordination_record
 WHERE workspace_id = @workspace_id
   AND coordination_scope_id = @coordination_scope_id
-  AND (@status_filter::text = 'all' OR status = @status_filter::text)
+  AND status = @status_filter::text
   AND (
       sqlc.narg('visible_endpoint_issue_id')::uuid IS NULL
       OR downstream_issue_id = sqlc.narg('visible_endpoint_issue_id')::uuid
