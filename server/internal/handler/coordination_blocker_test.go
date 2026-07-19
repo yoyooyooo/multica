@@ -60,8 +60,12 @@ func TestWorkCoordinationBlockerStrictWireLifecycle(t *testing.T) {
 	tooManyRefs := strings.TrimSuffix(strings.Repeat(fmt.Sprintf(`{"kind":"issue","id":%q},`, evidenceID), 33), ",")
 	invalidBodies := []string{
 		fmt.Sprintf(`{"expected_revision":1,"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),
+		fmt.Sprintf(`{"Expected_Revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),
+		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"Reason_Code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),
+		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","Reason_Code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),
 		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","reason_code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),
 		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[{"kind":"issue","id":%q,"id":%q}]}}`, downstreamID, upstreamID, evidenceID, evidenceID),
+		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[{"Kind":"issue","id":%q}]}}`, downstreamID, upstreamID, evidenceID),
 		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"root_issue_id":%q,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID, rootID),
 		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":1,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[],"note":"DO_NOT_ECHO_BLOCKER_INPUT"}}`, downstreamID, upstreamID),
 		fmt.Sprintf(`{"expected_revision":1,"downstream_issue_id":%q,"upstream_issue_id":%q,"schema_version":null,"payload":{"reason_code":"waiting_on_issue","evidence_refs":[]}}`, downstreamID, upstreamID),

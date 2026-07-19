@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -185,6 +186,9 @@ func decodeCoordinationJSON(body io.Reader, dst any) error {
 		}
 		return err
 	}
+	if err := validateExactCoordinationJSONFields(data, reflect.TypeOf(dst)); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
@@ -192,6 +196,61 @@ func decodeCoordinationJSON(body io.Reader, dst any) error {
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return errors.New("trailing JSON value")
+	}
+	return nil
+}
+
+func validateExactCoordinationJSONFields(data []byte, target reflect.Type) error {
+	if target == nil || target.Kind() != reflect.Pointer {
+		return errors.New("coordination JSON target must be a pointer")
+	}
+	return validateExactCoordinationJSONValue(data, target.Elem())
+}
+
+func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.Type, target.NumField())
+		for index := 0; index < target.NumField(); index++ {
+			field := target.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, raw := range object {
+			fieldType, ok := fields[name]
+			if !ok {
+				return errors.New("unknown coordination JSON field")
+			}
+			if err := validateExactCoordinationJSONValue(raw, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		for _, raw := range items {
+			if err := validateExactCoordinationJSONValue(raw, target.Elem()); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

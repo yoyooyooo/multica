@@ -186,6 +186,9 @@ func TestWorkCoordinationBlockerFileValidationMakesZeroRequests(t *testing.T) {
 	tooManyRefs := strings.TrimSuffix(strings.Repeat(`{"kind":"issue","id":"`+evidenceID+`"},`, 33), ",")
 	cases := []string{
 		`{"reason_code":"waiting_on_issue","reason_code":"waiting_on_issue","evidence_refs":[]}`,
+		`{"Reason_Code":"waiting_on_issue","evidence_refs":[]}`,
+		`{"reason_code":"waiting_on_issue","Reason_Code":"waiting_on_issue","evidence_refs":[]}`,
+		`{"reason_code":"waiting_on_issue","evidence_refs":[{"Kind":"issue","id":"` + evidenceID + `"}]}`,
 		`{"reason_code":"waiting_on_issue","evidence_refs":[],"unknown":true}`,
 		`{"reason_code":"waiting_on_issue","evidence_refs":[]} {}`,
 		`{"reason_code":"waiting_on_issue","evidence_refs":null}`,
@@ -213,6 +216,8 @@ func TestWorkCoordinationBlockerFileValidationMakesZeroRequests(t *testing.T) {
 	}
 	resolutionCases := []string{
 		`{"resolution_code":"no_longer_blocking","resolution_code":"superseded","evidence_refs":[]}`,
+		`{"Resolution_Code":"no_longer_blocking","evidence_refs":[]}`,
+		`{"resolution_code":"no_longer_blocking","Resolution_Code":"superseded","evidence_refs":[]}`,
 		`{"resolution_code":"no_longer_blocking","evidence_refs":[],"unknown":true}`,
 		`{"resolution_code":"no_longer_blocking","evidence_refs":[]} {}`,
 		`{"resolution_code":"no_longer_blocking","evidence_refs":null}`,
