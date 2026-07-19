@@ -17,6 +17,20 @@ import (
 
 func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 
+type taskTokenCredentialContextKey struct{}
+
+// TaskTokenCredentialRefFromContext returns the server-derived task_token.id
+// for requests authenticated with a mat_ task token. It is intentionally kept
+// in typed request context rather than in a client-forgeable header.
+func TaskTokenCredentialRefFromContext(ctx context.Context) (pgtype.UUID, bool) {
+	id, ok := ctx.Value(taskTokenCredentialContextKey{}).(pgtype.UUID)
+	return id, ok && id.Valid
+}
+
+func withTaskTokenCredentialRef(ctx context.Context, id pgtype.UUID) context.Context {
+	return context.WithValue(ctx, taskTokenCredentialContextKey{}, id)
+}
+
 // Auth middleware validates JWT tokens or Personal Access Tokens.
 // Token sources (in priority order):
 //  1. Authorization: Bearer <token> header (PAT or JWT)
@@ -37,13 +51,10 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// X-Actor-Source is server-set only — any value supplied by
-			// the client is untrusted and discarded before the auth
-			// branches run. Only the mat_ branch below re-sets it. This
-			// is what prevents a client from sending a normal mul_ PAT
-			// plus a forged `X-Actor-Source: member` (or anything else)
-			// to convince a downstream handler that its request came
-			// from a non-task-token path.
+			// X-Actor-Source is server-set only. Legacy X-Agent-ID/X-Task-ID
+			// handling remains unchanged for non-coordination endpoints;
+			// coordination handlers ignore those headers unless this middleware
+			// also stamps an exact task-token credential in typed context.
 			r.Header.Del("X-Actor-Source")
 
 			tokenString, fromCookie := extractToken(r)
@@ -92,7 +103,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// this header is allowed to carry — strip anything else a
 				// client tried to send.
 				r.Header.Set("X-Actor-Source", "task_token")
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(withTaskTokenCredentialRef(r.Context(), tt.ID)))
 				return
 			}
 

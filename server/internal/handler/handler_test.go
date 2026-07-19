@@ -2650,7 +2650,7 @@ func TestVerifyCode(t *testing.T) {
 			workspaces, listErr := testHandler.Queries.ListWorkspaces(ctx, user.ID)
 			if listErr == nil {
 				for _, workspace := range workspaces {
-					_ = testHandler.Queries.DeleteWorkspace(ctx, workspace.ID)
+					_, _ = testHandler.Queries.DeleteWorkspace(ctx, workspace.ID)
 				}
 			}
 		}

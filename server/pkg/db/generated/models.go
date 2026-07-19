@@ -432,6 +432,41 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type CoordinationReceipt struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	ReceiptOrdinal      int64              `json:"receipt_ordinal"`
+	Operation           string             `json:"operation"`
+	IdempotencyKey      string             `json:"idempotency_key"`
+	RequestHash         []byte             `json:"request_hash"`
+	ResourceType        string             `json:"resource_type"`
+	ResourceID          pgtype.UUID        `json:"resource_id"`
+	RevisionBefore      int64              `json:"revision_before"`
+	RevisionAfter       int64              `json:"revision_after"`
+	ResultSnapshot      []byte             `json:"result_snapshot"`
+	ActorType           string             `json:"actor_type"`
+	ActorID             pgtype.UUID        `json:"actor_id"`
+	ActorTaskID         pgtype.UUID        `json:"actor_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type CoordinationScope struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ScopeKind          string             `json:"scope_kind"`
+	State              string             `json:"state"`
+	RootIssueID        pgtype.UUID        `json:"root_issue_id"`
+	WorkflowProfileKey string             `json:"workflow_profile_key"`
+	Revision           int64              `json:"revision"`
+	NextReceiptOrdinal int64              `json:"next_receipt_ordinal"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID      pgtype.UUID        `json:"created_task_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonConnection struct {
 	ID              pgtype.UUID        `json:"id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`

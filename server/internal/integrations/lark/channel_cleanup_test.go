@@ -212,8 +212,8 @@ VALUES ($1, $2, 'cc agent del', 'local', $3)`, ccAgentDel, ccWSDel, ccRuntimeDel
 
 	id := seedFullInstallation(t, ctx, pool, ccWSDel, ccAgentDel, ccAppWs, ccChatWs, ccTokenWs, ccAuditWs)
 
-	if err := q.DeleteWorkspace(ctx, util.MustParseUUID(ccWSDel)); err != nil {
-		t.Fatalf("DeleteWorkspace: %v", err)
+	if rows, err := q.DeleteWorkspace(ctx, util.MustParseUUID(ccWSDel)); err != nil || rows != 1 {
+		t.Fatalf("DeleteWorkspace: rows=%d err=%v", rows, err)
 	}
 
 	if n := ccCount(t, ctx, pool, `SELECT count(*) FROM workspace WHERE id = $1`, ccWSDel); n != 0 {

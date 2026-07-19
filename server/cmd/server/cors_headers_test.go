@@ -11,6 +11,12 @@ import (
 // preflight a custom request header, so an entry missing from AllowedHeaders is
 // not a degraded feature — it is a failed request: the cancel never reaches the
 // server, and the user's prompt is lost in a way no server-side test can see.
+func TestWorkCoordinationCORSAllowedHeadersIncludeIdempotencyKey(t *testing.T) {
+	if !slices.Contains(corsAllowedHeaders, "Idempotency-Key") {
+		t.Fatalf("Idempotency-Key missing from CORS allowed headers: %v", corsAllowedHeaders)
+	}
+}
+
 func TestCORSAllowedHeaders_IncludeClientCapabilities(t *testing.T) {
 	if !slices.Contains(corsAllowedHeaders, "X-Client-Capabilities") {
 		t.Fatalf("X-Client-Capabilities missing from CORS allowed headers: %v", corsAllowedHeaders)

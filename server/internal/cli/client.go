@@ -62,10 +62,11 @@ type APIClient struct {
 }
 
 type HTTPError struct {
-	Method     string
-	Path       string
-	StatusCode int
-	Body       string
+	Method      string
+	Path        string
+	StatusCode  int
+	ContentType string
+	Body        string
 }
 
 func (e *HTTPError) Error() string {
@@ -80,10 +81,11 @@ func (e *HTTPError) Error() string {
 func newHTTPError(method, path string, resp *http.Response) *HTTPError {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return &HTTPError{
-		Method:     method,
-		Path:       path,
-		StatusCode: resp.StatusCode,
-		Body:       strings.TrimSpace(string(data)),
+		Method:      method,
+		Path:        path,
+		StatusCode:  resp.StatusCode,
+		ContentType: resp.Header.Get("Content-Type"),
+		Body:        strings.TrimSpace(string(data)),
 	}
 }
 
@@ -313,6 +315,12 @@ func (c *APIClient) DeleteJSONWithBody(ctx context.Context, path string, body an
 
 // PostJSON performs a POST request with a JSON body.
 func (c *APIClient) PostJSON(ctx context.Context, path string, body any, out any) error {
+	return c.PostJSONWithHeaders(ctx, path, body, nil, out)
+}
+
+// PostJSONWithHeaders performs a POST request with caller-supplied headers.
+// It is used by idempotent product APIs whose key belongs in a request header.
+func (c *APIClient) PostJSONWithHeaders(ctx context.Context, path string, body any, headers http.Header, out any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -323,6 +331,11 @@ func (c *APIClient) PostJSON(ctx context.Context, path string, body any, out any
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	c.setHeaders(req)
 
 	resp, err := c.HTTPClient.Do(req)

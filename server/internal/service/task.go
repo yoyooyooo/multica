@@ -651,11 +651,15 @@ func (s *TaskService) captureTaskFailed(ctx context.Context, task db.AgentTaskQu
 	}
 }
 
-func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTaskQueue) {
+func (s *TaskService) captureTaskCancelledMetrics(ctx context.Context, task db.AgentTaskQueue) {
 	if s.Metrics != nil {
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
+}
+
+func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTaskQueue) {
+	s.captureTaskCancelledMetrics(ctx, task)
 	// Revoke any mat_ task tokens minted for this task. Cancellation is
 	// a terminal transition, so the running agent process no longer
 	// needs to call back; eagerly deleting the token closes the
@@ -1673,6 +1677,40 @@ func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, cancelled []d
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
+	}
+	s.notifyTasksFinished(cancelled)
+}
+
+// BroadcastCoordinationCancelledTasks applies only the post-commit portions of
+// task cancellation. The coordination delete transaction has already revoked
+// task credentials, so this seam consumes compact typed effects and never
+// repeats that database mutation.
+func (s *TaskService) BroadcastCoordinationCancelledTasks(ctx context.Context, effects []CancelledTaskEffect, affectedAgentIDs []pgtype.UUID) {
+	cancelled := cancelledTaskRows(effects)
+	for i, task := range cancelled {
+		effect := effects[i]
+		if s.Metrics != nil {
+			s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), effect.MetricsSource, effect.RuntimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
+		}
+		payload := map[string]any{
+			"task_id":  util.UUIDToString(effect.ID),
+			"agent_id": util.UUIDToString(effect.AgentID),
+			"issue_id": util.UUIDToString(effect.IssueID),
+			"status":   effect.Status,
+		}
+		if effect.ChatSessionID.Valid {
+			payload["chat_session_id"] = util.UUIDToString(effect.ChatSessionID)
+		}
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventTaskCancelled,
+			WorkspaceID: util.UUIDToString(effect.WorkspaceID),
+			ActorType:   "system",
+			ActorID:     "",
+			Payload:     payload,
+		})
+	}
+	for _, agentID := range affectedAgentIDs {
+		s.ReconcileAgentStatus(ctx, agentID)
 	}
 	s.notifyTasksFinished(cancelled)
 }
@@ -4242,6 +4280,10 @@ func issueToMap(issue db.Issue, issuePrefix string) map[string]any {
 // autopilot are never quick-create even if they happen to carry a
 // context blob, so those are filtered up front.
 func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCreateContext, bool) {
+	return parseQuickCreateTaskContext(task)
+}
+
+func parseQuickCreateTaskContext(task db.AgentTaskQueue) (QuickCreateContext, bool) {
 	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 		return QuickCreateContext{}, false
 	}

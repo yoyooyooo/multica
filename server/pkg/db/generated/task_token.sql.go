@@ -87,3 +87,40 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 	)
 	return i, err
 }
+
+const getTaskTokenByIDForCoordination = `-- name: GetTaskTokenByIDForCoordination :one
+SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
+WHERE id = $1
+  AND workspace_id = $2
+  AND agent_id = $3
+  AND task_id = $4
+  AND expires_at > now()
+`
+
+type GetTaskTokenByIDForCoordinationParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) GetTaskTokenByIDForCoordination(ctx context.Context, arg GetTaskTokenByIDForCoordinationParams) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, getTaskTokenByIDForCoordination,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.TaskID,
+	)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}

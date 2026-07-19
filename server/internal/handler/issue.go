@@ -3141,31 +3141,23 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
-	// Fail any linked autopilot runs before delete (ON DELETE SET NULL clears issue_id).
-	h.Queries.FailAutopilotRunsByIssue(r.Context(), issue.ID)
-
-	// Collect all attachment URLs (issue-level + comment-level) before CASCADE delete.
-	attachmentURLs, _ := h.Queries.ListAttachmentURLsByIssueOrComments(r.Context(), issue.ID)
-
-	err := h.Queries.DeleteIssue(r.Context(), db.DeleteIssueParams{
-		ID:          issue.ID,
-		WorkspaceID: issue.WorkspaceID,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete issue")
+	actor, ok := h.coordinationActorForWorkspace(w, r, issue.WorkspaceID)
+	if !ok {
 		return
 	}
-
-	h.deleteS3Objects(r.Context(), attachmentURLs)
-	userID := requestUserID(r)
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	// Always emit the resolved UUID — frontend caches key by UUID, so an
-	// identifier-style payload ("MUL-123") would leave stale entries on
-	// other clients after an identifier-path delete.
+	deleted, effects, err := h.performIssueDeletion(r.Context(), actor, issue.WorkspaceID, []pgtype.UUID{issue.ID}, service.IssueDeletionSingle)
+	if err != nil {
+		h.writeCoordinationServiceError(w, err)
+		return
+	}
+	if deleted != 1 {
+		writeCoordinationError(w, service.CoordinationNotFound, "issue not found")
+		return
+	}
+	// The DB commit and session-lock release/discard are terminal before any
+	// cache, S3, metrics, reconciliation, or event adapter is invoked.
+	h.applyIssueDeletionEffects(r.Context(), actor, effects)
 	resolvedID := uuidToString(issue.ID)
-	h.publish(protocol.EventIssueDeleted, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{"issue_id": resolvedID})
 	slog.Info("issue deleted", append(logger.RequestAttrs(r), "issue_id", resolvedID, "workspace_id", uuidToString(issue.WorkspaceID))...)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -3488,58 +3480,35 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if len(req.IssueIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "issue_ids is required")
 		return
 	}
-
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
 		return
 	}
-	deleted := 0
+	// Before the workspace session lock, only syntax parsing is allowed.
+	// Missing and foreign IDs are resolved without disclosure after the lock.
+	parsed := make([]pgtype.UUID, 0, len(req.IssueIDs))
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
 			continue
 		}
-		issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
-			ID:          issueUUID,
-			WorkspaceID: wsUUID,
-		})
-		if err != nil {
-			continue
-		}
-
-		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
-		h.Queries.FailAutopilotRunsByIssue(r.Context(), issue.ID)
-
-		// Collect attachment URLs before CASCADE delete to clean up S3 objects.
-		attachmentURLs, _ := h.Queries.ListAttachmentURLsByIssueOrComments(r.Context(), issue.ID)
-
-		if err := h.Queries.DeleteIssue(r.Context(), db.DeleteIssueParams{
-			ID:          issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err != nil {
-			slog.Warn("batch delete issue failed", "issue_id", issueID, "error", err)
-			continue
-		}
-
-		h.deleteS3Objects(r.Context(), attachmentURLs)
-
-		// Always emit the resolved UUID — frontend caches key by UUID.
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
-		h.publish(protocol.EventIssueDeleted, workspaceID, actorType, actorID, map[string]any{"issue_id": uuidToString(issue.ID)})
-		deleted++
+		parsed = append(parsed, issueUUID)
 	}
-
+	actor, ok := h.coordinationActorForWorkspace(w, r, wsUUID)
+	if !ok {
+		return
+	}
+	deleted, effects, err := h.performIssueDeletion(r.Context(), actor, wsUUID, parsed, service.IssueDeletionBatch)
+	if err != nil {
+		h.writeCoordinationServiceError(w, err)
+		return
+	}
+	h.applyIssueDeletionEffects(r.Context(), actor, effects)
 	slog.Info("batch delete issues", append(logger.RequestAttrs(r), "count", deleted)...)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
