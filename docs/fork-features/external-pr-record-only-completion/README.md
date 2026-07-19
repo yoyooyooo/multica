@@ -2,11 +2,12 @@
 
 ## Status
 
-- Fork state: implementation is preserved in the Work Coordination runtime-convergence source candidate; it is not yet accepted or deployed. Original delivery is tracked by `MINI-697` / `MINI-698`.
-- Runtime apply: blocked on exact-head convergence acceptance and a fresh target-specific deployment approval; tracked by `MINI-699`.
+- Fork state: implementation exists in current mini backend source `c798fa83abb3a6dc7eb154d5d5c4bcacb431c1ee` and is preserved by the Work Coordination runtime-convergence change. Main-source authority requires its reviewed and merged exact head. Original delivery is tracked by `MINI-697` / `MINI-698`.
+- Runtime state: mini preflight identified the exact `c798fa83…` backend source, which proves deployed code provenance only. Record-only endpoint behavior and a backup-gated canary remain `not_claimed`.
+- Replacement apply: requires exact-head convergence acceptance plus a fresh target-specific deployment approval; tracked by `MINI-699`.
 - Live proof: tracked by `MINI-700`.
 - Portability: general upstream candidate. The policy is provider- and workflow-neutral.
-- Claim limit: source tests do not prove mini deployment or a successful backup-gated canary.
+- Claim limit: source tests and image provenance do not prove a successful record-only canary.
 
 ## Problem and necessity
 
@@ -84,7 +85,7 @@ Live acceptance additionally requires a new canary to prove that provider merge 
 
 ## Deployment and rollback
 
-This handler runs in the Multica backend. Feature-local apply requires an exact accepted convergence build and backend replacement after `active_task_count=0`. The current convergence rollout also carries Work Coordination migrations and CLI source, so its eventual target-specific plan—not this feature-local note—must define every database, server, CLI, restart, backup, and rollback action. No source acceptance implicitly authorizes those actions.
+This handler is present in the current `c798fa83…` mini backend. Any replacement must use an exact accepted convergence build after `active_task_count=0`. The convergence rollout also carries Work Coordination migrations and CLI source, so its eventual target-specific plan—not this feature-local note—must define every database, server, CLI, restart, backup, and rollback action. No source acceptance implicitly authorizes those actions.
 
 Rollback restores the previous auto-completion behavior. Workflows requiring extra terminal gates must remain parked while rolled back; they must not reinterpret the absence of a premature wake as proof.
 

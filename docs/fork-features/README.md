@@ -19,7 +19,7 @@ A source change is not considered complete in this fork until its feature narrat
 | Feature | Status | Portability |
 |---|---|---|
 | [Daemon task receipt](daemon-task-receipt/README.md) | deployed and live-proven on mini | general upstream candidate |
-| [External PR record-only completion](external-pr-record-only-completion/README.md) | source convergence candidate; not deployed | general upstream candidate |
+| [External PR record-only completion](external-pr-record-only-completion/README.md) | live mini backend source; main-source authority requires reviewed convergence; live canary not accepted | general upstream candidate |
 | [Work coordination store V1–V5](work-coordination-store/README.md) | V1–V5 source accepted; not deployed | general upstream candidate |
 
 The historical fork-feature inventory and documentation backfill is tracked by Multica issue `MINI-695`.
