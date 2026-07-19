@@ -1,4 +1,4 @@
-# Work Coordination Store V1–V4
+# Work Coordination Store V1–V5
 
 ## Problem
 
@@ -11,7 +11,8 @@ Accepted source on the branch base covers:
 - V1 root coordination scopes, request-hash receipts, exact member/task-token authority, and guarded deletion;
 - V2 independent `coordination_dependency` storage and canonical `downstream blocked_by upstream` lifecycle;
 - V3 strict schema-v1 blocker records, issue-only evidence refs, independent blocker/dependency resolution, API/CLI surfaces, and deletion guards;
-- V4 consistent inspection, bounded safe receipt pagination, batched blocker evidence reads, strict API/CLI surfaces, and passive conformance.
+- V4 consistent inspection, bounded safe receipt pagination, batched blocker evidence reads, strict API/CLI surfaces, and passive conformance;
+- V5 a real CLI-process/router/PostgreSQL aggregate proof plus a DB-required named-pass gate for passive non-interference.
 
 The accepted V4 source adds:
 
@@ -26,7 +27,7 @@ The accepted V4 source adds:
 
 V4 needs no schema migration. Existing V1–V3 indexes cover active dependency order, open blocker order, evidence reads, and receipt ordinal windows.
 
-The V5 source-acceptance candidate adds one hermetic aggregate proof: a built `multica` CLI binary runs from independent A/B process homes through the real HTTP router into a real database, proving same-member replay, different-member idempotency conflict, independent blocker/dependency resolution, receipt ordinals, and exact Issue/task/Autopilot/legacy-dependency non-interference. The DB-required harness requires named pass evidence from this test. This is test and narrative hardening only; it adds no production route, schema, deployment tooling, or scheduling behavior.
+The accepted V5 source slice adds one hermetic aggregate proof: a built `multica` CLI binary runs from independent A/B process homes through the real HTTP router into a real database, proving same-member replay, different-member idempotency conflict, independent blocker/dependency resolution, receipt ordinals, and exact Issue/task/Autopilot/legacy-dependency non-interference. The DB-required harness requires named pass evidence from this test. This is test and narrative hardening only; it adds no production route, schema, deployment tooling, or scheduling behavior.
 
 The frozen ticket directory remains the delivery-contract baseline. Its preimplementation capsule is historical text; this narrative plus exact source, PR, CI, and acceptance evidence carry current status.
 
@@ -97,17 +98,17 @@ Mutation payload and resolution files remain strict JSON capped at 4,096 bytes. 
 
 ## Passive boundary
 
-V1–V4 do not alter Issue status, assignee, comments, metadata, task scheduling, Autopilot behavior, dependency lifecycle, or Store cleanup. They do not wake Agents or dispatch tasks. Blocker records and inspection results are evidence facts, not scheduling commands. Historical assisted workflow classification remains unchanged.
+V1–V5 do not alter Issue status, assignee, comments, metadata, task scheduling, Autopilot behavior, dependency lifecycle, or Store cleanup. They do not wake Agents or dispatch tasks. Blocker records and inspection results are evidence facts, not scheduling commands. Historical assisted workflow classification remains unchanged.
 
-Deletion guards prevent dangling Store facts for scopes, dependencies, blocker endpoints, and evidence refs. Receipt history alone is not a deletion guard. V1–V4 provide no Store cleanup, archive, or retention operation. The guards prove database soft-reference safety only; they do not claim rollback of external effects.
+Deletion guards prevent dangling Store facts for scopes, dependencies, blocker endpoints, and evidence refs. Receipt history alone is not a deletion guard. V1–V5 provide no Store cleanup, archive, or retention operation. The guards prove database soft-reference safety only; they do not claim rollback of external effects.
 
 Program scopes, goal contracts, leases, fencing, wake claims, Reconciler, Autopilot control, UI, and performance/SLO remain out of scope.
 
 ## Deployment and portability
 
-V1–V4 are accepted in this fork's `main`. V4 authority is squash merge `c08e7c5dd2d662f7722406b10ebb7176f4e75bc8`, whose sole parent is accepted V3 authority `467f6dcb02d99cb8c2efeebe6e9660ce268cf43b`; its tree `e79b23e70271b14845e171ab05f98fcc7921dd6f` equals the reviewed PR-head tree. PR `#59`, final-head CI `29691513674`, and merged-main CI `29691621855` are successful.
+V1–V5 source is accepted in this fork's `main`. V5 authority is squash merge `7137910838a90d4b29193151c42be54f79ef41cc`, whose sole parent is accepted V4 authority `c08e7c5dd2d662f7722406b10ebb7176f4e75bc8`; its tree `3d9db246539b83628c68604c7ecdb32d5795813e` equals reviewed head `fafc15094744ece51d141ff6fca605a5cb814a5e`. PR `#60`, final-head CI `29694807759`, and merged-main CI `29694915008` are successful.
 
-The V5 source-acceptance candidate does not authorize deployment. Mini migration apply, server/CLI replacement, process restart, runtime availability, and a two-client live tracer still require a fresh target-specific plan and explicit approval. `passive-live-evidence.md` is therefore intentionally absent until an approved deployment/tracer produces real evidence; a source-only branch must not pre-populate a document that could be mistaken for live acceptance.
+V5 source acceptance does not authorize deployment. Mini migration apply, server/CLI replacement, process restart, runtime availability, and a two-client live tracer still require a fresh target-specific plan and explicit approval. `passive-live-evidence.md` is therefore intentionally absent until an approved deployment/tracer produces real evidence; source acceptance must not pre-populate a document that could be mistaken for live acceptance.
 
 The capability is intended as a general upstream candidate. Until upstream owns an equivalent passive slice, this fork remains source authority for the additive storage and behavior.
 
@@ -129,10 +130,10 @@ The capability is intended as a general upstream candidate. Until upstream owns 
 
 Accepted V4 includes deterministic repeatable-read barrier proof, 1,000/1,001 fact-bound checks, receipt ordinal/window pagination, Agent root/revocation checks, cross-scope isolation, no-side-effect snapshots, strict handler/router tests, CLI JSON/table/single-envelope tests, and exact inspect route/code classification. Existing V1–V3 migration, lifecycle, capacity, cycle, replay, deletion, race, and generated-code checks remain part of the aggregate gate.
 
-The V5 source-acceptance candidate adds `TestWorkCoordinationCLIProcessesAggregatePassiveFlow` and mechanically requires its pass evidence in the DB-required harness. Its independent process homes prove process-local CLI state is not the source of replay behavior; canonical server identity remains authoritative.
+Accepted V5 adds `TestWorkCoordinationCLIProcessesAggregatePassiveFlow` and mechanically requires its pass evidence in the DB-required harness. Its independent process homes prove process-local CLI state is not the source of replay behavior; canonical server identity remains authoritative.
 
 Exact-head repository gates, independent review, CI, merge, and any later deployment must be recorded separately. Source acceptance cannot be presented as mini live availability. The maximum source-only claim is that the repository's passive Store aggregate has passed the recorded deterministic test, review, and CI gates.
 
 ## Rollback
 
-V4 adds no schema. Application rollback restores the prior server and CLI while preserving V1–V3 schema, facts, and receipts. V3 and lower schema rollback rules remain separate and require writes to stop before destructive down migrations. The V5 source-acceptance candidate changes tests and narrative only, so it introduces no additional runtime rollback action.
+V4 adds no schema. Application rollback restores the prior server and CLI while preserving V1–V3 schema, facts, and receipts. V3 and lower schema rollback rules remain separate and require writes to stop before destructive down migrations. Accepted V5 changes tests and narrative only, so it introduces no additional runtime rollback action.

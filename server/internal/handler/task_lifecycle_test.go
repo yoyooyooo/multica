@@ -39,9 +39,10 @@ func TestRerunIssueFreshPrivateAgentDeniedBeforeMutation(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_task_queue (
 			agent_id, runtime_id, issue_id, status, priority,
-			started_at, completed_at, failure_reason, originator_user_id
+			started_at, completed_at, failure_reason,
+			originator_user_id, accountable_user_id
 		)
-		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3
+		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3, $3
 		FROM agent WHERE id = $1
 		RETURNING id
 	`, agentID, issueID, ownerID).Scan(&sourceTaskID); err != nil {
@@ -108,9 +109,10 @@ func TestRerunIssueFreshMemberHeadersDoNotBorrowSourceOriginator(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_task_queue (
 			agent_id, runtime_id, issue_id, status, priority,
-			started_at, completed_at, failure_reason, originator_user_id
+			started_at, completed_at, failure_reason,
+			originator_user_id, accountable_user_id
 		)
-		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3
+		SELECT id, runtime_id, $2, 'failed', 0, now(), now(), 'agent_error', $3, $3
 		FROM agent WHERE id = $1
 		RETURNING id
 	`, agentID, issueID, testUserID).Scan(&sourceTaskID); err != nil {

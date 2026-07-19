@@ -2,8 +2,8 @@
 
 ## Status
 
-- Fork state: source implementation in progress on maintained `mini-runtime`; tracked by `MINI-697` / `MINI-698`.
-- Runtime apply: tracked by `MINI-699`.
+- Fork state: implementation is preserved in the Work Coordination runtime-convergence source candidate; it is not yet accepted or deployed. Original delivery is tracked by `MINI-697` / `MINI-698`.
+- Runtime apply: blocked on exact-head convergence acceptance and a fresh target-specific deployment approval; tracked by `MINI-699`.
 - Live proof: tracked by `MINI-700`.
 - Portability: general upstream candidate. The policy is provider- and workflow-neutral.
 - Claim limit: source tests do not prove mini deployment or a successful backup-gated canary.
@@ -84,7 +84,7 @@ Live acceptance additionally requires a new canary to prove that provider merge 
 
 ## Deployment and rollback
 
-This handler runs in the Multica backend. Deployment rebuilds exact accepted `mini-runtime` source and recreates only the backend container after `active_task_count=0`. The previous backend image is retained for rollback. Postgres, frontend, CLI, and host daemons are not restarted.
+This handler runs in the Multica backend. Feature-local apply requires an exact accepted convergence build and backend replacement after `active_task_count=0`. The current convergence rollout also carries Work Coordination migrations and CLI source, so its eventual target-specific plan—not this feature-local note—must define every database, server, CLI, restart, backup, and rollback action. No source acceptance implicitly authorizes those actions.
 
 Rollback restores the previous auto-completion behavior. Workflows requiring extra terminal gates must remain parked while rolled back; they must not reinterpret the absence of a premature wake as proof.
 

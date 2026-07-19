@@ -537,6 +537,27 @@ type DaemonToken struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type ExternalPullRequestLink struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	Provider         string             `json:"provider"`
+	ExternalRepo     string             `json:"external_repo"`
+	ExternalNumber   int32              `json:"external_number"`
+	ExternalUrl      pgtype.Text        `json:"external_url"`
+	MergeProvider    pgtype.Text        `json:"merge_provider"`
+	MergeRepo        pgtype.Text        `json:"merge_repo"`
+	MergeNumber      pgtype.Int4        `json:"merge_number"`
+	MergeUrl         pgtype.Text        `json:"merge_url"`
+	MergedSha        pgtype.Text        `json:"merged_sha"`
+	LinkConfidence   string             `json:"link_confidence"`
+	CompletionIntent bool               `json:"completion_intent"`
+	State            string             `json:"state"`
+	IdempotencyKey   pgtype.Text        `json:"idempotency_key"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Feedback struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`

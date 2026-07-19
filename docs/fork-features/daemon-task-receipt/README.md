@@ -94,7 +94,9 @@ Agents consuming the receipt still fail closed when the task, actor, Issue, trig
 - `server/internal/daemon/daemon_test.go`
   - effective resume/workdir gate coverage.
 - `server/internal/daemon/task_context_receipt_run_test.go`
-  - mini-runtime runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, conservative fresh-fallback semantics, and backend-visible ordering proof.
+  - generic runTask-level assignment/comment, fresh, resumed+reused, reuse-without-resume, dropped-workdir, conservative fresh-fallback semantics, and backend-visible ordering proof.
+- `server/internal/daemon/leader_workdir_reuse_test.go`
+  - squad-leader managed-workdir provenance, containment, race-window reuse, and fail-closed rejection coverage retained from current main.
 
 ## Verification
 

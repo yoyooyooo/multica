@@ -76,7 +76,7 @@ func TestWorkCoordinationBuiltinSkillBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fork narrative: %v", err)
 	}
-	for _, required := range []string{"Work Coordination Store V1–V4", "V1–V4 are accepted", "V5 source-acceptance candidate does not authorize deployment", "passive-live-evidence.md"} {
+	for _, required := range []string{"Work Coordination Store V1–V5", "V1–V5 source is accepted", "V5 source acceptance does not authorize deployment", "passive-live-evidence.md"} {
 		if !strings.Contains(string(narrative), required) {
 			t.Fatalf("fork narrative is missing %q", required)
 		}
