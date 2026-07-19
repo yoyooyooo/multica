@@ -446,6 +446,19 @@ func TestWorkCoordinationDependencyAgentEndpointAndReplayAuthority(t *testing.T)
 	if _, err := svc.AddDependency(ctx, agent, input); err != nil {
 		t.Fatalf("agent add: %v", err)
 	}
+	dbScope, err := db.New(pool).GetCoordinationScopeByID(ctx, db.GetCoordinationScopeByIDParams{WorkspaceID: fixture.workspaceID, ID: scope.Scope.ID})
+	if err != nil {
+		t.Fatalf("load scope for endpoint revalidation: %v", err)
+	}
+	spoofedAgentID, err := newPgUUID()
+	if err != nil {
+		t.Fatalf("spoofed agent id: %v", err)
+	}
+	spoofedAgent := agent
+	spoofedAgent.ActorID = spoofedAgentID
+	if err := svc.revalidateDependencyEndpoints(ctx, db.New(pool), spoofedAgent, dbScope, fixture.issueID, child); coordinationCode(err) != CoordinationForbidden {
+		t.Fatalf("endpoint revalidation agent mismatch code=%q err=%v", coordinationCode(err), err)
+	}
 	if _, err := svc.AddDependency(ctx, agent, AddDependencyInput{ScopeID: scope.Scope.ID, ExpectedRevision: 1, DownstreamIssueID: child, UpstreamIssueID: other, IdempotencyKey: "agent-not-endpoint"}); coordinationCode(err) != CoordinationForbidden {
 		t.Fatalf("non-endpoint code=%q err=%v", coordinationCode(err), err)
 	}

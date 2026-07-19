@@ -402,10 +402,13 @@ func (s *CoordinationService) revalidateDependencyEndpoints(ctx context.Context,
 	if actor.ActorType == CoordinationActorAgent {
 		task, err := q.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{ID: actor.TaskID, WorkspaceID: actor.WorkspaceID})
 		if err != nil {
-			return coordinationErr(CoordinationForbidden, "task is not current", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return coordinationErr(CoordinationForbidden, "task is not current", err)
+			}
+			return coordinationErr(CoordinationInternal, "could not load task endpoint authority", err)
 		}
-		if !task.IssueID.Valid || (!uuidEqual(task.IssueID, downstreamID) && !uuidEqual(task.IssueID, upstreamID)) {
-			return coordinationErr(CoordinationForbidden, "task issue is not a dependency endpoint", nil)
+		if !uuidEqual(task.AgentID, actor.ActorID) || !task.IssueID.Valid || (!uuidEqual(task.IssueID, downstreamID) && !uuidEqual(task.IssueID, upstreamID)) {
+			return coordinationErr(CoordinationForbidden, "task endpoint authority is not current", nil)
 		}
 	}
 	return nil
