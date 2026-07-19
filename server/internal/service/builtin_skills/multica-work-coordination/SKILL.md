@@ -53,7 +53,7 @@ Important consequences:
 
 - scope ensure plus dependency and blocker mutations are idempotent for the same canonical request;
 - an exact-key replay returns the saved receipt and does not allocate another ordinal;
-- a fresh-key duplicate add in the same owner scope returns `noop`, leaves revision unchanged, and allocates a new receipt ordinal;
+- a fresh-key duplicate dependency add in the same owner scope returns `noop`, leaves revision unchanged, and allocates a new receipt ordinal; a fresh-key duplicate blocker append creates a distinct evidence record;
 - an unresolved pair owned by another scope returns `coordination_dependency_scope_conflict` and changes neither scope revision;
 - replay revalidates current authority and referenced resources before returning saved data;
 - member and task identity come from the server, not CLI-provided fields;

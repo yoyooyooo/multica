@@ -45,6 +45,8 @@ resolution_code=null|no_longer_blocking|superseded
 
 Its endpoints share the scope's actual root. Evidence is a bounded set of typed issue UUID references, not free text, URLs, comments, or arbitrary JSON. An optional `dependency_id` is only a validated link to an active dependency; resolving a blocker never resolves or mutates that dependency. Existing blocker evidence remains valid if that dependency is later resolved, while a later append or append replay cannot bind the now-resolved dependency.
 
+An exact-key append replay returns the saved blocker. Reusing the same typed payload with a fresh idempotency key creates a distinct evidence record because V3 defines no blocker business identity for content-based deduplication.
+
 The Store never reads or writes legacy `issue_dependency` for this model. V3 does not reinterpret V2 dependency state.
 
 ## Authority and concurrency boundaries
