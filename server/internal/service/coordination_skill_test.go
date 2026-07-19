@@ -12,7 +12,7 @@ func TestWorkCoordinationBuiltinSkillBundle(t *testing.T) {
 	if !ok {
 		t.Fatal("multica-work-coordination is not embedded")
 	}
-	for _, required := range []string{"name: multica-work-coordination", "multica coordination scope ensure", "multica coordination scope get", "multica coordination dependency add", "multica coordination dependency list", "multica coordination dependency resolve", "Work coordination is passive", "does not own scheduling", "downstream blocked_by upstream", "fresh-key duplicate add", "1,000 active dependencies", "mutation revision conflict", "Agent list returns only active pairs containing that task issue"} {
+	for _, required := range []string{"name: multica-work-coordination", "multica coordination scope ensure", "multica coordination scope get", "multica coordination dependency add", "multica coordination dependency list", "multica coordination dependency resolve", "multica coordination blocker add", "multica coordination blocker list", "multica coordination blocker resolve", "Work coordination is passive", "does not own scheduling", "downstream blocked_by upstream", "fresh-key duplicate dependency add", "fresh-key duplicate blocker append creates a distinct evidence record", "1,000 active dependencies", "1,000 open blockers", "waiting_on_issue", "no_longer_blocking", "blocker resolution never resolves", "mutation revision conflict", "Agent dependency list returns only active pairs containing that task issue", "Agent blocker list returns only records containing that issue"} {
 		if !strings.Contains(skill.Content, required) {
 			t.Fatalf("built-in skill is missing %q", required)
 		}

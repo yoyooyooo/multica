@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -172,34 +173,21 @@ func decodeCoordinationJSON(body io.Reader, dst any) error {
 		return errors.New("invalid body")
 	}
 	probe := json.NewDecoder(bytes.NewReader(data))
-	tok, err := probe.Token()
-	if err != nil || tok != json.Delim('{') {
+	first, err := probe.Token()
+	if err != nil || first != json.Delim('{') {
 		return errors.New("body must be an object")
 	}
-	seen := map[string]struct{}{}
-	for probe.More() {
-		keyToken, err := probe.Token()
-		if err != nil {
-			return err
-		}
-		key, ok := keyToken.(string)
-		if !ok {
-			return errors.New("invalid object key")
-		}
-		if _, duplicate := seen[key]; duplicate {
-			return errors.New("duplicate object key")
-		}
-		seen[key] = struct{}{}
-		var value json.RawMessage
-		if err := probe.Decode(&value); err != nil {
-			return err
-		}
-	}
-	if _, err := probe.Token(); err != nil {
+	if err := consumeCoordinationJSONValue(probe, first); err != nil {
 		return err
 	}
-	if probe.Decode(&struct{}{}) != io.EOF {
-		return errors.New("trailing JSON value")
+	if _, err := probe.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	if err := validateExactCoordinationJSONFields(data, reflect.TypeOf(dst)); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -210,6 +198,113 @@ func decodeCoordinationJSON(body io.Reader, dst any) error {
 		return errors.New("trailing JSON value")
 	}
 	return nil
+}
+
+func validateExactCoordinationJSONFields(data []byte, target reflect.Type) error {
+	if target == nil || target.Kind() != reflect.Pointer {
+		return errors.New("coordination JSON target must be a pointer")
+	}
+	return validateExactCoordinationJSONValue(data, target.Elem())
+}
+
+func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	jsonUnmarshaler := reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	if target.Implements(jsonUnmarshaler) || reflect.PointerTo(target).Implements(jsonUnmarshaler) {
+		return nil
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.Type, target.NumField())
+		for index := 0; index < target.NumField(); index++ {
+			field := target.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, raw := range object {
+			fieldType, ok := fields[name]
+			if !ok {
+				return errors.New("unknown coordination JSON field")
+			}
+			if err := validateExactCoordinationJSONValue(raw, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		for _, raw := range items {
+			if err := validateExactCoordinationJSONValue(raw, target.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func consumeCoordinationJSONValue(decoder *json.Decoder, token json.Token) error {
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid object key")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return errors.New("duplicate object key")
+			}
+			seen[key] = struct{}{}
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
 }
 
 func (h *Handler) writeCoordinationServiceError(w http.ResponseWriter, err error) {

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 )
@@ -202,10 +203,14 @@ func CoordinationProductError(err error) error {
 			Details json.RawMessage `json:"details,omitempty"`
 		} `json:"error"`
 	}
-	if shapeErr := validateCoordinationJSONShape([]byte(httpErr.Body)); shapeErr != nil {
+	body := []byte(httpErr.Body)
+	if shapeErr := validateCoordinationJSONShape(body); shapeErr != nil {
 		return err
 	}
-	decoder := json.NewDecoder(strings.NewReader(httpErr.Body))
+	if exactErr := validateExactCoordinationJSONFields(body, reflect.TypeOf(&envelope)); exactErr != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if decodeErr := decoder.Decode(&envelope); decodeErr != nil {
 		return err
@@ -237,6 +242,10 @@ func coordinationRouteRegistered(method, rawPath string) bool {
 	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationDependencyCollectionPath(path):
 		return true
 	case method == http.MethodPost && isCoordinationDependencyResolvePath(path):
+		return true
+	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationBlockerCollectionPath(path):
+		return true
+	case method == http.MethodPost && isCoordinationBlockerResolvePath(path):
 		return true
 	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
 		return true
@@ -283,6 +292,20 @@ func coordinationRouteAllowsCode(method, rawPath, code string) bool {
 			return true
 		}
 	}
+	if isCoordinationBlockerCollectionPath(path) {
+		if method == http.MethodGet {
+			return code == "coordination_revision_conflict"
+		}
+		if method == http.MethodPost {
+			switch code {
+			case "coordination_capacity_exceeded", "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict":
+				return true
+			}
+		}
+	}
+	if method == http.MethodPost && isCoordinationBlockerResolvePath(path) {
+		return code == "coordination_revision_conflict" || code == "coordination_idempotency_conflict"
+	}
 	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
 		return code == "coordination_delete_blocked"
 	}
@@ -305,6 +328,16 @@ func isCoordinationDependencyResolvePath(path string) bool {
 	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies" && parts[5] != "" && parts[6] == "resolve"
 }
 
+func isCoordinationBlockerCollectionPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers"
+}
+
+func isCoordinationBlockerResolvePath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers" && parts[5] != "" && parts[6] == "resolve"
+}
+
 func coordinationPathParts(path string) ([]string, bool) {
 	if !strings.HasPrefix(path, "/") || path == "/" || strings.HasSuffix(path, "/") || strings.Contains(path, "//") {
 		return nil, false
@@ -318,6 +351,89 @@ func hasOnePathValue(path, prefix string) bool {
 	}
 	value := strings.TrimPrefix(path, prefix)
 	return value != "" && !strings.Contains(value, "/")
+}
+
+// DecodeStrictCoordinationJSON rejects duplicate keys, unknown fields, trailing
+// values, and malformed JSON before a coordination CLI request is sent.
+func DecodeStrictCoordinationJSON(data []byte, dst any) error {
+	if err := validateCoordinationJSONShape(data); err != nil {
+		return err
+	}
+	if err := validateExactCoordinationJSONFields(data, reflect.TypeOf(dst)); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateExactCoordinationJSONFields(data []byte, target reflect.Type) error {
+	if target == nil || target.Kind() != reflect.Pointer {
+		return errors.New("coordination JSON target must be a pointer")
+	}
+	return validateExactCoordinationJSONValue(data, target.Elem())
+}
+
+func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	jsonUnmarshaler := reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	if target.Implements(jsonUnmarshaler) || reflect.PointerTo(target).Implements(jsonUnmarshaler) {
+		return nil
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.Type, target.NumField())
+		for index := 0; index < target.NumField(); index++ {
+			field := target.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, raw := range object {
+			fieldType, ok := fields[name]
+			if !ok {
+				return errors.New("unknown coordination JSON field")
+			}
+			if err := validateExactCoordinationJSONValue(raw, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		for _, raw := range items {
+			if err := validateExactCoordinationJSONValue(raw, target.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func validateCoordinationJSONShape(data []byte) error {

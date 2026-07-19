@@ -84,6 +84,44 @@ func TestWorkCoordinationV2DependencyRouteClassifierMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationV3BlockerRouteClassifierMatrix(t *testing.T) {
+	const collection = "/api/coordination/scopes/00000000-0000-0000-0000-000000000001/blockers"
+	const resolve = collection + "/00000000-0000-0000-0000-000000000002/resolve"
+	cases := []struct {
+		name, method, path, code string
+	}{
+		{"append capacity", http.MethodPost, collection, "coordination_capacity_exceeded"},
+		{"append revision", http.MethodPost, collection, "coordination_revision_conflict"},
+		{"append idempotency", http.MethodPost, collection, "coordination_idempotency_conflict"},
+		{"append dependency scope", http.MethodPost, collection, "coordination_dependency_scope_conflict"},
+		{"list revision", http.MethodGet, collection + "?cursor=x", "coordination_revision_conflict"},
+		{"resolve revision", http.MethodPost, resolve, "coordination_revision_conflict"},
+		{"resolve idempotency", http.MethodPost, resolve, "coordination_idempotency_conflict"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CoordinationProductError(coordinationHTTPError(tc.method, tc.path, http.StatusConflict, tc.code))
+			var product *ProductError
+			if !errors.As(err, &product) || product.Code != tc.code || ExitCodeFor(err) != ExitConflict {
+				t.Fatalf("unexpected classification: %T %v", err, err)
+			}
+		})
+	}
+	wrong := []*HTTPError{
+		coordinationHTTPError(http.MethodGet, collection, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusConflict, "coordination_capacity_exceeded"),
+		coordinationHTTPError(http.MethodPost, resolve, http.StatusConflict, "coordination_dependency_scope_conflict"),
+		coordinationHTTPError(http.MethodPost, collection, http.StatusConflict, "coordination_delete_blocked"),
+		coordinationHTTPError(http.MethodPost, collection+"/extra", http.StatusConflict, "coordination_revision_conflict"),
+		coordinationHTTPError(http.MethodPost, resolve+"/", http.StatusConflict, "coordination_revision_conflict"),
+	}
+	for _, raw := range wrong {
+		if got := CoordinationProductError(raw); got != raw {
+			t.Fatalf("wrong blocker combination upgraded: %T %v", got, got)
+		}
+	}
+}
+
 func TestWorkCoordinationV1FutureConflictCodesStayLegacy(t *testing.T) {
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/coordination/scopes"},
@@ -137,11 +175,24 @@ func TestWorkCoordinationKnownConflictProductErrorsMapExitSix(t *testing.T) {
 }
 
 func TestWorkCoordinationMalformedOrMismatchedEnvelopeStaysLegacy(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":null}}`,
+		`{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":{}}}`,
+	} {
+		raw := &HTTPError{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: body}
+		var product *ProductError
+		if err := CoordinationProductError(raw); !errors.As(err, &product) || product.Code != "coordination_idempotency_conflict" {
+			t.Fatalf("strict empty details envelope was not upgraded: %T %v", err, err)
+		}
+	}
 	cases := []*HTTPError{
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "text/plain", Body: "conflict"},
 		coordinationHTTPError(http.MethodPost, "/api/coordination/scopes", http.StatusConflict, "unknown"),
 		coordinationHTTPError(http.MethodPost, "/api/coordination/scopes", http.StatusConflict, "coordination_invalid_payload"),
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","code":"coordination_revision_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"Error":{"code":"coordination_idempotency_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"Code":"coordination_idempotency_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","Code":"coordination_revision_conflict","message":"safe"}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":{"sql":"no"}}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":"safe","unknown":true}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":" padded "}}`},

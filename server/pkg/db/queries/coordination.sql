@@ -220,6 +220,106 @@ SELECT EXISTS (
     SELECT 1 FROM reachable WHERE reachable.issue_id = @target_issue_id::uuid
 )::bool;
 
+-- name: CreateCoordinationRecord :one
+INSERT INTO coordination_record (
+    id, workspace_id, coordination_scope_id, kind, schema_version, status,
+    root_issue_id, downstream_issue_id, upstream_issue_id, dependency_id,
+    reason_code, created_by_type, created_by_id, created_task_id, created_at
+) VALUES (
+    @id, @workspace_id, @coordination_scope_id, 'blocker', 1, 'open',
+    @root_issue_id, @downstream_issue_id, @upstream_issue_id, sqlc.narg('dependency_id'),
+    'waiting_on_issue', @created_by_type, @created_by_id, sqlc.narg('created_task_id'), clock_timestamp()
+)
+RETURNING *;
+
+-- name: GetCoordinationRecordByID :one
+SELECT * FROM coordination_record
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: LockCoordinationRecord :one
+SELECT * FROM coordination_record
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND id = @id
+FOR UPDATE;
+
+-- name: CountOpenCoordinationRecordsByScope :one
+SELECT count(*)::bigint
+FROM coordination_record
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND status = 'open';
+
+-- name: ListCoordinationRecordsByScopeStatus :many
+SELECT * FROM coordination_record
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND status = @status_filter::text
+  AND (
+      sqlc.narg('visible_endpoint_issue_id')::uuid IS NULL
+      OR downstream_issue_id = sqlc.narg('visible_endpoint_issue_id')::uuid
+      OR upstream_issue_id = sqlc.narg('visible_endpoint_issue_id')::uuid
+  )
+  AND (
+      sqlc.narg('cursor_created_at')::timestamptz IS NULL
+      OR (created_at, id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT @limit_rows;
+
+-- name: ResolveCoordinationRecord :one
+UPDATE coordination_record
+SET status = 'resolved',
+    resolution_code = @resolution_code,
+    resolved_by_type = @resolved_by_type,
+    resolved_by_id = @resolved_by_id,
+    resolved_task_id = sqlc.narg('resolved_task_id'),
+    resolved_at = clock_timestamp()
+WHERE workspace_id = @workspace_id
+  AND coordination_scope_id = @coordination_scope_id
+  AND id = @id
+  AND status = 'open'
+RETURNING *;
+
+-- name: InsertCoordinationRecordIssueRef :one
+INSERT INTO coordination_record_issue_ref (
+    id, workspace_id, coordination_scope_id, record_id, phase, issue_id, position, created_at
+) VALUES (
+    @id, @workspace_id, @coordination_scope_id, @record_id, @phase, @issue_id, @position, clock_timestamp()
+)
+RETURNING *;
+
+-- name: ListCoordinationRecordIssueRefs :many
+SELECT * FROM coordination_record_issue_ref
+WHERE workspace_id = @workspace_id
+  AND record_id = @record_id
+  AND phase = @phase
+ORDER BY position ASC, issue_id ASC;
+
+-- name: CountCoordinationRecordsByIssueIDs :one
+SELECT (
+    (SELECT count(*) FROM coordination_record record
+     WHERE record.workspace_id = sqlc.arg('workspace_id')
+       AND (
+           record.root_issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
+           OR record.downstream_issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
+           OR record.upstream_issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
+       ))
+    +
+    (SELECT count(*) FROM coordination_record_issue_ref ref
+     WHERE ref.workspace_id = sqlc.arg('workspace_id')
+       AND ref.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]))
+)::bigint;
+
+-- name: CountCoordinationRecordsByWorkspace :one
+SELECT (
+    (SELECT count(*) FROM coordination_record record
+     WHERE record.workspace_id = sqlc.arg('workspace_id'))
+    +
+    (SELECT count(*) FROM coordination_record_issue_ref ref
+     WHERE ref.workspace_id = sqlc.arg('workspace_id'))
+)::bigint;
+
 -- name: CountCoordinationDependenciesByIssueIDs :one
 SELECT count(*)::bigint
 FROM coordination_dependency

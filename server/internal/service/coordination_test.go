@@ -253,6 +253,8 @@ func createWorkCoordinationFixture(t *testing.T, pool *pgxpool.Pool) workCoordin
 		t.Fatalf("insert issue: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_record_issue_ref WHERE workspace_id = $1`, f.workspaceID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_record WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_dependency WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_receipt WHERE workspace_id = $1`, f.workspaceID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM coordination_scope WHERE workspace_id = $1`, f.workspaceID)

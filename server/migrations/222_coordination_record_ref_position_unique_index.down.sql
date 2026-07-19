@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS coordination_record_issue_ref_position_key_idx;
