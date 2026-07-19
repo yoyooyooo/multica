@@ -203,10 +203,14 @@ func CoordinationProductError(err error) error {
 			Details json.RawMessage `json:"details,omitempty"`
 		} `json:"error"`
 	}
-	if shapeErr := validateCoordinationJSONShape([]byte(httpErr.Body)); shapeErr != nil {
+	body := []byte(httpErr.Body)
+	if shapeErr := validateCoordinationJSONShape(body); shapeErr != nil {
 		return err
 	}
-	decoder := json.NewDecoder(strings.NewReader(httpErr.Body))
+	if exactErr := validateExactCoordinationJSONFields(body, reflect.TypeOf(&envelope)); exactErr != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if decodeErr := decoder.Decode(&envelope); decodeErr != nil {
 		return err
@@ -383,6 +387,10 @@ func validateExactCoordinationJSONFields(data []byte, target reflect.Type) error
 func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error {
 	for target.Kind() == reflect.Pointer {
 		target = target.Elem()
+	}
+	jsonUnmarshaler := reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	if target.Implements(jsonUnmarshaler) || reflect.PointerTo(target).Implements(jsonUnmarshaler) {
+		return nil
 	}
 	switch target.Kind() {
 	case reflect.Struct:

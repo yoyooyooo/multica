@@ -211,6 +211,10 @@ func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error 
 	for target.Kind() == reflect.Pointer {
 		target = target.Elem()
 	}
+	jsonUnmarshaler := reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	if target.Implements(jsonUnmarshaler) || reflect.PointerTo(target).Implements(jsonUnmarshaler) {
+		return nil
+	}
 	switch target.Kind() {
 	case reflect.Struct:
 		var object map[string]json.RawMessage

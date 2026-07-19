@@ -175,11 +175,24 @@ func TestWorkCoordinationKnownConflictProductErrorsMapExitSix(t *testing.T) {
 }
 
 func TestWorkCoordinationMalformedOrMismatchedEnvelopeStaysLegacy(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":null}}`,
+		`{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":{}}}`,
+	} {
+		raw := &HTTPError{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: body}
+		var product *ProductError
+		if err := CoordinationProductError(raw); !errors.As(err, &product) || product.Code != "coordination_idempotency_conflict" {
+			t.Fatalf("strict empty details envelope was not upgraded: %T %v", err, err)
+		}
+	}
 	cases := []*HTTPError{
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "text/plain", Body: "conflict"},
 		coordinationHTTPError(http.MethodPost, "/api/coordination/scopes", http.StatusConflict, "unknown"),
 		coordinationHTTPError(http.MethodPost, "/api/coordination/scopes", http.StatusConflict, "coordination_invalid_payload"),
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","code":"coordination_revision_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"Error":{"code":"coordination_idempotency_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"Code":"coordination_idempotency_conflict","message":"safe"}}`},
+		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","Code":"coordination_revision_conflict","message":"safe"}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":"safe","details":{"sql":"no"}}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":"safe","unknown":true}}`},
 		{Method: http.MethodPost, Path: "/api/coordination/scopes", StatusCode: http.StatusConflict, ContentType: "application/json", Body: `{"error":{"code":"coordination_idempotency_conflict","message":" padded "}}`},
