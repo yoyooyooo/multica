@@ -143,6 +143,73 @@ func TestWorkCoordinationRoutesThroughRouter(t *testing.T) {
 		t.Fatalf("blocker list count=%d", len(blockerPage.Items))
 	}
 
+	resp = authRequest(t, http.MethodGet, "/api/coordination/scopes/"+created.Scope.ID+"/inspect", nil)
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("inspect active state status=%d", resp.StatusCode)
+	}
+	var activeInspection struct {
+		ScopeRevision      int64            `json:"scope_revision"`
+		ActiveDependencies []map[string]any `json:"active_dependencies"`
+		OpenBlockers       []map[string]any `json:"open_blockers"`
+		ReceiptRefs        []map[string]any `json:"receipt_refs"`
+		NextReceiptCursor  *string          `json:"next_receipt_cursor"`
+	}
+	readJSON(t, resp, &activeInspection)
+	if activeInspection.ScopeRevision != 2 || len(activeInspection.ActiveDependencies) != 1 || len(activeInspection.OpenBlockers) != 1 || len(activeInspection.ReceiptRefs) != 3 || activeInspection.NextReceiptCursor != nil {
+		t.Fatalf("active inspection=%+v", activeInspection)
+	}
+
+	dependencyReplayReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/coordination/scopes/"+created.Scope.ID+"/dependencies", bytes.NewReader(dependencyBody))
+	if err != nil {
+		t.Fatalf("create dependency replay request: %v", err)
+	}
+	dependencyReplayReq.Header.Set("Authorization", "Bearer "+testToken)
+	dependencyReplayReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	dependencyReplayReq.Header.Set("Content-Type", "application/json")
+	dependencyReplayReq.Header.Set("Idempotency-Key", "router-dependency-add")
+	resp, err = http.DefaultClient.Do(dependencyReplayReq)
+	if err != nil {
+		t.Fatalf("dependency replay request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("dependency replay status=%d", resp.StatusCode)
+	}
+	var dependencyReplay struct {
+		Outcome       string `json:"outcome"`
+		ScopeRevision int64  `json:"scope_revision"`
+	}
+	readJSON(t, resp, &dependencyReplay)
+	if dependencyReplay.Outcome != "replay" || dependencyReplay.ScopeRevision != 1 {
+		t.Fatalf("dependency replay=%+v", dependencyReplay)
+	}
+
+	blockerReplayReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/coordination/scopes/"+created.Scope.ID+"/blockers", bytes.NewReader(blockerBody))
+	if err != nil {
+		t.Fatalf("create blocker replay request: %v", err)
+	}
+	blockerReplayReq.Header.Set("Authorization", "Bearer "+testToken)
+	blockerReplayReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	blockerReplayReq.Header.Set("Content-Type", "application/json")
+	blockerReplayReq.Header.Set("Idempotency-Key", "router-blocker-add")
+	resp, err = http.DefaultClient.Do(blockerReplayReq)
+	if err != nil {
+		t.Fatalf("blocker replay request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("blocker replay status=%d", resp.StatusCode)
+	}
+	var blockerReplay struct {
+		Replayed      bool  `json:"replayed"`
+		ScopeRevision int64 `json:"scope_revision"`
+	}
+	readJSON(t, resp, &blockerReplay)
+	if !blockerReplay.Replayed || blockerReplay.ScopeRevision != 2 {
+		t.Fatalf("blocker replay=%+v", blockerReplay)
+	}
+
 	blockerResolveBody, _ := json.Marshal(map[string]any{
 		"expected_revision": 2, "schema_version": 1,
 		"resolution": map[string]any{"resolution_code": "no_longer_blocking", "evidence_refs": []map[string]string{}},
@@ -185,6 +252,22 @@ func TestWorkCoordinationRoutesThroughRouter(t *testing.T) {
 	}
 	var dependencyResolved map[string]any
 	readJSON(t, resp, &dependencyResolved)
+
+	resp = authRequest(t, http.MethodGet, "/api/coordination/scopes/"+created.Scope.ID+"/inspect", nil)
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		t.Fatalf("inspect resolved state status=%d", resp.StatusCode)
+	}
+	var resolvedInspection struct {
+		ScopeRevision      int64            `json:"scope_revision"`
+		ActiveDependencies []map[string]any `json:"active_dependencies"`
+		OpenBlockers       []map[string]any `json:"open_blockers"`
+		ReceiptRefs        []map[string]any `json:"receipt_refs"`
+	}
+	readJSON(t, resp, &resolvedInspection)
+	if resolvedInspection.ScopeRevision != 4 || len(resolvedInspection.ActiveDependencies) != 0 || len(resolvedInspection.OpenBlockers) != 0 || len(resolvedInspection.ReceiptRefs) != 5 {
+		t.Fatalf("resolved inspection=%+v", resolvedInspection)
+	}
 
 	resp = authRequest(t, http.MethodGet, "/api/coordination/scopes/"+created.Scope.ID, nil)
 	if resp.StatusCode != http.StatusOK {

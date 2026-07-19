@@ -247,6 +247,8 @@ func coordinationRouteRegistered(method, rawPath string) bool {
 		return true
 	case method == http.MethodPost && isCoordinationBlockerResolvePath(path):
 		return true
+	case method == http.MethodGet && isCoordinationInspectPath(path):
+		return true
 	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
 		return true
 	case method == http.MethodDelete && hasOnePathValue(path, "/api/issues/"):
@@ -306,6 +308,9 @@ func coordinationRouteAllowsCode(method, rawPath, code string) bool {
 	if method == http.MethodPost && isCoordinationBlockerResolvePath(path) {
 		return code == "coordination_revision_conflict" || code == "coordination_idempotency_conflict"
 	}
+	if method == http.MethodGet && isCoordinationInspectPath(path) {
+		return code == "coordination_revision_conflict"
+	}
 	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
 		return code == "coordination_delete_blocked"
 	}
@@ -336,6 +341,11 @@ func isCoordinationBlockerCollectionPath(path string) bool {
 func isCoordinationBlockerResolvePath(path string) bool {
 	parts, ok := coordinationPathParts(path)
 	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers" && parts[5] != "" && parts[6] == "resolve"
+}
+
+func isCoordinationInspectPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "inspect"
 }
 
 func coordinationPathParts(path string) ([]string, bool) {

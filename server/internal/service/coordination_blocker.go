@@ -426,17 +426,14 @@ func (s *CoordinationService) ListBlockers(ctx context.Context, actor Coordinati
 		if hasMore {
 			rows = rows[:limit]
 		}
+		evidenceByRecord, err := loadBlockerEvidenceRefsForRows(ctx, qtx, actor.WorkspaceID, scopeID, rows)
+		if err != nil {
+			return BlockerPage{}, err
+		}
 		items := make([]Blocker, 0, len(rows))
 		for _, row := range rows {
-			createRefs, err := loadBlockerEvidenceRefs(ctx, qtx, actor.WorkspaceID, row.ID, coordinationRecordPhaseCreate)
-			if err != nil {
-				return BlockerPage{}, err
-			}
-			resolutionRefs, err := loadBlockerEvidenceRefs(ctx, qtx, actor.WorkspaceID, row.ID, coordinationRecordPhaseResolution)
-			if err != nil {
-				return BlockerPage{}, err
-			}
-			items = append(items, blockerFromRow(row, createRefs, resolutionRefs))
+			evidence := evidenceByRecord[row.ID.Bytes]
+			items = append(items, blockerFromRow(row, evidence.Create, evidence.Resolution))
 		}
 		next := ""
 		if hasMore {
@@ -565,6 +562,58 @@ func loadBlockerEvidenceRefs(ctx context.Context, q *db.Queries, workspaceID, re
 		refs = append(refs, CoordinationEvidenceRef{Kind: "issue", ID: row.IssueID})
 	}
 	return refs, nil
+}
+
+type blockerEvidenceRefsByPhase struct {
+	Create     []CoordinationEvidenceRef
+	Resolution []CoordinationEvidenceRef
+}
+
+func loadBlockerEvidenceRefsForRows(ctx context.Context, q *db.Queries, workspaceID, scopeID pgtype.UUID, records []db.CoordinationRecord) (map[[16]byte]blockerEvidenceRefsByPhase, error) {
+	grouped := make(map[[16]byte]blockerEvidenceRefsByPhase, len(records))
+	if len(records) == 0 {
+		return grouped, nil
+	}
+	recordIDs := make([]pgtype.UUID, 0, len(records))
+	for _, record := range records {
+		if !record.ID.Valid {
+			return nil, coordinationErr(CoordinationInternal, "coordination blocker has an invalid id", nil)
+		}
+		recordIDs = append(recordIDs, record.ID)
+		grouped[record.ID.Bytes] = blockerEvidenceRefsByPhase{}
+	}
+	rows, err := q.ListCoordinationRecordIssueRefsByRecordIDs(ctx, db.ListCoordinationRecordIssueRefsByRecordIDsParams{
+		WorkspaceID: workspaceID, CoordinationScopeID: scopeID, RecordIds: recordIDs,
+	})
+	if err != nil {
+		return nil, coordinationErr(CoordinationInternal, "could not load blocker evidence references", err)
+	}
+	for _, row := range rows {
+		if !row.RecordID.Valid || !row.IssueID.Valid || !uuidEqual(row.WorkspaceID, workspaceID) || !uuidEqual(row.CoordinationScopeID, scopeID) {
+			return nil, coordinationErr(CoordinationInternal, "blocker evidence reference is inconsistent", nil)
+		}
+		evidence, ok := grouped[row.RecordID.Bytes]
+		if !ok {
+			return nil, coordinationErr(CoordinationInternal, "blocker evidence reference targets an unknown record", nil)
+		}
+		ref := CoordinationEvidenceRef{Kind: "issue", ID: row.IssueID}
+		switch row.Phase {
+		case coordinationRecordPhaseCreate:
+			if row.Position != int32(len(evidence.Create)) {
+				return nil, coordinationErr(CoordinationInternal, "blocker create evidence order is inconsistent", nil)
+			}
+			evidence.Create = append(evidence.Create, ref)
+		case coordinationRecordPhaseResolution:
+			if row.Position != int32(len(evidence.Resolution)) {
+				return nil, coordinationErr(CoordinationInternal, "blocker resolution evidence order is inconsistent", nil)
+			}
+			evidence.Resolution = append(evidence.Resolution, ref)
+		default:
+			return nil, coordinationErr(CoordinationInternal, "blocker evidence phase is invalid", nil)
+		}
+		grouped[row.RecordID.Bytes] = evidence
+	}
+	return grouped, nil
 }
 
 func AppendBlockerCanonicalJSON(actor CoordinationActor, input AppendBlockerInput) ([]byte, error) {

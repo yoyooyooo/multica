@@ -30,6 +30,9 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "blocker", "add", "--scope", "x", "--downstream", "a", "--upstream", "b", "--payload-file", "p", "--expected-revision", "0", "--idempotency-key", "k"},
 		{"coordination", "blocker", "list", "--scope", "x", "--status", "all", "--limit", "2", "--output=json"},
 		{"coordination", "blocker", "resolve", "--scope", "x", "--blocker", "y", "--resolution-file", "p", "--expected-revision", "0", "--idempotency-key", "k", "--help"},
+		{"coordination", "inspect", "--scope", "x", "--output=table"},
+		{"coordination", "inspect", "--scope", "x", "--receipt-cursor", "--output=json"},
+		{"coordination", "inspect", "--help"},
 		{"issue", "list", "--output", "anything"},
 		{"--profile", "coordination", "issue", "list", "--output", "anything"},
 		{"--profile=coordination", "issue", "list", "--output", "anything"},
@@ -58,6 +61,9 @@ func TestWorkCoordinationOutputArgMatrix(t *testing.T) {
 		{"coordination", "blocker", "list", "--scope", "x", "--dependency", "y"},
 		{"coordination", "blocker", "add", "--scope", "x", "--", "unexpected"},
 		{"coordination", "blocker", "resolve", "--resolution-file"},
+		{"coordination", "inspect", "--receipt-cursor"},
+		{"coordination", "inspect", "--scope", "x", "--cursor", "y"},
+		{"coordination", "inspect", "--scope", "x", "--", "unexpected"},
 		{"coordination", "scope", "typo", "--output=json"},
 		{"coordination", "typo", "--output=table"},
 	}
@@ -78,6 +84,8 @@ func TestWorkCoordinationHelpSurvivesOutputPreParser(t *testing.T) {
 		{"coordination", "scope", "get", "-h"},
 		{"coordination", "blocker", "add", "--help"},
 		{"coordination", "blocker", "resolve", "-h"},
+		{"coordination", "inspect", "--help"},
+		{"coordination", "inspect", "-h"},
 	} {
 		resetWorkCoordinationCommandState()
 		var stdout, stderr bytes.Buffer
