@@ -57,7 +57,8 @@ Important consequences:
 - an unresolved pair owned by another scope returns `coordination_dependency_scope_conflict` and changes neither scope revision;
 - replay revalidates current authority and referenced resources before returning saved data;
 - member and task identity come from the server, not CLI-provided fields;
-- Agent dependency mutations require both endpoints to share the scope's actual root and one endpoint to equal the current task issue; Agent list returns only active pairs containing that task issue;
+- Agent dependency mutations require both endpoints to share the scope's actual root and one endpoint to equal the current task issue; Agent dependency list returns only active pairs containing that task issue;
+- Agent blocker append/resolve requires one endpoint to equal the current task issue; Agent blocker list returns only records containing that issue;
 - one unresolved downstream/upstream pair has one owner scope across the workspace;
 - each scope may have at most 1,000 active dependencies; resolving a row removes it from that active count but retains its history;
 - self edges and active cycles are rejected;
