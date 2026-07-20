@@ -3633,6 +3633,24 @@ func gateCodexResumeToRolloutPresence(task *Task, taskCtx *execenv.TaskContextFo
 	taskCtx.PriorSessionResumeUnavailable = true
 }
 
+// gateAndWriteTaskContextReceipt is the single pre-backend boundary for the
+// evidence-grade receipt. It applies the same workdir and Codex rollout gates
+// used by runTask, then writes their effective launch decision atomically.
+// resume_session records whether the daemon will ask the first backend launch
+// to resume; it does not claim that a provider later accepted that request.
+func gateAndWriteTaskContextReceipt(task *Task, taskCtx *execenv.TaskContextForEnv, provider, codexHome, workDir string, taskLog *slog.Logger) (bool, error) {
+	reused := gateResumeToReusedWorkdir(task, taskCtx, workDir, taskLog)
+	// A reused workdir is necessary but not sufficient for a Codex resume: the
+	// prior thread's rollout must actually be present in this task's CODEX_HOME
+	// sessions (MUL-4424 isolates them). Drop the resume before the brief and
+	// receipt are generated if it is absent.
+	if reused {
+		gateCodexResumeToRolloutPresence(task, taskCtx, provider, codexHome, taskLog)
+	}
+	taskCtx.WorkDirReused = reused
+	return reused, execenv.WriteTaskContextReceipt(workDir, *taskCtx)
+}
+
 func (d *Daemon) ensureTaskSkillBundles(ctx context.Context, task *Task) error {
 	if task == nil || task.Agent == nil || len(task.Agent.SkillRefs) == 0 {
 		return nil
@@ -3886,6 +3904,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
+		TaskID:                           task.ID,
 		IssueID:                          task.IssueID,
 		TriggerCommentID:                 task.TriggerCommentID,
 		TriggerThreadID:                  task.TriggerThreadID,
@@ -4098,6 +4117,35 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}()
 
+	// Workdir is preserved for reuse by future tasks on the same (agent,
+	// issue) pair in cloud mode; the work_dir path is stored in DB on task
+	// completion and passed back via PriorWorkDir on the next claim, so
+	// rewriting the marker block in place is the right behavior.
+	//
+	// In local_directory mode the workdir is the user's own repo, reuse is
+	// already disabled above (see localAssignment == nil), and every failure
+	// after Prepare must still excise daemon sidecars. Register cleanup before
+	// writing the receipt so a foreign marker or filesystem error cannot leave
+	// stale task context in the user's repository.
+	if env.LocalDirectory {
+		defer func() {
+			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
+				d.logger.Warn("execenv: cleanup runtime config failed (non-fatal)", "error", cerr)
+			}
+			// Excise the sidecar tree (.agent_context/, .multica/,
+			// provider-specific .claude/skills/ etc.) that Prepare wrote
+			// into the user's repo. Without this pass the user's tree
+			// accumulates one directory layer per task — see MUL-2784.
+			// CleanupRuntimeConfig handles the runtime brief inside
+			// CLAUDE.md / AGENTS.md; CleanupSidecars handles
+			// every other file Prepare placed under WorkDir. Together
+			// they round-trip the workdir to its exact pre-task bytes.
+			if cerr := execenv.CleanupSidecars(env.RootDir); cerr != nil {
+				d.logger.Warn("execenv: cleanup sidecars failed (non-fatal)", "error", cerr)
+			}
+		}()
+	}
+
 	// Issue #3999 race A: now that env.WorkDir is on disk, transition the
 	// server-side state machine dispatched (or waiting_local_directory) →
 	// running. Calling StartTask before Prepare/Reuse let any consumer
@@ -4116,50 +4164,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	stopPrepareLease()
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
-	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, taskLog)
-	// A reused workdir is necessary but not sufficient for a Codex resume: the
-	// prior thread's rollout must actually be present in this task's CODEX_HOME
-	// sessions (MUL-4424 isolates them). Drop the resume before the brief is
-	// generated below if it isn't, so we never tell the agent it is continuing a
-	// conversation Codex will silently restart from scratch.
-	if reused {
-		gateCodexResumeToRolloutPresence(&task, &taskCtx, provider, env.CodexHome, taskLog)
+	reused, err := gateAndWriteTaskContextReceipt(&task, &taskCtx, provider, env.CodexHome, env.WorkDir, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("write daemon task context receipt: %w", err)
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
 	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
-	}
-	// Workdir is preserved for reuse by future tasks on the same (agent,
-	// issue) pair in cloud mode; the work_dir path is stored in DB on task
-	// completion and passed back via PriorWorkDir on the next claim, so
-	// rewriting the marker block in place is the right behavior.
-	//
-	// In local_directory mode the workdir is the user's own repo, reuse is
-	// already disabled above (see localAssignment == nil), and the brief
-	// would otherwise live on inside the user's repository — a subsequent
-	// manual `claude` / `codex` run in that directory would pick
-	// up stale Multica instructions (issue id, trigger comment id, reply
-	// rules) and start acting on the previous task's context. Excise the
-	// marker block on the way out instead.
-	if env.LocalDirectory {
-		defer func() {
-			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
-				d.logger.Warn("execenv: cleanup runtime config failed (non-fatal)", "error", cerr)
-			}
-			// Excise the sidecar tree (.agent_context/, .multica/,
-			// provider-specific .claude/skills/ etc.) that Prepare wrote
-			// into the user's repo. Without this pass the user's tree
-			// accumulates one directory layer per task — see MUL-2784.
-			// CleanupRuntimeConfig handles the runtime brief inside
-			// CLAUDE.md / AGENTS.md; CleanupSidecars handles
-			// every other file Prepare placed under WorkDir. Together
-			// they round-trip the workdir to its exact pre-task bytes.
-			if cerr := execenv.CleanupSidecars(env.RootDir); cerr != nil {
-				d.logger.Warn("execenv: cleanup sidecars failed (non-fatal)", "error", cerr)
-			}
-		}()
 	}
 
 	prompt := BuildPrompt(task, provider)

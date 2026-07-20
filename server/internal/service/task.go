@@ -651,11 +651,15 @@ func (s *TaskService) captureTaskFailed(ctx context.Context, task db.AgentTaskQu
 	}
 }
 
-func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTaskQueue) {
+func (s *TaskService) captureTaskCancelledMetrics(ctx context.Context, task db.AgentTaskQueue) {
 	if s.Metrics != nil {
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
+}
+
+func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTaskQueue) {
+	s.captureTaskCancelledMetrics(ctx, task)
 	// Revoke any mat_ task tokens minted for this task. Cancellation is
 	// a terminal transition, so the running agent process no longer
 	// needs to call back; eagerly deleting the token closes the
@@ -1673,6 +1677,40 @@ func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, cancelled []d
 		s.captureTaskCancelled(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
+	}
+	s.notifyTasksFinished(cancelled)
+}
+
+// BroadcastCoordinationCancelledTasks applies only the post-commit portions of
+// task cancellation. The coordination delete transaction has already revoked
+// task credentials, so this seam consumes compact typed effects and never
+// repeats that database mutation.
+func (s *TaskService) BroadcastCoordinationCancelledTasks(ctx context.Context, effects []CancelledTaskEffect, affectedAgentIDs []pgtype.UUID) {
+	cancelled := cancelledTaskRows(effects)
+	for i, task := range cancelled {
+		effect := effects[i]
+		if s.Metrics != nil {
+			s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), effect.MetricsSource, effect.RuntimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
+		}
+		payload := map[string]any{
+			"task_id":  util.UUIDToString(effect.ID),
+			"agent_id": util.UUIDToString(effect.AgentID),
+			"issue_id": util.UUIDToString(effect.IssueID),
+			"status":   effect.Status,
+		}
+		if effect.ChatSessionID.Valid {
+			payload["chat_session_id"] = util.UUIDToString(effect.ChatSessionID)
+		}
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventTaskCancelled,
+			WorkspaceID: util.UUIDToString(effect.WorkspaceID),
+			ActorType:   "system",
+			ActorID:     "",
+			Payload:     payload,
+		})
+	}
+	for _, agentID := range affectedAgentIDs {
+		s.ReconcileAgentStatus(ctx, agentID)
 	}
 	s.notifyTasksFinished(cancelled)
 }
@@ -3319,8 +3357,8 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	return &child, nil
 }
 
-// RerunIssue creates a fresh queued task for an agent on the issue. Used by
-// the manual rerun endpoint.
+// RerunIssueFresh creates a source-task-bound fresh queued task for an agent on
+// the issue. It delegates to RerunIssue after requiring an exact source.
 //
 // Target agent resolution:
 //   - sourceTaskID Valid: rerun the agent that ran that task (and reuse its
@@ -3363,13 +3401,20 @@ var ErrRerunInvokeNotAllowed = errors.New("rerun: operator not allowed to invoke
 // @-mention agent) are left alone — rerun must not collateral-cancel
 // them.
 //
-// canInvoke re-validates that the current operator may invoke the RESOLVED
-// target agent, keyed on the historical agent for a task_id rerun and on the
-// current assignee/leader otherwise (MUL-4525). It runs AFTER the target is
-// resolved but BEFORE any prior task is cancelled or a new one is created, so a
-// caller who can see the issue but cannot invoke its private agent cannot use
-// rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
-// from trusted internal callers (tests, backfill) that have already gated.
+// RerunIssueFresh requires an exact source task while preserving the current
+// actor and invoke-authority gates. RerunIssue stores that source as lineage so
+// the daemon can apply its exact-source workdir and session reuse policy.
+func (s *TaskService) RerunIssueFresh(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	if !sourceTaskID.Valid {
+		return nil, fmt.Errorf("fresh provenance rerun requires a source task")
+	}
+	return s.RerunIssue(ctx, issueID, sourceTaskID, triggerCommentID, actorUserID, canInvoke)
+}
+
+// RerunIssue creates a queued task using either an exact source task or the
+// issue's current assignee. canInvoke re-validates the current authenticated
+// actor against the resolved historical/current target before any cancellation;
+// nil is reserved for trusted internal callers that already performed the gate.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
@@ -3431,19 +3476,22 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		}
 	}
 
-	// Re-validate invoke permission on the RESOLVED target before mutating
-	// anything (MUL-4525). For a task_id rerun this gates the historical agent,
-	// so a since-reassigned issue can't be used to re-fire a private agent the
-	// operator may only view. A block fails closed: no prior task is cancelled,
-	// no new task is created.
-	if canInvoke != nil {
-		targetAgent, err := s.Queries.GetAgent(ctx, agentID)
-		if err != nil {
-			return nil, fmt.Errorf("load target agent: %w", err)
-		}
-		if !canInvoke(targetAgent) {
-			return nil, ErrRerunInvokeNotAllowed
-		}
+	// Re-validate invoke permission and target viability on the RESOLVED target
+	// before mutating anything (MUL-4525). For a task_id rerun this gates the
+	// historical agent, so a since-reassigned issue cannot cancel work or re-fire
+	// a private, archived, or runtime-less agent through a visible issue.
+	targetAgent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("load target agent: %w", err)
+	}
+	if canInvoke != nil && !canInvoke(targetAgent) {
+		return nil, ErrRerunInvokeNotAllowed
+	}
+	if targetAgent.ArchivedAt.Valid {
+		return nil, fmt.Errorf("target agent is archived")
+	}
+	if !targetAgent.RuntimeID.Valid {
+		return nil, fmt.Errorf("target agent has no runtime")
 	}
 
 	// Cancel only the target agent's active/queued tasks on this issue.
@@ -3486,9 +3534,9 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 
 // promoteNewestSurvivingComment repairs a manual rerun whose original trigger
 // was deleted (the FK clears trigger_comment_id while the UUID-array plan
-// survives). Promoting before enqueue lets the normal enqueue path recompute
-// originator and user-scoped connected-app capabilities from the real comment,
-// rather than carrying the deleted trigger's stale security context.
+// survives). Promoting before enqueue repairs prompt provenance; rerun enqueue
+// still uses the current authenticated operator as originator and connected-app
+// authority rather than carrying the source comment's stale security context.
 func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []pgtype.UUID) (pgtype.UUID, []pgtype.UUID, error) {
 	type survivingComment struct {
 		id        pgtype.UUID
@@ -3549,8 +3597,12 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 // (rerun_of_task_id) to reuse its workdir and, when the failure did not poison
 // the conversation, resume its session (MUL-4869).
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	// Use the assignee shortcut only for a plain direct-agent source. A former
+	// squad leader or worker may now also be the direct assignee; routing that
+	// source through the shortcut would erase its role and squad provenance.
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
-		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
+		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) &&
+		!isLeader && !squadID.Valid {
 		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID)
 	}
 	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)
@@ -4242,6 +4294,10 @@ func issueToMap(issue db.Issue, issuePrefix string) map[string]any {
 // autopilot are never quick-create even if they happen to carry a
 // context blob, so those are filtered up front.
 func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCreateContext, bool) {
+	return parseQuickCreateTaskContext(task)
+}
+
+func parseQuickCreateTaskContext(task db.AgentTaskQueue) (QuickCreateContext, bool) {
 	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 		return QuickCreateContext{}, false
 	}

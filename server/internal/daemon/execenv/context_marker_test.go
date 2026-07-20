@@ -33,6 +33,13 @@ func TestEnsureWorkspacesRootMarker(t *testing.T) {
 		if marker.ManagedBy != TaskContextMarkerManagedBy {
 			t.Fatalf("managed_by = %q, want %q", marker.ManagedBy, TaskContextMarkerManagedBy)
 		}
+		var fields map[string]any
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatalf("unmarshal root marker fields: %v", err)
+		}
+		if len(fields) != 1 {
+			t.Fatalf("workspace-root marker leaked task fields: %#v", fields)
+		}
 	})
 
 	t.Run("is idempotent when a matching marker exists", func(t *testing.T) {
@@ -103,6 +110,109 @@ func TestEnsureWorkspacesRootMarker(t *testing.T) {
 	t.Run("rejects empty root", func(t *testing.T) {
 		if err := EnsureWorkspacesRootMarker(""); err == nil {
 			t.Fatal("expected error for empty workspaces root, got nil")
+		}
+	})
+}
+
+func TestWriteTaskContextReceipt(t *testing.T) {
+	tests := []struct {
+		name             string
+		triggerCommentID string
+		resumeSession    bool
+		reuseWorkdir     bool
+	}{
+		{name: "fresh comment dispatch", triggerCommentID: "comment-1"},
+		{name: "fresh assignment dispatch", triggerCommentID: ""},
+		{name: "resumed reused dispatch", triggerCommentID: "comment-2", resumeSession: true, reuseWorkdir: true},
+		{name: "dropped resume after workdir miss", triggerCommentID: "comment-3", resumeSession: false, reuseWorkdir: false},
+		{name: "dropped provider rollout in reused workdir", triggerCommentID: "comment-4", resumeSession: false, reuseWorkdir: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			ctx := TaskContextForEnv{
+				TaskID:              "task-1",
+				AgentID:             "agent-1",
+				IssueID:             "issue-1",
+				TriggerCommentID:    tt.triggerCommentID,
+				PriorSessionResumed: tt.resumeSession,
+				WorkDirReused:       tt.reuseWorkdir,
+			}
+			if err := writeTaskContextMarker(workDir, ctx, nil); err != nil {
+				t.Fatalf("writeTaskContextMarker: %v", err)
+			}
+			if err := WriteTaskContextReceipt(workDir, ctx); err != nil {
+				t.Fatalf("WriteTaskContextReceipt: %v", err)
+			}
+
+			path := filepath.Join(workDir, TaskContextMarkerRelPath)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read receipt: %v", err)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(data, &fields); err != nil {
+				t.Fatalf("unmarshal receipt: %v\n%s", err, string(data))
+			}
+			want := map[string]any{
+				"schema":             TaskContextReceiptSchema,
+				"managed_by":         TaskContextMarkerManagedBy,
+				"task_id":            "task-1",
+				"agent_id":           "agent-1",
+				"issue_id":           "issue-1",
+				"trigger_comment_id": tt.triggerCommentID,
+				"resume_session":     tt.resumeSession,
+				"reuse_workdir":      tt.reuseWorkdir,
+			}
+			if len(fields) != len(want) {
+				t.Fatalf("receipt fields = %#v, want exact safe schema %#v", fields, want)
+			}
+			for key, wantValue := range want {
+				if got := fields[key]; got != wantValue {
+					t.Fatalf("%s = %#v, want %#v", key, got, wantValue)
+				}
+			}
+			for _, forbidden := range []string{
+				"session_id", "prior_session_id", "workdir", "prior_workdir",
+				"token", "credential", "assertion", "env", "cache", "fingerprint", "hash",
+			} {
+				if _, ok := fields[forbidden]; ok {
+					t.Fatalf("receipt contains forbidden field %q: %#v", forbidden, fields)
+				}
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatalf("read receipt dir: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				t.Fatalf("atomic refresh left temporary files: %#v", entries)
+			}
+		})
+	}
+
+	t.Run("requires a task id", func(t *testing.T) {
+		workDir := t.TempDir()
+		ctx := TaskContextForEnv{IssueID: "issue-1", AgentID: "agent-1"}
+		if err := writeTaskContextMarker(workDir, ctx, nil); err != nil {
+			t.Fatalf("writeTaskContextMarker: %v", err)
+		}
+		if err := WriteTaskContextReceipt(workDir, ctx); err == nil {
+			t.Fatal("expected missing task id to fail")
+		}
+	})
+
+	t.Run("refuses a foreign marker", func(t *testing.T) {
+		workDir := t.TempDir()
+		path := filepath.Join(workDir, TaskContextMarkerRelPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir marker dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(`{"managed_by":"foreign"}`), 0o644); err != nil {
+			t.Fatalf("write foreign marker: %v", err)
+		}
+		if err := WriteTaskContextReceipt(workDir, TaskContextForEnv{TaskID: "task-1"}); err == nil {
+			t.Fatal("expected foreign marker to fail")
 		}
 	})
 }

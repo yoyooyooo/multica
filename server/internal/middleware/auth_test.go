@@ -265,6 +265,36 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	}
 }
 
+func TestWorkCoordinationAuthJWTDoesNotStampTaskCredential(t *testing.T) {
+	var gotAgentID, gotTaskID string
+	var gotCredential bool
+	mw := Auth(nil, nil, nil)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAgentID = r.Header.Get("X-Agent-ID")
+		gotTaskID = r.Header.Get("X-Task-ID")
+		_, gotCredential = TaskTokenCredentialRefFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := generateToken(validClaims(), auth.JWTSecret())
+	req := httptest.NewRequest("GET", "/api/coordination/scopes", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Agent-ID", "00000000-0000-0000-0000-000000000003")
+	req.Header.Set("X-Task-ID", "00000000-0000-0000-0000-000000000004")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotAgentID == "" || gotTaskID == "" {
+		t.Fatalf("legacy headers unexpectedly changed: agent=%q task=%q", gotAgentID, gotTaskID)
+	}
+	if gotCredential {
+		t.Fatal("JWT request must not receive a server-stamped task credential")
+	}
+}
+
 // TestAuth_PATCacheHit pins the optimization: when the PAT cache already
 // holds an entry for this token, the middleware MUST NOT call into queries
 // — it short-circuits before the DB lookup and the last_used_at update.

@@ -432,6 +432,91 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type CoordinationDependency struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	DownstreamIssueID   pgtype.UUID        `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID        `json:"upstream_issue_id"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID        `json:"created_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ResolvedByType      pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID        `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID        `json:"resolved_task_id"`
+	ResolvedAt          pgtype.Timestamptz `json:"resolved_at"`
+}
+
+type CoordinationReceipt struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	ReceiptOrdinal      int64              `json:"receipt_ordinal"`
+	Operation           string             `json:"operation"`
+	IdempotencyKey      string             `json:"idempotency_key"`
+	RequestHash         []byte             `json:"request_hash"`
+	ResourceType        string             `json:"resource_type"`
+	ResourceID          pgtype.UUID        `json:"resource_id"`
+	RevisionBefore      int64              `json:"revision_before"`
+	RevisionAfter       int64              `json:"revision_after"`
+	ResultSnapshot      []byte             `json:"result_snapshot"`
+	ActorType           string             `json:"actor_type"`
+	ActorID             pgtype.UUID        `json:"actor_id"`
+	ActorTaskID         pgtype.UUID        `json:"actor_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type CoordinationRecord struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	Kind                string             `json:"kind"`
+	SchemaVersion       int32              `json:"schema_version"`
+	Status              string             `json:"status"`
+	RootIssueID         pgtype.UUID        `json:"root_issue_id"`
+	DownstreamIssueID   pgtype.UUID        `json:"downstream_issue_id"`
+	UpstreamIssueID     pgtype.UUID        `json:"upstream_issue_id"`
+	DependencyID        pgtype.UUID        `json:"dependency_id"`
+	ReasonCode          string             `json:"reason_code"`
+	ResolutionCode      pgtype.Text        `json:"resolution_code"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID       pgtype.UUID        `json:"created_task_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ResolvedByType      pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID        pgtype.UUID        `json:"resolved_by_id"`
+	ResolvedTaskID      pgtype.UUID        `json:"resolved_task_id"`
+	ResolvedAt          pgtype.Timestamptz `json:"resolved_at"`
+}
+
+type CoordinationRecordIssueRef struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CoordinationScopeID pgtype.UUID        `json:"coordination_scope_id"`
+	RecordID            pgtype.UUID        `json:"record_id"`
+	Phase               string             `json:"phase"`
+	IssueID             pgtype.UUID        `json:"issue_id"`
+	Position            int32              `json:"position"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type CoordinationScope struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	ScopeKind          string             `json:"scope_kind"`
+	State              string             `json:"state"`
+	RootIssueID        pgtype.UUID        `json:"root_issue_id"`
+	WorkflowProfileKey string             `json:"workflow_profile_key"`
+	Revision           int64              `json:"revision"`
+	NextReceiptOrdinal int64              `json:"next_receipt_ordinal"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedTaskID      pgtype.UUID        `json:"created_task_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonConnection struct {
 	ID              pgtype.UUID        `json:"id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`
@@ -450,6 +535,27 @@ type DaemonToken struct {
 	DaemonID    string             `json:"daemon_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type ExternalPullRequestLink struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	Provider         string             `json:"provider"`
+	ExternalRepo     string             `json:"external_repo"`
+	ExternalNumber   int32              `json:"external_number"`
+	ExternalUrl      pgtype.Text        `json:"external_url"`
+	MergeProvider    pgtype.Text        `json:"merge_provider"`
+	MergeRepo        pgtype.Text        `json:"merge_repo"`
+	MergeNumber      pgtype.Int4        `json:"merge_number"`
+	MergeUrl         pgtype.Text        `json:"merge_url"`
+	MergedSha        pgtype.Text        `json:"merged_sha"`
+	LinkConfidence   string             `json:"link_confidence"`
+	CompletionIntent bool               `json:"completion_intent"`
+	State            string             `json:"state"`
+	IdempotencyKey   pgtype.Text        `json:"idempotency_key"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Feedback struct {

@@ -164,7 +164,7 @@ WHERE i.workspace_id = $1
 ORDER BY i.created_at ASC
 LIMIT 1;
 
--- name: DeleteIssue :exec
+-- name: DeleteIssue :execrows
 -- Defense-in-depth: the workspace_id predicate makes the tenant invariant a
 -- SQL-layer guarantee rather than a handler-layer one. Handler loaders
 -- (loadIssueForUser / GetIssueInWorkspace) already enforce membership today,

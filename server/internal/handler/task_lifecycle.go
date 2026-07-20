@@ -97,43 +97,64 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// RerunIssueRequest is the optional body of POST /api/issues/{id}/rerun.
-// All fields are optional; an empty body keeps the legacy "rerun the issue's
-// current assignee" behaviour used by the CLI.
+// RerunIssueRequest is the body shared by the legacy rerun endpoint and the
+// dedicated fresh-provenance endpoint.
 type RerunIssueRequest struct {
-	// TaskID identifies the execution-log row the user clicked retry on.
-	// When set, the rerun targets the agent that ran that specific task
-	// (and reuses its leader/worker role) rather than the issue's current
-	// assignee — so clicking retry on row that belonged to a now-displaced
-	// agent re-fires that same agent, not the new assignee.
+	// TaskID identifies the exact execution row whose agent, squad role, and
+	// trigger-comment provenance should be preserved.
 	TaskID string `json:"task_id,omitempty"`
 }
 
-// RerunIssue manually re-enqueues an agent run for the issue. By default it
-// targets the issue's current assignee (agent or squad leader); if the
-// request body carries task_id, the rerun targets the agent that ran that
-// specific past task instead. The new task is flagged force_fresh_session=true:
-// the daemon claim handler skips the (agent_id, issue_id) session-resume
-// lookup so the agent starts a clean session. A user clicking rerun has just
-// judged the prior output bad — replaying the same conversation would replay
-// the same poisoned state. (Automatic retry, by contrast, intentionally
-// inherits the session — that path handles infrastructure failures, not bad
-// output.)
+func decodeRerunIssueRequest(body io.Reader) (RerunIssueRequest, error) {
+	decoder := json.NewDecoder(body)
+	var req RerunIssueRequest
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
+		return RerunIssueRequest{}, err
+	}
+	// A rerun request is exactly one JSON document. Reject concatenated values
+	// and trailing garbage rather than acting on a valid first object.
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return RerunIssueRequest{}, errors.New("multiple JSON values")
+		}
+		return RerunIssueRequest{}, err
+	}
+	return req, nil
+}
+
+// RerunIssue accepts the legacy empty request and the execution-log task_id
+// form. An empty body targets the current assignee with no source lineage;
+// task_id targets the exact historical agent and preserves that source row for
+// the daemon's guarded session/workdir reuse policy.
 func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
+	h.rerunIssue(w, r, false)
+}
+
+// RerunIssueFresh is the fail-closed endpoint used by CLI --task-id. It
+// requires an exact source task; the service stores that lineage and the daemon
+// decides whether to reuse its workdir and resume its session safely.
+func (h *Handler) RerunIssueFresh(w http.ResponseWriter, r *http.Request) {
+	h.rerunIssue(w, r, true)
+}
+
+func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, requireSource bool) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
 		return
 	}
 
-	// Body is optional. A zero-length body or `{}` keeps the legacy
-	// assignee-driven rerun behaviour the CLI relies on.
-	var req RerunIssueRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
+	// Decode regardless of ContentLength: HTTP/2 and chunked callers may use
+	// an unknown length (-1). EOF is the valid legacy empty-body request.
+	req, err := decodeRerunIssueRequest(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if requireSource && req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id is required for a fresh provenance rerun")
+		return
 	}
 
 	var sourceTaskID pgtype.UUID
@@ -153,7 +174,14 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := uuidToString(issue.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	// Rerun can cancel work and mint a task with user-scoped connected-app
+	// authority. Legacy X-Agent-ID/X-Task-ID are untrusted member metadata here;
+	// only the auth middleware's server-bound task_token marker may carry an
+	// agent actor chain into this mutation.
+	actorType, actorID := "member", userID
+	if r.Header.Get("X-Actor-Source") == "task_token" {
+		actorType, actorID = h.resolveActor(r, userID, workspaceID)
+	}
 	actorUserID := memberActorUserID(actorType, actorID)
 
 	// Re-validate the operator's invoke permission on the resolved target agent
@@ -165,13 +193,18 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 	}
 
-	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	var task *db.AgentTaskQueue
+	if requireSource {
+		task, err = h.TaskService.RerunIssueFresh(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	} else {
+		task, err = h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
 	if err != nil {
-		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
+		slog.Warn("issue rerun failed", "issue_id", id, "fresh_provenance", requireSource, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

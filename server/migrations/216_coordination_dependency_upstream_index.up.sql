@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY coordination_dependency_workspace_upstream_idx ON coordination_dependency (workspace_id, upstream_issue_id);

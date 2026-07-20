@@ -57,6 +57,7 @@ var corsAllowedHeaders = []string{
 	"Accept",
 	"Authorization",
 	"Content-Type",
+	"Idempotency-Key",
 	"X-Workspace-ID",
 	"X-Workspace-Slug",
 	"X-Request-ID",
@@ -750,6 +751,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HandleCloudBillingStripeWebhook for the rationale).
 	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
+	// External PR integration callbacks are authenticated by
+	// MULTICA_EXTERNAL_PR_SERVICE_TOKEN inside the handler. They live outside the
+	// regular Auth group because callers are service peers, not Multica
+	// user/session clients. AGS is the first configured provider.
+	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
+	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
 	// flow, and the cookie session is frequently absent (expired session,
@@ -831,6 +839,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/cli-token", h.IssueCliToken)
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
+		// Task-token-only assertions bind external integrations to the exact
+		// server-derived workload that spawned the running agent task. The
+		// external-PR route remains as a compatibility wrapper.
+		r.Post("/api/integrations/workload-assertions", h.CreateWorkloadAssertion)
+		r.Post("/api/integrations/external-pr/link-token", h.CreateExternalPRLinkToken)
 
 		// Note (MUL-4309): the generic OpenAI-compatible passthrough endpoints
 		// (POST /api/llm/v1/chat/completions[/stream]) were intentionally
@@ -1028,6 +1041,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
 
+			// Passive work coordination scopes. Register the static by-root route
+			// before the scope-id route so "by-root" is never parsed as a UUID.
+			r.Route("/api/coordination/scopes", func(r chi.Router) {
+				r.Post("/", h.EnsureCoordinationScope)
+				r.Get("/by-root", h.GetCoordinationScopeByRoot)
+				r.Post("/{scopeId}/dependencies", h.AddCoordinationDependency)
+				r.Get("/{scopeId}/dependencies", h.ListCoordinationDependencies)
+				r.Post("/{scopeId}/dependencies/{dependencyId}/resolve", h.ResolveCoordinationDependency)
+				r.Post("/{scopeId}/blockers", h.AppendCoordinationBlocker)
+				r.Get("/{scopeId}/blockers", h.ListCoordinationBlockers)
+				r.Post("/{scopeId}/blockers/{recordId}/resolve", h.ResolveCoordinationBlocker)
+				r.Get("/{scopeId}/inspect", h.InspectCoordinationScope)
+				r.Get("/{scopeId}", h.GetCoordinationScope)
+			})
+
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
@@ -1060,6 +1088,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/active-task", h.GetActiveTaskForIssue)
 					r.Post("/tasks/{taskId}/cancel", h.CancelTask)
 					r.Post("/rerun", h.RerunIssue)
+					r.Post("/rerun-fresh", h.RerunIssueFresh)
 					r.Get("/task-runs", h.ListTasksByIssue)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)
@@ -1074,6 +1103,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
+					r.Get("/external-prs", h.ListExternalPullRequestsForIssue)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})

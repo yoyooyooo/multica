@@ -188,6 +188,13 @@ var issuePullRequestsCmd = &cobra.Command{
 	RunE:    runIssuePullRequests,
 }
 
+var issueExternalPRsCmd = &cobra.Command{
+	Use:   "external-prs <id>",
+	Short: "List provider-neutral external PRs linked to an issue",
+	Args:  exactArgs(1),
+	RunE:  runIssueExternalPRs,
+}
+
 var issueChildrenCmd = &cobra.Command{
 	Use:     "children <id>",
 	Aliases: []string{"subissues"},
@@ -336,9 +343,11 @@ var issueUsageCmd = &cobra.Command{
 
 var issueRerunCmd = &cobra.Command{
 	Use:   "rerun <id>",
-	Short: "Re-enqueue an issue's current agent assignment as a fresh task",
-	Args:  exactArgs(1),
-	RunE:  runIssueRerun,
+	Short: "Re-enqueue an issue assignment as a fresh task",
+	Long: "Re-enqueue an issue assignment as a fresh task. By default this targets the current assignee. " +
+		"Pass --task-id to preserve the actor and trigger provenance of an exact execution row while starting with no prior session or workdir.",
+	Args: exactArgs(1),
+	RunE: runIssueRerun,
 }
 
 var issueCancelTaskCmd = &cobra.Command{
@@ -408,6 +417,7 @@ func init() {
 	issueCmd.AddCommand(issueListCmd)
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
+	issueCmd.AddCommand(issueExternalPRsCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
@@ -452,6 +462,9 @@ func init() {
 
 	// issue pull-requests
 	issuePullRequestsCmd.Flags().String("output", "table", "Output format: table or json")
+
+	// issue external-prs
+	issueExternalPRsCmd.Flags().String("output", "table", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -527,6 +540,7 @@ func init() {
 
 	// issue rerun
 	issueRerunCmd.Flags().String("output", "json", "Output format: table or json")
+	issueRerunCmd.Flags().String("task-id", "", "Source task UUID or prefix; preserves its actor and trigger comment on the fresh rerun")
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
@@ -755,6 +769,35 @@ func runIssuePullRequests(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runIssueExternalPRs(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	var result map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/external-prs", &result); err != nil {
+		return fmt.Errorf("list issue external PRs: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+
+	prs, _ := result["external_pull_requests"].([]any)
+	printIssueExternalPRsTable(normalizePullRequestList(prs))
+	return nil
+}
+
 func normalizePullRequestList(raw []any) []map[string]any {
 	prs := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
@@ -786,6 +829,23 @@ func pullRequestURL(pr map[string]any) string {
 		return url
 	}
 	return strVal(pr, "html_url")
+}
+
+func printIssueExternalPRsTable(prs []map[string]any) {
+	headers := []string{"PROVIDER", "REPO", "NUMBER", "STATE", "CONFIDENCE", "MERGED_SHA", "URL"}
+	rows := make([][]string, 0, len(prs))
+	for _, pr := range prs {
+		rows = append(rows, []string{
+			strVal(pr, "provider"),
+			strVal(pr, "external_repo"),
+			strVal(pr, "external_number"),
+			strVal(pr, "state"),
+			strVal(pr, "link_confidence"),
+			strVal(pr, "merged_sha"),
+			strVal(pr, "external_url"),
+		})
+	}
+	cli.PrintTable(os.Stdout, headers, rows)
 }
 
 func runIssueGet(cmd *cobra.Command, args []string) error {
@@ -2224,8 +2284,25 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 
+	body := map[string]any{}
+	endpoint := "/api/issues/" + issueRef.ID + "/rerun"
+	taskInput, err := cmd.Flags().GetString("task-id")
+	if err != nil {
+		return fmt.Errorf("read task-id flag: %w", err)
+	}
+	if taskInput = strings.TrimSpace(taskInput); taskInput != "" {
+		taskRef, err := resolveTaskRunID(ctx, client, issueRef.ID, taskInput)
+		if err != nil {
+			return fmt.Errorf("resolve source task run: %w", err)
+		}
+		body["task_id"] = taskRef.ID
+		// A dedicated route is intentional: an older server returns 404 instead
+		// of silently accepting task_id with context-reusing retry semantics.
+		endpoint = "/api/issues/" + issueRef.ID + "/rerun-fresh"
+	}
+
 	var task map[string]any
-	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", map[string]any{}, &task); err != nil {
+	if err := client.PostJSON(ctx, endpoint, body, &task); err != nil {
 		return fmt.Errorf("rerun issue: %w", err)
 	}
 

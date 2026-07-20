@@ -46,7 +46,7 @@ services:
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     volumes:
-      - backend_uploads:/app/data/uploads
+      - ./data/uploads:/app/data/uploads
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@postgres:5432/${POSTGRES_DB:-multica}?sslmode=disable
       PORT: "8080"
@@ -81,6 +81,16 @@ services:
       APP_ENV: ${APP_ENV:-production}
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
+      # External PR/MR integration. Leave the two secrets empty to disable the
+      # service-token/link-token endpoints. Set them via .env, shell env, or a
+      # deployment secret manager; do not commit secret values.
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET:-}
+      MULTICA_EXTERNAL_PR_SERVICE_TOKEN: ${MULTICA_EXTERNAL_PR_SERVICE_TOKEN:-}
+      MULTICA_WORKLOAD_ASSERTION_SECRET: ${MULTICA_WORKLOAD_ASSERTION_SECRET:-}
+      MULTICA_WORKLOAD_ASSERTION_ISSUER: ${MULTICA_WORKLOAD_ASSERTION_ISSUER:-multica}
+      MULTICA_WORKLOAD_ASSERTION_KEY_ID: ${MULTICA_WORKLOAD_ASSERTION_KEY_ID:-multica-workload-assertion-v1}
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE:-external-pr-link}
+      MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS: ${MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}
@@ -118,6 +128,15 @@ services:
       # in the database, so this single deployment-wide key is all the operator
       # needs to set here.
       MULTICA_SLACK_SECRET_KEY: ${MULTICA_SLACK_SECRET_KEY:-}
+      # Keep backend outbound Feishu/Lark registration direct by default.
+      # Some local Docker runtimes inject a host proxy into containers; a
+      # stale proxy makes the QR registration request fail with unexpected EOF.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
     restart: unless-stopped
 
   frontend:
@@ -132,4 +151,3 @@ services:
 
 volumes:
   pgdata:
-  backend_uploads:

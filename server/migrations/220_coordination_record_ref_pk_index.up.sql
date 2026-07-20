@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY coordination_record_issue_ref_pkey_idx ON coordination_record_issue_ref (id);

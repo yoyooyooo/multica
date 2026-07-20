@@ -1,6 +1,6 @@
 ---
 name: multica-working-on-issues
-description: "Use when working on a Multica issue after the runtime has provided the trigger context — to apply the product contracts the runtime brief does not encode: how PR linking differs from close intent, how to read a linked PR's real state via the pull-requests CLI, which metadata keys are high-signal, what status changes trigger on the server, and how sub-issue create status (todo vs backlog) controls whether assigned agents start immediately."
+description: "Use when working on a Multica issue after the runtime has provided the trigger context — to apply the product contracts the runtime brief does not encode: how PR linking differs from close intent, how to read a linked PR's real state via the pull-requests CLI, which metadata keys are high-signal, how to preserve trigger provenance on a fresh rerun, what status changes trigger on the server, and how sub-issue create status (todo vs backlog) controls whether assigned agents start immediately."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -189,6 +189,43 @@ on it. These are the contracts, not advice:
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going (MUL-4465). To stop a running task,
   cancel the task itself.
+
+## Fresh reruns: preserve the source execution when provenance matters
+
+`multica issue rerun <issue-id>` targets the issue's current assignee and forces a
+fresh session. It does not identify a source execution, so it cannot inherit that
+execution's trigger comment.
+
+When replacing a resumed/reused or otherwise invalid execution and the replacement
+must remain linked to the same trigger, pass the exact source execution row:
+
+```bash
+multica issue rerun <issue-id> --task-id <task-id>
+```
+
+`--task-id` accepts a full UUID or a unique prefix from `multica issue runs`. The
+CLI uses the dedicated source-bound endpoint; a server without that contract fails
+closed instead of silently choosing a legacy retry mode. The server verifies that
+the source task belongs to the issue, revalidates the current authenticated
+actor's invoke authority before cancellation, reruns the source agent (and
+leader/worker role), inherits its `trigger_comment_id`, and stores the source as
+`rerun_of_task_id`. Client-supplied legacy agent/task headers cannot promote a
+member request; only server-bound task-token provenance may carry an agent chain.
+The new run derives human attribution and connected-app authority from that
+authenticated actor chain—not from the source comment author.
+
+The daemon reuses the exact source workdir when it remains available. It resumes
+the exact source session only when the failure is resume-safe and the source ran
+on the claiming runtime; otherwise it starts a fresh session, and a missing or
+unusable workdir falls back to fresh preparation. `force_fresh_session=true`
+remains a rollback-safe signal for older claim handlers and is not the current
+handler's final reuse decision.
+
+Read back the new run and daemon receipt; the command invocation alone is not proof
+of the actor, trigger, `resume_session`, or `reuse_workdir` outcome. Do not use raw
+API calls to add `task_id`. The Web/desktop execution-log path can also carry exact
+source lineage, but only the CLI's dedicated endpoint provides the required
+fail-closed source-task capability boundary.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 

@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 )
@@ -51,6 +55,7 @@ const (
 	ExitAuth       = 3 // 401 / 403
 	ExitNotFound   = 4 // 404
 	ExitValidation = 5 // 400 / 422
+	ExitConflict   = 6 // strict typed product conflicts
 )
 
 // IsNetwork reports whether the kind is a transport-layer failure.
@@ -140,6 +145,372 @@ func (e *UserMessageError) Error() string {
 }
 
 func (e *UserMessageError) Unwrap() error { return e.Err }
+
+// ProductError is a strict, safe product-level error envelope. It is only
+// constructed when the endpoint, content type, status, and code all match the
+// coordination contract; generic or malformed HTTP errors keep legacy handling.
+type ProductError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *ProductError) Error() string { return e.Code + ": " + e.Message }
+
+func (e *ProductError) JSON() string {
+	payload := struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{}
+	payload.Error.Code = e.Code
+	payload.Error.Message = e.Message
+	encoded, _ := json.Marshal(payload)
+	return string(encoded)
+}
+
+var coordinationStatusByCode = map[string]int{
+	"coordination_not_found":                 http.StatusNotFound,
+	"coordination_cross_workspace":           http.StatusForbidden,
+	"coordination_forbidden":                 http.StatusForbidden,
+	"coordination_invalid_payload":           http.StatusBadRequest,
+	"coordination_capacity_exceeded":         http.StatusConflict,
+	"coordination_self_dependency":           http.StatusUnprocessableEntity,
+	"coordination_cycle":                     http.StatusUnprocessableEntity,
+	"coordination_revision_conflict":         http.StatusConflict,
+	"coordination_idempotency_conflict":      http.StatusConflict,
+	"coordination_dependency_scope_conflict": http.StatusConflict,
+	"coordination_delete_blocked":            http.StatusConflict,
+	"coordination_internal":                  http.StatusInternalServerError,
+}
+
+// CoordinationProductError upgrades a strict, route-allowlisted coordination
+// envelope to a ProductError. Every mismatch returns the original error.
+func CoordinationProductError(err error) error {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !coordinationRouteRegistered(httpErr.Method, httpErr.Path) {
+		return err
+	}
+	mediaType, _, parseErr := mime.ParseMediaType(httpErr.ContentType)
+	if parseErr != nil || mediaType != "application/json" {
+		return err
+	}
+	var envelope struct {
+		Error struct {
+			Code    string          `json:"code"`
+			Message string          `json:"message"`
+			Details json.RawMessage `json:"details,omitempty"`
+		} `json:"error"`
+	}
+	body := []byte(httpErr.Body)
+	if shapeErr := validateCoordinationJSONShape(body); shapeErr != nil {
+		return err
+	}
+	if exactErr := validateExactCoordinationJSONFields(body, reflect.TypeOf(&envelope)); exactErr != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decodeErr := decoder.Decode(&envelope); decodeErr != nil {
+		return err
+	}
+	var trailing any
+	if decodeErr := decoder.Decode(&trailing); !errors.Is(decodeErr, io.EOF) {
+		return err
+	}
+	expectedStatus, known := coordinationStatusByCode[envelope.Error.Code]
+	if !known || expectedStatus != httpErr.StatusCode || !coordinationRouteAllowsCode(httpErr.Method, httpErr.Path, envelope.Error.Code) || envelope.Error.Message == "" || len(envelope.Error.Message) > 1024 || strings.TrimSpace(envelope.Error.Message) != envelope.Error.Message {
+		return err
+	}
+	if len(envelope.Error.Details) > 0 && string(envelope.Error.Details) != "null" {
+		var details map[string]json.RawMessage
+		if json.Unmarshal(envelope.Error.Details, &details) != nil || len(details) != 0 {
+			return err
+		}
+	}
+	return &ProductError{StatusCode: httpErr.StatusCode, Code: envelope.Error.Code, Message: envelope.Error.Message}
+}
+
+func coordinationRouteRegistered(method, rawPath string) bool {
+	path := strings.SplitN(rawPath, "?", 2)[0]
+	switch {
+	case method == http.MethodPost && path == "/api/coordination/scopes":
+		return true
+	case method == http.MethodGet && path == "/api/coordination/scopes/by-root":
+		return true
+	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationDependencyCollectionPath(path):
+		return true
+	case method == http.MethodPost && isCoordinationDependencyResolvePath(path):
+		return true
+	case (method == http.MethodPost || method == http.MethodGet) && isCoordinationBlockerCollectionPath(path):
+		return true
+	case method == http.MethodPost && isCoordinationBlockerResolvePath(path):
+		return true
+	case method == http.MethodGet && isCoordinationInspectPath(path):
+		return true
+	case method == http.MethodGet && hasOnePathValue(path, "/api/coordination/scopes/"):
+		return true
+	case method == http.MethodDelete && hasOnePathValue(path, "/api/issues/"):
+		return true
+	case method == http.MethodPost && path == "/api/issues/batch-delete":
+		return true
+	case method == http.MethodDelete && hasOnePathValue(path, "/api/workspaces/"):
+		return true
+	default:
+		return false
+	}
+}
+
+func coordinationRouteAllowsCode(method, rawPath, code string) bool {
+	path := strings.SplitN(rawPath, "?", 2)[0]
+	baseCodes := map[string]struct{}{
+		"coordination_not_found":       {},
+		"coordination_cross_workspace": {},
+		"coordination_forbidden":       {},
+		"coordination_invalid_payload": {},
+		"coordination_internal":        {},
+	}
+	if _, ok := baseCodes[code]; ok {
+		return true
+	}
+	if method == http.MethodPost && path == "/api/coordination/scopes" {
+		return code == "coordination_idempotency_conflict"
+	}
+	if isCoordinationDependencyCollectionPath(path) {
+		if method == http.MethodGet {
+			return code == "coordination_revision_conflict"
+		}
+		if method == http.MethodPost {
+			switch code {
+			case "coordination_capacity_exceeded", "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict", "coordination_self_dependency", "coordination_cycle":
+				return true
+			}
+		}
+	}
+	if method == http.MethodPost && isCoordinationDependencyResolvePath(path) {
+		switch code {
+		case "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict":
+			return true
+		}
+	}
+	if isCoordinationBlockerCollectionPath(path) {
+		if method == http.MethodGet {
+			return code == "coordination_revision_conflict"
+		}
+		if method == http.MethodPost {
+			switch code {
+			case "coordination_capacity_exceeded", "coordination_revision_conflict", "coordination_idempotency_conflict", "coordination_dependency_scope_conflict":
+				return true
+			}
+		}
+	}
+	if method == http.MethodPost && isCoordinationBlockerResolvePath(path) {
+		return code == "coordination_revision_conflict" || code == "coordination_idempotency_conflict"
+	}
+	if method == http.MethodGet && isCoordinationInspectPath(path) {
+		return code == "coordination_revision_conflict"
+	}
+	if method == http.MethodDelete && hasOnePathValue(path, "/api/issues/") {
+		return code == "coordination_delete_blocked"
+	}
+	if method == http.MethodPost && path == "/api/issues/batch-delete" {
+		return code == "coordination_delete_blocked"
+	}
+	if method == http.MethodDelete && hasOnePathValue(path, "/api/workspaces/") {
+		return code == "coordination_delete_blocked"
+	}
+	return false
+}
+
+func isCoordinationDependencyCollectionPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies"
+}
+
+func isCoordinationDependencyResolvePath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "dependencies" && parts[5] != "" && parts[6] == "resolve"
+}
+
+func isCoordinationBlockerCollectionPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers"
+}
+
+func isCoordinationBlockerResolvePath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 7 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "blockers" && parts[5] != "" && parts[6] == "resolve"
+}
+
+func isCoordinationInspectPath(path string) bool {
+	parts, ok := coordinationPathParts(path)
+	return ok && len(parts) == 5 && parts[0] == "api" && parts[1] == "coordination" && parts[2] == "scopes" && parts[3] != "" && parts[4] == "inspect"
+}
+
+func coordinationPathParts(path string) ([]string, bool) {
+	if !strings.HasPrefix(path, "/") || path == "/" || strings.HasSuffix(path, "/") || strings.Contains(path, "//") {
+		return nil, false
+	}
+	return strings.Split(strings.TrimPrefix(path, "/"), "/"), true
+}
+
+func hasOnePathValue(path, prefix string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	value := strings.TrimPrefix(path, prefix)
+	return value != "" && !strings.Contains(value, "/")
+}
+
+// DecodeStrictCoordinationJSON rejects duplicate keys, unknown fields, trailing
+// values, and malformed JSON before a coordination CLI request is sent.
+func DecodeStrictCoordinationJSON(data []byte, dst any) error {
+	if err := validateCoordinationJSONShape(data); err != nil {
+		return err
+	}
+	if err := validateExactCoordinationJSONFields(data, reflect.TypeOf(dst)); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateExactCoordinationJSONFields(data []byte, target reflect.Type) error {
+	if target == nil || target.Kind() != reflect.Pointer {
+		return errors.New("coordination JSON target must be a pointer")
+	}
+	return validateExactCoordinationJSONValue(data, target.Elem())
+}
+
+func validateExactCoordinationJSONValue(data []byte, target reflect.Type) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	jsonUnmarshaler := reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	if target.Implements(jsonUnmarshaler) || reflect.PointerTo(target).Implements(jsonUnmarshaler) {
+		return nil
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.Type, target.NumField())
+		for index := 0; index < target.NumField(); index++ {
+			field := target.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, raw := range object {
+			fieldType, ok := fields[name]
+			if !ok {
+				return errors.New("unknown coordination JSON field")
+			}
+			if err := validateExactCoordinationJSONValue(raw, fieldType); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		for _, raw := range items {
+			if err := validateExactCoordinationJSONValue(raw, target.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCoordinationJSONShape(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if err := consumeCoordinationJSONValue(decoder, first); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeCoordinationJSONValue(decoder *json.Decoder, token json.Token) error {
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid JSON object key")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return errors.New("duplicate JSON object key")
+			}
+			seen[key] = struct{}{}
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeCoordinationJSONValue(decoder, valueToken); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+}
 
 // WithUserMessage wraps err with a user-facing message that FormatError will
 // surface by default. It returns nil when err is nil so it can be used inline
@@ -362,6 +733,10 @@ func FormatError(err error, debug bool) string {
 	if err == nil {
 		return ""
 	}
+	var productErr *ProductError
+	if errors.As(err, &productErr) {
+		return productErr.JSON()
+	}
 	lang := DetectLanguage()
 	base := userMessage(err, lang)
 	if debug || debugEnabled() {
@@ -469,6 +844,22 @@ func ExitCodeFor(err error) int {
 		return 0
 	}
 
+	var productErr *ProductError
+	if errors.As(err, &productErr) {
+		switch productErr.StatusCode {
+		case http.StatusForbidden:
+			return ExitAuth
+		case http.StatusNotFound:
+			return ExitNotFound
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			return ExitValidation
+		case http.StatusConflict:
+			return ExitConflict
+		default:
+			return ExitGeneric
+		}
+	}
+
 	var netErr *NetworkError
 	if errors.As(err, &netErr) {
 		return ExitNetwork
@@ -476,6 +867,17 @@ func ExitCodeFor(err error) int {
 
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
+		// Coordination endpoints only get the special exit classes after a strict
+		// ProductError upgrade. Legacy bodies, unknown codes, and status/code
+		// mismatches must keep the safe fallback exit 1.
+		if strings.HasPrefix(httpErr.Path, "/api/coordination/") {
+			switch httpErr.StatusCode {
+			case http.StatusBadRequest, http.StatusUnprocessableEntity:
+				return ExitValidation
+			default:
+				return ExitGeneric
+			}
+		}
 		switch httpErr.Kind() {
 		case KindAuthRequired, KindForbidden:
 			return ExitAuth

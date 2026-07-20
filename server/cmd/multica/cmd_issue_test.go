@@ -422,6 +422,164 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 }
 
+func newIssueRerunTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "rerun"}
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("task-id", "", "")
+	return cmd
+}
+
+func TestRunIssueRerunSendsSourceTaskID(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun-fresh":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode rerun body: %v", err)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	if err := cmd.Flags().Set("task-id", "  "+taskID+"  "); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["task_id"]; got != taskID {
+		t.Fatalf("task_id = %#v, want %q", got, taskID)
+	}
+}
+
+func TestRunIssueRerunResolvesShortSourceTaskIDWithinIssue(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/task-runs":
+			if err := json.NewEncoder(w).Encode([]map[string]any{{"id": taskID}}); err != nil {
+				t.Errorf("encode task runs response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun-fresh":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode rerun body: %v", err)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	if err := cmd.Flags().Set("task-id", taskID[:8]); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
+	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if got := body["task_id"]; got != taskID {
+		t.Fatalf("task_id = %#v, want resolved task %q", got, taskID)
+	}
+}
+
+func TestRunIssueRerunWithoutSourceTaskKeepsCurrentAssigneeMode(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode rerun body: %v", err)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": "task-new", "agent_id": "agent-1"}); err != nil {
+				t.Errorf("encode rerun response: %v", err)
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	if err := runIssueRerun(newIssueRerunTestCmd(), []string{issueID}); err != nil {
+		t.Fatalf("runIssueRerun: %v", err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("rerun body = %#v, want empty current-assignee request", body)
+	}
+}
+
+func TestRunIssueRerunWithSourceTaskFailsClosedOnLegacyEndpoint(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	legacyPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			if err := json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"}); err != nil {
+				t.Errorf("encode issue response: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			legacyPosts++
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	cmd := newIssueRerunTestCmd()
+	if err := cmd.Flags().Set("task-id", taskID); err != nil {
+		t.Fatalf("set task-id flag: %v", err)
+	}
+	if err := runIssueRerun(cmd, []string{issueID}); err == nil {
+		t.Fatal("expected a legacy server without rerun-fresh to fail closed")
+	}
+	if legacyPosts != 0 {
+		t.Fatalf("legacy rerun endpoint received %d posts, want 0", legacyPosts)
+	}
+}
+
 func newIssueCreateTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "create"}
 	cmd.Flags().String("title", "", "")
@@ -570,6 +728,12 @@ func newIssuePullRequestsTestCmd() *cobra.Command {
 	return cmd
 }
 
+func newIssueExternalPRsTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "external-prs"}
+	cmd.Flags().String("output", "table", "")
+	return cmd
+}
+
 func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	var gotPaths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -629,6 +793,76 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	pr, _ := prs[0].(map[string]any)
 	if pr["url"] != "https://github.com/multica-ai/multica/pull/42" || pr["number"] != float64(42) || pr["state"] != "open" || pr["title"] != "MUL-2818 add issue PR CLI" {
 		t.Fatalf("unexpected PR payload: %#v", pr)
+	}
+}
+
+func TestRunIssueExternalPRsListsProviderNeutralLinksAsJSON(t *testing.T) {
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/issues/MINI-379":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":         "issue-uuid",
+				"identifier": "MINI-379",
+				"title":      "External PR smoke",
+			})
+		case "/api/issues/issue-uuid/external-prs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"external_pull_requests": []map[string]any{
+					{
+						"provider":          "ags",
+						"external_repo":     "jackie/ags-team-share",
+						"external_number":   float64(4),
+						"external_url":      "http://mini:6666/jackie/ags-team-share/pull/4",
+						"state":             "merged",
+						"link_confidence":   "authoritative",
+						"completion_intent": true,
+						"merge_provider":    "forgejo",
+						"merge_repo":        "jackie/ags-team-share",
+						"merge_number":      float64(4),
+						"merge_url":         "http://forgejo.local/jackie/ags-team-share/pulls/4",
+						"merged_sha":        "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueExternalPRsTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runIssueExternalPRs(cmd, []string{"MINI-379"})
+	_ = w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("runIssueExternalPRs: %v", err)
+	}
+
+	if want := []string{"/api/issues/MINI-379", "/api/issues/issue-uuid/external-prs"}; fmt.Sprint(gotPaths) != fmt.Sprint(want) {
+		t.Fatalf("paths = %v, want %v", gotPaths, want)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, string(out))
+	}
+	prs, _ := payload["external_pull_requests"].([]any)
+	if len(prs) != 1 {
+		t.Fatalf("external_pull_requests length = %d, want 1", len(prs))
+	}
+	pr, _ := prs[0].(map[string]any)
+	if pr["provider"] != "ags" || pr["external_repo"] != "jackie/ags-team-share" || pr["external_number"] != float64(4) || pr["state"] != "merged" || pr["link_confidence"] != "authoritative" || pr["merged_sha"] != "11384b43b138b2a2d79cd7eb3c8c2e533900cfeb" {
+		t.Fatalf("unexpected external PR payload: %#v", pr)
 	}
 }
 

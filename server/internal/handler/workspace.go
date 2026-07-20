@@ -734,80 +734,20 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Invalidate membership cache for all workspace members before deletion.
-	// After CASCADE deletes the member rows, cache entries become harmless
-	// orphans (downstream lookups for the deleted workspace will fail), but
-	// proactive invalidation prevents any stale-access window up to TTL.
-	var affectedUserIDs []string
-	if members, err := h.Queries.ListMembers(r.Context(), requester.WorkspaceID); err == nil {
-		affectedUserIDs = make([]string, 0, len(members))
-		for _, m := range members {
-			userID := uuidToString(m.UserID)
-			h.MembershipCache.Invalidate(r.Context(), userID, workspaceID)
-			affectedUserIDs = append(affectedUserIDs, userID)
-		}
+	actor, ok := h.coordinationActorForWorkspace(w, r, requester.WorkspaceID)
+	if !ok {
+		return
 	}
-
-	// The teardown runs in one transaction so the chat_session row locks below
-	// are still held when DeleteWorkspace sweeps chat_draft_restore. Without
-	// them, FinalizeDeferredCancelledChat could commit a restore for one of
-	// these sessions after the sweep's snapshot was taken: the session cascades
-	// away, the restore has no FK to follow it (MUL-3515) and no reaper, and the
-	// user's prompt is stranded forever (#5219). The finalizer takes the same
-	// lock before inserting, so it either blocks until the session is gone and
-	// skips the insert, or commits first and the sweep sees its row.
-	//
-	// The workspace row is locked first, because the session locks only cover
-	// sessions that already exist: a CreateChatSession committing inside the
-	// delete window would otherwise slip in a session nobody locked, and its
-	// restore would outlive the cascade the same way. Holding the workspace row
-	// FOR UPDATE blocks that insert on its workspace FK (FOR KEY SHARE).
-	tx, err := h.TxStarter.Begin(r.Context())
+	effects, err := h.performWorkspaceDeletion(r.Context(), actor, requester.WorkspaceID)
 	if err != nil {
-		slog.Warn("begin workspace delete tx failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		h.writeCoordinationServiceError(w, err)
 		return
 	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
-		slog.Warn("lock workspace for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
-	}
-
-	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
-		slog.Warn("lock workspace chat sessions failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
-	}
-
-	if err := qtx.DeleteChatPinnedAgentsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
-		slog.Warn("delete workspace chat pins failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
-	}
-
-	// At this point workspaceMember has resolved → workspaceID is a valid UUID
-	// (the lookup would have errored otherwise), so reuse the resolved value.
-	if err := qtx.DeleteWorkspace(r.Context(), requester.WorkspaceID); err != nil {
-		slog.Warn("delete workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		slog.Warn("commit workspace delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
-		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
-	}
-
+	// Membership cache invalidation, task reconciliation, daemon notification,
+	// and the workspace event all run after the DB commit and terminal
+	// session-lock release-or-discard.
+	h.applyWorkspaceDeletionEffects(r.Context(), actor, effects)
 	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
-	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
-		"workspace_id": workspaceID,
-	})
-	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -1,5 +1,10 @@
 # Development override: build the backend/web images from the current checkout
 # instead of pulling the official GHCR images.
+#
+# Proxy build args are intentionally declared for both upper/lower-case names.
+# Empty defaults override Docker runtime proxy injection that can break Alpine
+# apk inside build containers; set these env vars explicitly if your network
+# requires a proxy for image builds.
 
 services:
   backend:
@@ -11,6 +16,13 @@ services:
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-unknown}
         DATE: ${DATE:-unknown}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        all_proxy: ${all_proxy:-}
 
   frontend:
     image: multica-web:dev
@@ -21,3 +33,9 @@ services:
         REMOTE_API_URL: http://backend:8080
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
         NEXT_PUBLIC_APP_VERSION: dev
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        all_proxy: ${all_proxy:-}
