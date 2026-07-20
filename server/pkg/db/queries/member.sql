@@ -24,6 +24,12 @@ RETURNING *;
 -- name: DeleteMember :exec
 DELETE FROM member WHERE id = $1;
 
+-- name: DeleteMembersByWorkspaceForCoordination :execrows
+-- Workspace deletion owns this explicit teardown inside its pinned qtx. Do not
+-- defer membership removal to the workspace FK cascade: post-commit effects use
+-- the pre-delete census, while rollback must restore every membership row.
+DELETE FROM member WHERE workspace_id = $1;
+
 -- name: ListMembersWithUser :many
 SELECT m.id, m.workspace_id, m.user_id, m.role, m.created_at,
        u.name as user_name, u.email as user_email, u.avatar_url as user_avatar_url

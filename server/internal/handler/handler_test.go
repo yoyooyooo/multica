@@ -38,18 +38,31 @@ const (
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
+	required := os.Getenv("WORK_COORDINATION_DB_REQUIRED") == "1"
 	if dbURL == "" {
+		if required {
+			fmt.Println("DATABASE_URL is required when WORK_COORDINATION_DB_REQUIRED=1")
+			os.Exit(1)
+		}
 		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+		if required {
+			fmt.Printf("Required test database connection failed: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Printf("Skipping tests: could not connect to database: %v\n", err)
 		os.Exit(0)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		pool.Close()
+		if required {
+			fmt.Printf("Required test database is not reachable: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		os.Exit(0)
 	}
 
@@ -2650,7 +2663,7 @@ func TestVerifyCode(t *testing.T) {
 			workspaces, listErr := testHandler.Queries.ListWorkspaces(ctx, user.ID)
 			if listErr == nil {
 				for _, workspace := range workspaces {
-					_ = testHandler.Queries.DeleteWorkspace(ctx, workspace.ID)
+					_, _ = testHandler.Queries.DeleteWorkspace(ctx, workspace.ID)
 				}
 			}
 		}

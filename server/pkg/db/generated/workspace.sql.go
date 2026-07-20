@@ -52,7 +52,7 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 	return i, err
 }
 
-const deleteWorkspace = `-- name: DeleteWorkspace :exec
+const deleteWorkspace = `-- name: DeleteWorkspace :execrows
 WITH ws_installations AS (
     SELECT id FROM channel_installation WHERE workspace_id = $1
 ),
@@ -124,9 +124,12 @@ DELETE FROM workspace WHERE workspace.id = $1
 // tables the DELETE below sweeps — they are not cleaned up implicitly. Remove
 // their workspace-owned rows here so they commit or roll back atomically with
 // the workspace row.
-func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteWorkspace, id)
-	return err
+func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWorkspace, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getDaemonWorkspace = `-- name: GetDaemonWorkspace :one

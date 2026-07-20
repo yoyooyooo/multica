@@ -86,6 +86,7 @@ type PrepareParams struct {
 
 // TaskContextForEnv is the subset of task context used for writing context files.
 type TaskContextForEnv struct {
+	TaskID           string // exact daemon task id; safe provenance, never a bearer credential
 	IssueID          string
 	TriggerCommentID string // comment that triggered this task (empty for on_assign)
 	TriggerThreadID  string // root comment ID for the triggering thread; falls back to TriggerCommentID when empty
@@ -100,7 +101,12 @@ type TaskContextForEnv struct {
 	CommentReplyTargets []ThreadReplyTarget
 	NewCommentCount     int    // issue-wide comments since this agent's last run (excludes its own and the injected trigger)
 	NewCommentsSince    string // RFC3339 anchor (last run's started_at) the count is measured from; empty on cold start
-	PriorSessionResumed bool   // true when the daemon will resume an existing provider session for this task
+	// PriorSessionResumed records whether the daemon passes a prior session to
+	// the first backend launch after its preflight gates. It stays true if the
+	// provider later falls back to a fresh thread, conservatively preventing
+	// that run from being misclassified as fresh evidence.
+	PriorSessionResumed bool
+	WorkDirReused       bool // effective value after the daemon resolves the execution workdir
 	// PriorSessionResumeUnavailable is true when this task carried a prior
 	// session the daemon expected to resume but could NOT (the reused workdir was
 	// gone, or the Codex rollout was not present in the task CODEX_HOME). The

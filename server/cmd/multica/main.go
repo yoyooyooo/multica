@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 
@@ -54,6 +56,7 @@ func init() {
 	skillCmd.GroupID = groupCore
 	squadCmd.GroupID = groupCore
 	chatCmd.GroupID = groupCore
+	coordinationCmd.GroupID = groupCore
 
 	// Runtime commands
 	daemonCmd.GroupID = groupRuntime
@@ -80,6 +83,7 @@ func init() {
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(squadCmd)
 	rootCmd.AddCommand(chatCmd)
+	rootCmd.AddCommand(coordinationCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(runtimeCmd)
 	rootCmd.AddCommand(authCmd)
@@ -96,10 +100,49 @@ func init() {
 
 func main() {
 	cli.CleanupStaleUpdateArtifacts()
+	if code := executeRoot(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func executeRoot(args []string, stdout, stderr io.Writer) int {
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
+	if err := prepareCoordinationArgs(args); err != nil {
+		fmt.Fprintln(stderr, cli.FormatError(err, false))
+		return cli.ExitCodeFor(err)
+	}
 	if err := rootCmd.Execute(); err != nil {
 		if err != errSilent {
-			fmt.Fprintln(os.Stderr, cli.FormatError(err, debugFlag))
+			fmt.Fprintln(stderr, formatRootError(args, err))
 		}
-		os.Exit(cli.ExitCodeFor(err))
+		return cli.ExitCodeFor(err)
 	}
+	return 0
+}
+
+func formatRootError(args []string, err error) string {
+	if isCoordinationInvocation(args) {
+		var product *cli.ProductError
+		if coordinationOutput == "table" {
+			if errors.As(err, &product) {
+				return product.Code + ": " + product.Message
+			}
+			return cli.FormatError(err, false)
+		}
+		if errors.As(err, &product) {
+			return product.JSON()
+		}
+		return (&cli.ProductError{
+			StatusCode: 500,
+			Code:       "coordination_internal",
+			Message:    cli.FormatError(err, false),
+		}).JSON()
+	}
+	return cli.FormatError(err, debugFlag)
+}
+
+func isCoordinationInvocation(args []string) bool {
+	return coordinationCommandIndex(args) >= 0
 }
