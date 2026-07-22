@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -173,6 +175,19 @@ func isPiToolNameByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
 }
 
+// piTerminateGraceNanos optionally overrides, in nanoseconds, how long a
+// cancellation goroutine waits after SIGTERM before escalating to SIGKILL.
+// Zero uses the default (5 seconds). Tests set this to a small value so the
+// SIGKILL escalation path is exercised without waiting the full window.
+var piTerminateGraceNanos atomic.Int64
+
+func piTerminateGrace() time.Duration {
+	if n := piTerminateGraceNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return 5 * time.Second
+}
+
 func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	execName := b.cfg.ExecutablePath
 	if execName == "" {
@@ -207,6 +222,17 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 
 	cmd := exec.CommandContext(runCtx, argv0, cmdArgs...)
 	hideAgentWindow(cmd)
+	// Run pi in its own process group so cancellation can reach the whole
+	// tree (pi plus any tool subprocess it spawns), not just the direct
+	// child — otherwise a cancelled or restarted run can orphan tool
+	// descendants. See configureProcessGroup / signalProcessGroup.
+	configureProcessGroup(cmd)
+	// Take over context cancellation: drive a graceful, group-wide
+	// SIGTERM→SIGKILL from a separate goroutine and close the stdout read
+	// end only after the tree has been signalled. Returning nil here keeps
+	// os/exec from racing us with its own kill; WaitDelay is the hard
+	// backstop.
+	cmd.Cancel = func() error { return nil }
 	b.cfg.Logger.Info("agent command", "exec", argv0, "args", cmdArgs)
 	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
@@ -245,9 +271,31 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
 
-	// Close stdout when the context is cancelled so scanner.Scan() unblocks.
+	// procDone closes once cmd.Wait() returns, letting the cancellation handler
+	// skip a process that already exited and avoid signalling a dead pid.
+	procDone := make(chan struct{})
+
+	// On cancellation / timeout, terminate pi (and the tool subprocesses it
+	// spawned) BEFORE unblocking the scanner. Closing the stdout read end
+	// immediately would leave pi writing into a closed pipe (EPIPE), which
+	// can spin the orphaned process at 100% CPU. Instead SIGTERM the whole
+	// process group, give it a grace period to exit cleanly, then SIGKILL it.
+	// Only then is it safe to close the stdout read end as a last-resort
+	// unblock for a scanner that a wedged descendant still keeps open.
 	go func() {
-		<-runCtx.Done()
+		select {
+		case <-procDone:
+			return // finished on its own; nothing to terminate
+		case <-runCtx.Done():
+		}
+		if cmd.Process != nil {
+			signalProcessGroup(cmd.Process, syscall.SIGTERM)
+			select {
+			case <-procDone: // exited within the grace window
+			case <-time.After(piTerminateGrace()):
+				signalProcessGroup(cmd.Process, syscall.SIGKILL)
+			}
+		}
 		_ = stdout.Close()
 	}()
 
@@ -363,6 +411,7 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 		}
 
 		waitErr := cmd.Wait()
+		close(procDone)
 		duration := time.Since(startTime)
 
 		if runCtx.Err() == context.DeadlineExceeded {
