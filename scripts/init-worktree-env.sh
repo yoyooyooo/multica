@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ENV_FILE="${1:-.env.worktree}"
+SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname "$0")" && pwd -P)"
+. "$SCRIPT_DIR/worktree-identity.sh"
 
 if [ -f "$ENV_FILE" ] && [ "${FORCE:-0}" != "1" ]; then
   echo "Refusing to overwrite existing $ENV_FILE. Re-run with FORCE=1 if you want to regenerate it."
@@ -17,21 +19,17 @@ if [ -n "$git_root" ]; then
 else
   worktree_path="$(pwd -P)"
 fi
+worktree_identity_derive "$worktree_path"
+worktree_path="$WORKTREE_IDENTITY_PATH"
 worktree_name="$(basename "$worktree_path")"
-slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
-if [ -z "$slug" ]; then
-  slug="multica"
-fi
 
-hash_value="$(printf '%s' "$worktree_path" | cksum | awk '{print $1}')"
-offset=$((hash_value % 1000))
-
-# Deterministic unique identities per worktree: each worktree gets its own
-# Compose project, PostgreSQL host port, database name, and Docker volume so
-# no worktree ever touches "multica-*" production resources by default.
-compose_project="wt_${slug}_${offset}"
-postgres_port=$((15432 + (offset % 1000) % 1000))
-postgres_db="wt_${slug}_${offset}"
+# Compose project and PostgreSQL database use an 80-bit SHA-256 prefix of the
+# physical worktree path. The host port deliberately remains in a bounded
+# 1000-slot range and is serialized by the port-keyed ownership lock.
+compose_project="$WORKTREE_IDENTITY_PROJECT"
+postgres_port="$WORKTREE_IDENTITY_PORT"
+postgres_db="$WORKTREE_IDENTITY_DATABASE"
+offset="$WORKTREE_IDENTITY_PORT_OFFSET"
 backend_port=$((18080 + offset))
 frontend_port=$((13000 + offset))
 frontend_origin="http://localhost:${frontend_port}"
