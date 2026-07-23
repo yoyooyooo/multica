@@ -369,6 +369,19 @@ exec /bin/mv "$@"
 FAKE_MV
 chmod +x "$FAKE_BIN/mv"
 
+cat > "$FAKE_BIN/ln" <<'FAKE_LN'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${FAKE_LN_PAUSE_BEFORE_PUBLICATION:-0}" = 1 ] && [[ "${2:-}" == *'/multica-compose-lock-port-'* ]]; then
+  : > "${FAKE_DOCKER_STATE:?FAKE_DOCKER_STATE is required}/lock-publication.started"
+  while [ ! -f "$FAKE_DOCKER_STATE/release-lock-publication" ]; do
+    sleep 0.05
+  done
+fi
+exec /bin/ln "$@"
+FAKE_LN
+chmod +x "$FAKE_BIN/ln"
+
 cat > "$FAKE_BIN/git" <<'FAKE_GIT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -769,7 +782,7 @@ ENV
   if run_guard "$checkout" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/deployment.out" 2>&1 && \
     [ "$(mutation_count)" = 1 ] && \
-    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
     pass "deployment identity retains its verified lock release path"
   else
     fail "deployment identity did not complete a verified lock release"
@@ -982,6 +995,75 @@ test_concurrent_collision() {
   else
     fail "concurrent collision did not preserve one guarded mutation"
   fi
+}
+
+test_atomic_lock_publication() {
+  local initialization_grace
+
+  for initialization_grace in 0 -1 999999999; do
+    new_fixture "atomic-lock-publication-${initialization_grace#-}"
+    local worktree="$CASE_ROOT/worktree"
+    local env_file="$CASE_ROOT/worktree.env"
+    local first_pid
+    local second_pid
+    local first_status=0
+    local second_status=0
+    mkdir -p "$worktree"
+    write_env "$env_file" ignored "$worktree" ignored
+
+    (
+      export FAKE_DOCKER_ACTOR=first
+      export FAKE_LN_PAUSE_BEFORE_PUBLICATION=1
+      export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=1
+      run_guard "$worktree" "$env_file" docker compose up -d postgres > "$CASE_ROOT/first.out" 2>&1
+    ) &
+    first_pid=$!
+
+    if ! wait_for_file "$FAKE_DOCKER_STATE/lock-publication.started"; then
+      fail "first contender did not pause before atomic lock publication (grace $initialization_grace)"
+      : > "$FAKE_DOCKER_STATE/release-lock-publication"
+      wait "$first_pid" || true
+      continue
+    fi
+
+    (
+      export FAKE_DOCKER_ACTOR=second
+      export FAKE_DOCKER_BLOCK_UP=1
+      export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5
+      export MULTICA_COMPOSE_LOCK_INITIALIZATION_GRACE_SECONDS="$initialization_grace"
+      run_guard "$worktree" "$env_file" docker compose up -d postgres > "$CASE_ROOT/second.out" 2>&1
+    ) &
+    second_pid=$!
+
+    if ! wait_for_file "$FAKE_DOCKER_STATE/mutation.started"; then
+      fail "second contender did not claim the complete atomic record (grace $initialization_grace)"
+      : > "$FAKE_DOCKER_STATE/release-lock-publication"
+      : > "$FAKE_DOCKER_STATE/release-up"
+      wait "$first_pid" || true
+      wait "$second_pid" || true
+      continue
+    fi
+
+    : > "$FAKE_DOCKER_STATE/release-lock-publication"
+    if wait "$first_pid"; then
+      first_status=0
+    else
+      first_status=$?
+    fi
+    : > "$FAKE_DOCKER_STATE/release-up"
+    if wait "$second_pid"; then
+      second_status=0
+    else
+      second_status=$?
+    fi
+
+    if [ "$first_status" -ne 0 ] && [ "$second_status" = 0 ] && \
+      [ "$(mutation_count)" = 1 ] && grep -qx second "$FAKE_DOCKER_STATE/mutation.log"; then
+      pass "complete atomic publication ignores initialization-grace $initialization_grace"
+    else
+      fail "atomic publication allowed an initialization-grace race ($initialization_grace)"
+    fi
+  done
 }
 
 test_lock_root_override_serialization() {
@@ -1265,9 +1347,7 @@ test_stale_lock_quarantine() {
   project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
   port="$(env_value "$env_file" POSTGRES_PORT)"
   lock_path="$(lock_path_for_env "$worktree" "$env_file")"
-  mkdir -p "$lock_path"
-  printf '999999\n' > "$lock_path/owner.pid"
-  cat > "$lock_path/owner.meta" <<META
+  cat > "$lock_path" <<META
 pid=999999
 project=$project
 owner=worktree
@@ -1280,7 +1360,7 @@ META
 
   if run_guard "$worktree" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/stale.out" 2>&1 && \
-    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").stale.*" -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").stale.*" -print -quit | grep -q .; then
     pass "stale lock is quarantined by rename before a bounded recovery"
   else
     fail "stale lock was not safely quarantined and recovered"
@@ -1356,7 +1436,7 @@ test_readiness_timeout() {
     fail "unready PostgreSQL was accepted indefinitely"
   elif [ "$(mutation_count)" = 1 ] && \
     grep -Fq 'did not become ready within 1 seconds' "$CASE_ROOT/timeout.out" && \
-    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
     pass "PostgreSQL readiness has a bounded failure path that releases the lock"
   else
     fail "PostgreSQL readiness timeout did not preserve bounded lock cleanup"
@@ -1494,9 +1574,8 @@ test_nonowner_lock_release_refusal() {
   project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
   port="$(env_value "$env_file" POSTGRES_PORT)"
   lock_path="$(lock_path_for_env "$worktree" "$env_file")"
-  release_records_before="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
-  mkdir -p "$lock_path"
-  cat > "$lock_path/owner.meta" <<META
+  release_records_before="$(find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+  cat > "$lock_path" <<META
 pid=999999
 pid_start=foreign-process-start
 project=foreign_project
@@ -1518,8 +1597,8 @@ META
   ) > "$CASE_ROOT/nonowner-release.out" 2>&1; then
     nonowner_refused=false
   else
-    release_records_after_nonowner="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
-    if [ -d "$lock_path" ] && [ "$release_records_before" = "$release_records_after_nonowner" ]; then
+    release_records_after_nonowner="$(find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+    if [ -f "$lock_path" ] && [ "$release_records_before" = "$release_records_after_nonowner" ]; then
       nonowner_refused=true
     fi
   fi
@@ -1535,8 +1614,7 @@ META
     compose_prepare_identity
     owner_pid="${BASHPID:-$$}"
     owner_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
-    mkdir -p "$key_mismatch_lock"
-    cat > "$key_mismatch_lock/owner.meta" <<META
+    cat > "$key_mismatch_lock" <<META
 pid=$owner_pid
 pid_start=$owner_start
 project=$COMPOSE_PROJECT_NAME
@@ -1553,7 +1631,7 @@ META
     key_mismatch_refused=true
   fi
 
-  release_records_after="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+  release_records_after="$(find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
   if [ "$nonowner_refused" = true ] && [ "$key_mismatch_refused" = true ] && [ "$release_records_before" = "$release_records_after" ]; then
     pass "only the recorded owner and its port-derived lock key can release a Compose lock"
   else
@@ -1566,18 +1644,24 @@ test_release_failure_propagation() {
   local worktree="$CASE_ROOT/worktree"
   local env_file="$CASE_ROOT/worktree.env"
   local lock_path
+  local release_records_before
+  local release_records_after
   mkdir -p "$worktree"
   write_env "$env_file" ignored "$worktree" ignored
   lock_path="$(lock_path_for_env "$worktree" "$env_file")"
+  release_records_before="$(find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
 
   if FAKE_MV_FAIL_RELEASE=1 run_guard "$worktree" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/release-failure.out" 2>&1; then
     fail "lock release failure was hidden after a Compose mutation"
-  elif [ "$(mutation_count)" = 1 ] && [ -d "$lock_path" ] && \
-    ! find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
-    pass "lock release failure is returned and leaves the lock fail-closed"
   else
-    fail "lock release failure did not preserve fail-closed evidence"
+    release_records_after="$(find "$(dirname "$lock_path")" -maxdepth 1 -type f -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+    if [ "$(mutation_count)" = 1 ] && [ -f "$lock_path" ] && \
+      [ "$release_records_before" = "$release_records_after" ]; then
+      pass "lock release failure is returned and leaves the lock fail-closed"
+    else
+      fail "lock release failure did not preserve fail-closed evidence"
+    fi
   fi
 }
 
@@ -1605,8 +1689,8 @@ static_scan_no_match() {
 }
 
 test_static_safety_contract() {
-  if ! static_scan_no_match "$TEST_ROOT/caller-lock-root.out" 'MULTICA_COMPOSE_LOCK_ROOT|TMPDIR' "$REPO_ROOT/scripts/compose-ownership-guard.sh"; then
-    fail "$STATIC_SCAN_MESSAGE"
+  if ! static_scan_no_match "$TEST_ROOT/caller-lock-root.out" 'MULTICA_COMPOSE_LOCK_ROOT|TMPDIR|MULTICA_COMPOSE_LOCK_INITIALIZATION_GRACE_SECONDS|owner\.meta' "$REPO_ROOT/scripts/compose-ownership-guard.sh"; then
+    fail "production Compose locking still exposes a caller-selected root, grace, or directory-owner model: $STATIC_SCAN_MESSAGE"
     return
   fi
   if ! static_scan_no_match "$TEST_ROOT/stale-lock-root-doc.out" '\$\{TMPDIR' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" || \
@@ -1693,6 +1777,7 @@ run_case strict-volume-labels test_strict_volume_labels
 run_case path-alias-refusal test_path_alias_refusal
 run_case port-refusal test_port_refusal
 run_case concurrent-collision test_concurrent_collision
+run_case atomic-lock-publication test_atomic_lock_publication
 run_case lock-root-override-serialization test_lock_root_override_serialization
 run_case same-port-distinct-projects-serialize test_same_port_distinct_projects_serialize
 run_case post-mutation-boundary test_post_mutation_boundary

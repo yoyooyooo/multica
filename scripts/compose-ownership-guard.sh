@@ -410,20 +410,13 @@ compose_assert_mutation_target() {
   fi
 }
 
-compose_lock_path_mtime() {
-  local lock_path="$1"
-  if stat -f %m "$lock_path" > /dev/null 2>&1; then
-    stat -f %m "$lock_path"
-  else
-    stat -c %Y "$lock_path" 2>/dev/null || true
-  fi
-}
-
+# A canonical lock is one immutable regular-file claim. It is fully written
+# before ln(1) publishes it, so readers never observe an incomplete owner.
 compose_lock_metadata_value() {
   local lock_path="$1"
   local key="$2"
-  [ -f "$lock_path/owner.meta" ] || return 0
-  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$lock_path/owner.meta"
+  [ -f "$lock_path" ] || return 0
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$lock_path"
 }
 
 compose_lock_owner_summary() {
@@ -458,44 +451,33 @@ compose_lock_quarantine() {
   return 1
 }
 
-# Return success only when a stale lock was safely quarantined. A missing or
-# partial owner record is given a short initialization grace period so another
-# contender cannot steal a lock while its owner is still writing evidence.
+# A malformed claim is never a timing decision: it stays fail-closed. A complete
+# immutable claim is quarantined only after its recorded owner is demonstrably
+# gone or its PID has been reused by a different process.
 compose_lock_recover_stale() {
   local lock_path="$1"
-  local now
-  local created
   local owner_pid
   local expected_start
   local actual_start
-  local grace_seconds="${MULTICA_COMPOSE_LOCK_INITIALIZATION_GRACE_SECONDS:-2}"
 
-  now="$(date +%s)"
-  created="$(cat "$lock_path/created_epoch" 2>/dev/null || true)"
-  if [[ ! "$created" =~ ^[0-9]+$ ]]; then
-    created="$(compose_lock_path_mtime "$lock_path")"
-  fi
-  if [[ ! "$created" =~ ^[0-9]+$ ]]; then
+  if ! compose_lock_metadata_is_complete "$lock_path"; then
+    compose_guard_error "Compose lock '$lock_path' has malformed owner evidence; leaving it fail-closed"
     return 1
   fi
 
   owner_pid="$(compose_lock_metadata_value "$lock_path" pid)"
   expected_start="$(compose_lock_metadata_value "$lock_path" pid_start)"
-  if [[ ! "$owner_pid" =~ ^[0-9]+$ ]] || [ -z "$expected_start" ]; then
-    if [ $((now - created)) -ge "$grace_seconds" ]; then
-      compose_lock_quarantine "$lock_path" "missing owner evidence"
-      return $?
-    fi
-    return 1
-  fi
-
   if ! kill -0 "$owner_pid" 2>/dev/null; then
     compose_lock_quarantine "$lock_path" "owner process is no longer live"
     return $?
   fi
 
   actual_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
-  if [ -z "$actual_start" ] || [ "$actual_start" != "$expected_start" ]; then
+  if [ -z "$actual_start" ]; then
+    compose_guard_error "could not verify live owner start evidence for Compose lock '$lock_path'; leaving it fail-closed"
+    return 1
+  fi
+  if [ "$actual_start" != "$expected_start" ]; then
     compose_lock_quarantine "$lock_path" "owner PID evidence does not match"
     return $?
   fi
@@ -525,21 +507,24 @@ compose_lock_expected_path() {
 
 compose_lock_metadata_is_complete() {
   local lock_path="$1"
-  [ -f "$lock_path/owner.meta" ] || return 1
+  [ -f "$lock_path" ] || return 1
   awk -F= '
     $1 == "pid" || $1 == "pid_start" || $1 == "project" || $1 == "owner" || $1 == "worktree_path" || $1 == "port" || $1 == "key" || $1 == "started_epoch" {
       value = substr($0, length($1) + 2)
       if (++seen[$1] != 1) invalid = 1
       if ($1 != "worktree_path" && value == "") invalid = 1
       if (($1 == "pid" || $1 == "port" || $1 == "started_epoch") && value !~ /^[0-9]+$/) invalid = 1
+      if ($1 == "port") port = value
+      if ($1 == "key") key = value
       next
     }
     { invalid = 1 }
     END {
       if (seen["pid"] != 1 || seen["pid_start"] != 1 || seen["project"] != 1 || seen["owner"] != 1 || seen["worktree_path"] != 1 || seen["port"] != 1 || seen["key"] != 1 || seen["started_epoch"] != 1) invalid = 1
+      if (port !~ /^[0-9]+$/ || port < 1 || port > 65535 || key != "postgres-port-" port) invalid = 1
       exit invalid ? 1 : 0
     }
-  ' "$lock_path/owner.meta"
+  ' "$lock_path"
 }
 
 compose_lock_owner_matches_current_process() {
@@ -589,6 +574,7 @@ compose_lock_acquire() {
   local timeout_seconds="${MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS:-10}"
   local deadline
   local lock_path
+  local lock_root
   local lock_port
   local lock_key
 
@@ -597,30 +583,30 @@ compose_lock_acquire() {
     return 1
   fi
 
+  lock_root="$(compose_lock_root)" || return 1
   lock_port="$(compose_lock_port)" || return 1
   lock_key="$(compose_lock_key)" || return 1
-  lock_path="$(compose_lock_expected_path)" || return 1
+  lock_path="$lock_root/multica-compose-lock-port-$lock_port"
   deadline=$(( $(date +%s) + timeout_seconds ))
 
   while :; do
-    if mkdir "$lock_path" 2>/dev/null; then
-      local now
-      local owner_pid
-      local pid_start
-      local pending_metadata
-      now="$(date +%s)"
-      owner_pid="${BASHPID:-$$}"
-      printf '%s\n' "$now" > "$lock_path/created_epoch"
-      pid_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
-      if [ -z "$pid_start" ]; then
-        compose_guard_error "could not record current process start evidence for Compose lock"
-        compose_lock_quarantine "$lock_path" "incomplete owner evidence" || \
-          compose_guard_error "could not quarantine incomplete Compose lock '$lock_path'; leaving it fail-closed"
-        return 1
-      fi
-      printf '%s\n' "$owner_pid" > "$lock_path/owner.pid"
-      pending_metadata="$lock_path/owner.meta.pending.$owner_pid"
-      cat > "$pending_metadata" <<METADATA
+    local now
+    local owner_pid
+    local pid_start
+    local claim_path
+    now="$(date +%s)"
+    owner_pid="${BASHPID:-$$}"
+    pid_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
+    if [ -z "$pid_start" ]; then
+      compose_guard_error "could not record current process start evidence for Compose lock"
+      return 1
+    fi
+
+    claim_path="$(umask 077; mktemp "$lock_root/.multica-compose-lock-claim.XXXXXXXX")" || {
+      compose_guard_error "could not create a private Compose lock claim in $lock_root"
+      return 1
+    }
+    cat > "$claim_path" <<METADATA
 pid=$owner_pid
 pid_start=$pid_start
 project=$COMPOSE_PROJECT_NAME
@@ -630,12 +616,11 @@ port=$lock_port
 key=$lock_key
 started_epoch=$now
 METADATA
-      if ! mv "$pending_metadata" "$lock_path/owner.meta"; then
-        compose_guard_error "could not publish Compose lock owner evidence; leaving lock fail-closed"
-        compose_lock_quarantine "$lock_path" "owner evidence publication failed" || \
-          compose_guard_error "could not quarantine incomplete Compose lock '$lock_path'; leaving it fail-closed"
-        return 1
-      fi
+    if ! compose_lock_metadata_is_complete "$claim_path"; then
+      compose_guard_error "could not create complete Compose lock owner evidence"
+      return 1
+    fi
+    if ln "$claim_path" "$lock_path" 2>/dev/null; then
       COMPOSE_OWNERSHIP_LOCK_PATH="$lock_path"
       export COMPOSE_OWNERSHIP_LOCK_PATH
       return 0
@@ -657,7 +642,7 @@ compose_lock_release() {
   local lock_path="${COMPOSE_OWNERSHIP_LOCK_PATH:-}"
   local expected_lock_path
   [ -n "$lock_path" ] || return 0
-  if [ ! -d "$lock_path" ]; then
+  if [ ! -f "$lock_path" ]; then
     compose_guard_error "Compose lock '$lock_path' disappeared before its owner could release it"
     return 1
   fi

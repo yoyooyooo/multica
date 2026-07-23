@@ -39,9 +39,10 @@ force deletion, or a production Compose command to clean up a worktree.
 
 ## Lock recovery
 
-Every guarded Compose mutation writes owner PID, process-start evidence,
-project, canonical worktree path, PostgreSQL host port, and lock key beneath
-one fixed host-local namespace:
+Every guarded Compose mutation fully writes one immutable regular-file owner
+record (PID, process-start evidence, project, canonical worktree path,
+PostgreSQL host port, lock key, and start time) before atomically publishing
+that record beneath one fixed host-local namespace:
 
 ```text
 /tmp/multica-compose-locks/multica-compose-lock-port-<port>
@@ -55,13 +56,15 @@ preflight-and-mutation boundary. After the first operation creates the binding,
 a different project fails its ownership/port preflight instead of reaching a
 second mutation.
 
-A competing operation waits only for the configured bounded interval. If the
-owner process is gone, its start evidence no longer matches, or evidence never
-finishes initialization, the helper atomically renames the directory to a
-`.stale.*` quarantine before continuing. A normal release is likewise renamed
-to a `.released.*` record only after the releasing process matches the recorded
-PID, process-start, project, owner, canonical worktree path, port, and key; a
-mismatch or rename failure remains fail-closed.
+A competing operation reads one complete immutable record and waits only for
+the configured bounded interval. There is no caller-controlled initialization
+grace and no visible partial-owner state. A malformed record remains
+fail-closed; a complete record is atomically renamed to a `.stale.*` quarantine
+only after its owner is gone or its PID has been reused with different start
+evidence. A normal release is likewise renamed to a `.released.*` record only
+after the releasing process matches the recorded PID, process-start, project,
+owner, canonical worktree path, port, and key; a mismatch or rename failure
+remains fail-closed.
 
 Do not manually delete lock or test directories. Keep quarantined evidence in
 place; if host administration later requires disposal, use the platform's
