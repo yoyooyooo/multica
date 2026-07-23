@@ -263,12 +263,27 @@ compose_port_matches() {
   printf '%s\n' "$bindings" | grep -qE "(^|[[:space:]])(0\\.0\\.0\\.0|127\\.0\\.0\\.1|::|\\[::\\]|\\[::1\\]):${expected_port}([[:space:]]|$)"
 }
 
-compose_check_port() {
+# The PostgreSQL host port is the collision authority: distinct Compose projects
+# cannot bind the same port concurrently, so every mutation for that port shares
+# one lock. Keep this validation before both lock acquisition and port probing.
+compose_lock_port() {
   local port="${POSTGRES_PORT:-5432}"
   if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
     compose_guard_error "POSTGRES_PORT must be an integer from 1 through 65535"
     return 1
   fi
+  printf '%s' "$port"
+}
+
+compose_lock_key() {
+  local port
+  port="$(compose_lock_port)" || return 1
+  printf 'postgres-port-%s' "$port"
+}
+
+compose_check_port() {
+  local port
+  port="$(compose_lock_port)" || return 1
 
   local container_name
   local bindings
@@ -415,11 +430,17 @@ compose_lock_owner_summary() {
   local lock_path="$1"
   local owner_pid
   local owner_project
+  local owner_port
+  local owner_key
   local owner_path
   owner_pid="$(compose_lock_metadata_value "$lock_path" pid)"
   owner_project="$(compose_lock_metadata_value "$lock_path" project)"
+  owner_port="$(compose_lock_metadata_value "$lock_path" port)"
+  owner_key="$(compose_lock_metadata_value "$lock_path" key)"
   owner_path="$(compose_lock_metadata_value "$lock_path" worktree_path)"
-  printf 'pid=%s project=%s worktree=%s' "${owner_pid:-(unknown)}" "${owner_project:-(unknown)}" "${owner_path:-(unknown)}"
+  printf 'pid=%s project=%s port=%s key=%s worktree=%s' \
+    "${owner_pid:-(unknown)}" "${owner_project:-(unknown)}" \
+    "${owner_port:-(unknown)}" "${owner_key:-(unknown)}" "${owner_path:-(unknown)}"
 }
 
 compose_lock_quarantine() {
@@ -482,30 +503,40 @@ compose_lock_recover_stale() {
   return 1
 }
 
-compose_lock_expected_path() {
-  local lock_root="${MULTICA_COMPOSE_LOCK_ROOT:-${TMPDIR:-/tmp}/multica-compose-locks}"
-  if [ ! -d "$lock_root" ]; then
-    compose_guard_error "Compose lock root is missing during release: $lock_root"
+# Production locks always use this host-local namespace. It deliberately has no
+# environment, env-file, current-directory, or Compose-variable input: those
+# values are caller-controlled and must never split the lock authority.
+compose_lock_root() {
+  local lock_root="/tmp/multica-compose-locks"
+  if ! mkdir -p "$lock_root"; then
+    compose_guard_error "could not create canonical Compose lock root: $lock_root"
     return 1
   fi
-  lock_root="$(compose_canonical_path "$lock_root")" || return 1
-  printf '%s' "$lock_root/multica-compose-lock-$COMPOSE_PROJECT_NAME"
+  compose_canonical_path "$lock_root"
+}
+
+compose_lock_expected_path() {
+  local lock_root
+  local lock_port
+  lock_root="$(compose_lock_root)" || return 1
+  lock_port="$(compose_lock_port)" || return 1
+  printf '%s' "$lock_root/multica-compose-lock-port-$lock_port"
 }
 
 compose_lock_metadata_is_complete() {
   local lock_path="$1"
   [ -f "$lock_path/owner.meta" ] || return 1
   awk -F= '
-    $1 == "pid" || $1 == "pid_start" || $1 == "project" || $1 == "owner" || $1 == "worktree_path" || $1 == "started_epoch" {
+    $1 == "pid" || $1 == "pid_start" || $1 == "project" || $1 == "owner" || $1 == "worktree_path" || $1 == "port" || $1 == "key" || $1 == "started_epoch" {
       value = substr($0, length($1) + 2)
       if (++seen[$1] != 1) invalid = 1
       if ($1 != "worktree_path" && value == "") invalid = 1
-      if (($1 == "pid" || $1 == "started_epoch") && value !~ /^[0-9]+$/) invalid = 1
+      if (($1 == "pid" || $1 == "port" || $1 == "started_epoch") && value !~ /^[0-9]+$/) invalid = 1
       next
     }
     { invalid = 1 }
     END {
-      if (seen["pid"] != 1 || seen["pid_start"] != 1 || seen["project"] != 1 || seen["owner"] != 1 || seen["worktree_path"] != 1 || seen["started_epoch"] != 1) invalid = 1
+      if (seen["pid"] != 1 || seen["pid_start"] != 1 || seen["project"] != 1 || seen["owner"] != 1 || seen["worktree_path"] != 1 || seen["port"] != 1 || seen["key"] != 1 || seen["started_epoch"] != 1) invalid = 1
       exit invalid ? 1 : 0
     }
   ' "$lock_path/owner.meta"
@@ -518,8 +549,12 @@ compose_lock_owner_matches_current_process() {
   local owner_project
   local owner
   local owner_path
+  local owner_port
+  local owner_key
   local current_pid
   local current_start
+  local current_port
+  local current_key
 
   if ! compose_lock_metadata_is_complete "$lock_path"; then
     compose_guard_error "Compose lock '$lock_path' has malformed owner evidence; refusing release"
@@ -531,13 +566,18 @@ compose_lock_owner_matches_current_process() {
   owner_project="$(compose_lock_metadata_value "$lock_path" project)"
   owner="$(compose_lock_metadata_value "$lock_path" owner)"
   owner_path="$(compose_lock_metadata_value "$lock_path" worktree_path)"
+  owner_port="$(compose_lock_metadata_value "$lock_path" port)"
+  owner_key="$(compose_lock_metadata_value "$lock_path" key)"
   current_pid="${BASHPID:-$$}"
   current_start="$(ps -o lstart= -p "$current_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
+  current_port="$(compose_lock_port)" || return 1
+  current_key="$(compose_lock_key)" || return 1
 
   if [[ ! "$owner_pid" =~ ^[0-9]+$ ]] || [ -z "$current_start" ] || \
     [ "$owner_pid" != "$current_pid" ] || [ "$owner_start" != "$current_start" ] || \
     [ "$owner_project" != "$COMPOSE_PROJECT_NAME" ] || [ "$owner" != "$MULTICA_OWNER" ] || \
-    [ "$owner_path" != "$WORKTREE_PATH" ]; then
+    [ "$owner_path" != "$WORKTREE_PATH" ] || [ "$owner_port" != "$current_port" ] || \
+    [ "$owner_key" != "$current_key" ]; then
     compose_guard_error "Compose lock '$lock_path' is not owned by this process and canonical identity; refusing release"
     return 1
   fi
@@ -546,17 +586,19 @@ compose_lock_owner_matches_current_process() {
 compose_lock_acquire() {
   compose_prepare_identity || return 1
 
-  local lock_root="${MULTICA_COMPOSE_LOCK_ROOT:-${TMPDIR:-/tmp}/multica-compose-locks}"
   local timeout_seconds="${MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS:-10}"
   local deadline
   local lock_path
+  local lock_port
+  local lock_key
 
   if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]] || [ "$timeout_seconds" -lt 1 ] || [ "$timeout_seconds" -gt 300 ]; then
     compose_guard_error "MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS must be an integer from 1 through 300"
     return 1
   fi
 
-  mkdir -p "$lock_root"
+  lock_port="$(compose_lock_port)" || return 1
+  lock_key="$(compose_lock_key)" || return 1
   lock_path="$(compose_lock_expected_path)" || return 1
   deadline=$(( $(date +%s) + timeout_seconds ))
 
@@ -584,6 +626,8 @@ pid_start=$pid_start
 project=$COMPOSE_PROJECT_NAME
 owner=$MULTICA_OWNER
 worktree_path=$WORKTREE_PATH
+port=$lock_port
+key=$lock_key
 started_epoch=$now
 METADATA
       if ! mv "$pending_metadata" "$lock_path/owner.meta"; then
