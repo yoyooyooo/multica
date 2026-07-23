@@ -15,4 +15,8 @@ This is the registry for fork-owned capabilities implemented in the current gene
 
 ## Current registry
 
-No legacy fork capability is claimed as implemented on this generation yet. Capabilities from `mini-runtime@c798fa83…` enter this registry only after their implementation, tests, and narrative are replayed and accepted on this generation.
+| Capability | Generation state | Runtime state |
+|---|---|---|
+| [Pi Process Tree Supervision](pi-process-tree-supervision/README.md) | source and tests present | not deployed |
+
+Legacy capabilities from `mini-runtime@c798fa83…` enter this registry only after their implementation, tests, and narrative are replayed and accepted on this generation. Source presence does not imply runtime availability.
