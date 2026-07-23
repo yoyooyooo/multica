@@ -43,10 +43,58 @@ compose_is_linked_git_worktree() {
   [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ]
 }
 
-# compose_prepare_identity canonicalizes the worktree path before any label or
-# lock comparison. A worktree identity is never derived from logical $PWD.
+# compose_current_checkout_path resolves the physical root of the checkout that
+# invoked the mutation. Prefer Git's root so `make -C` and a direct script call
+# from a subdirectory have the same identity; non-Git fixtures fall back to PWD.
+compose_current_checkout_path() {
+  local git_root
+  git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$git_root" ]; then
+    compose_canonical_path "$git_root"
+  else
+    compose_canonical_path "$(pwd -P)"
+  fi
+}
+
+# compose_derive_worktree_identity mirrors init-worktree-env.sh. Every
+# worktree-owned mutation recomputes these values from the physical checkout
+# instead of accepting a caller-controlled project, port, or database.
+compose_derive_worktree_identity() {
+  local physical_path="$1"
+  local worktree_name
+  local slug
+  local hash_value
+  local offset
+
+  worktree_name="$(basename "$physical_path")"
+  slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
+  [ -n "$slug" ] || slug="multica"
+  hash_value="$(printf '%s' "$physical_path" | cksum | awk '{print $1}')"
+  offset=$((hash_value % 1000))
+
+  COMPOSE_EXPECTED_PROJECT="wt_${slug}_${offset}"
+  COMPOSE_EXPECTED_PORT=$((15432 + offset))
+  COMPOSE_EXPECTED_DATABASE="wt_${slug}_${offset}"
+}
+
+compose_require_exact_identity_value() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+  if [ "$actual" != "$expected" ]; then
+    compose_guard_error "$label does not match the current physical worktree identity"
+    compose_guard_error "  expected: $expected"
+    compose_guard_error "  received: ${actual:-(missing)}"
+    return 1
+  fi
+}
+
+# compose_prepare_identity canonicalizes the current checkout before any label
+# or lock comparison. Worktree identity must be generated from that checkout,
+# not trusted from an env file supplied by another worktree.
 compose_prepare_identity() {
   local linked_git_worktree=false
+  COMPOSE_CURRENT_CHECKOUT_PATH="$(compose_current_checkout_path)" || return 1
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-multica}"
   if compose_is_linked_git_worktree; then
     linked_git_worktree=true
@@ -68,6 +116,19 @@ compose_prepare_identity() {
   case "$MULTICA_OWNER" in
     worktree)
       WORKTREE_PATH="$(compose_canonical_path "${WORKTREE_PATH:-}")" || return 1
+      if [ "$WORKTREE_PATH" != "$COMPOSE_CURRENT_CHECKOUT_PATH" ]; then
+        compose_guard_error "WORKTREE_PATH must equal the current physical checkout"
+        compose_guard_error "  current:  $COMPOSE_CURRENT_CHECKOUT_PATH"
+        compose_guard_error "  received: $WORKTREE_PATH"
+        return 1
+      fi
+      compose_derive_worktree_identity "$COMPOSE_CURRENT_CHECKOUT_PATH"
+      compose_require_exact_identity_value COMPOSE_PROJECT_NAME "$COMPOSE_PROJECT_NAME" "$COMPOSE_EXPECTED_PROJECT" || return 1
+      compose_require_exact_identity_value POSTGRES_PORT "${POSTGRES_PORT:-}" "$COMPOSE_EXPECTED_PORT" || return 1
+      compose_require_exact_identity_value POSTGRES_DB "${POSTGRES_DB:-}" "$COMPOSE_EXPECTED_DATABASE" || return 1
+      COMPOSE_PROJECT_NAME="$COMPOSE_EXPECTED_PROJECT"
+      POSTGRES_PORT="$COMPOSE_EXPECTED_PORT"
+      POSTGRES_DB="$COMPOSE_EXPECTED_DATABASE"
       ;;
     deployment)
       if [ -n "${WORKTREE_PATH:-}" ]; then
@@ -82,7 +143,7 @@ compose_prepare_identity() {
       ;;
   esac
 
-  export COMPOSE_PROJECT_NAME MULTICA_OWNER WORKTREE_PATH
+  export COMPOSE_CURRENT_CHECKOUT_PATH COMPOSE_PROJECT_NAME MULTICA_OWNER WORKTREE_PATH POSTGRES_PORT POSTGRES_DB
 }
 
 compose_resource_label() {
@@ -239,6 +300,110 @@ guard_compose_ownership() {
   compose_check_port || return 1
 }
 
+# compose_assert_compose_project_target parses only Docker Compose global
+# options, then requires exactly one explicit project selector. The guarded
+# project, lock key, labels, and mutation target therefore cannot diverge.
+compose_assert_compose_project_target() {
+  if [ "${1:-}" != docker ] || [ "${2:-}" != compose ]; then
+    compose_guard_error "expected a docker compose command inside the ownership boundary"
+    return 1
+  fi
+  shift 2
+
+  local project_target=""
+  local project_seen=false
+  local option
+  while [ "$#" -gt 0 ]; do
+    option="$1"
+    case "$option" in
+      --project-name)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          compose_guard_error "docker compose --project-name requires a value"
+          return 1
+        fi
+        if [ "$project_seen" = true ]; then
+          compose_guard_error "docker compose must specify exactly one project name"
+          return 1
+        fi
+        project_target="$2"
+        project_seen=true
+        shift 2
+        ;;
+      --project-name=*)
+        project_target="${option#--project-name=}"
+        if [ -z "$project_target" ] || [ "$project_seen" = true ]; then
+          compose_guard_error "docker compose must specify exactly one non-empty project name"
+          return 1
+        fi
+        project_seen=true
+        shift
+        ;;
+      -p)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [ "$project_seen" = true ]; then
+          compose_guard_error "docker compose -p requires one non-empty project name"
+          return 1
+        fi
+        project_target="$2"
+        project_seen=true
+        shift 2
+        ;;
+      -p?*)
+        project_target="${option#-p}"
+        if [ -z "$project_target" ] || [ "$project_seen" = true ]; then
+          compose_guard_error "docker compose must specify exactly one non-empty project name"
+          return 1
+        fi
+        project_seen=true
+        shift
+        ;;
+      -f|--file|--env-file|--project-directory|--ansi|--parallel|--progress)
+        if [ "$#" -lt 2 ]; then
+          compose_guard_error "docker compose option '$option' requires a value"
+          return 1
+        fi
+        shift 2
+        ;;
+      --file=*|--env-file=*|--project-directory=*|--ansi=*|--parallel=*|--progress=*)
+        shift
+        ;;
+      --dry-run|--all-resources|--compatibility|--menu)
+        shift
+        ;;
+      --)
+        break
+        ;;
+      -*)
+        # Unknown global flags are left to Docker Compose. They cannot provide
+        # a project target unless they use one of the explicit forms above.
+        shift
+        ;;
+      *)
+        # The first non-option is the Compose subcommand; do not interpret its
+        # arguments as global selectors.
+        break
+        ;;
+    esac
+  done
+
+  if [ "$project_seen" != true ]; then
+    compose_guard_error "docker compose mutation must use an explicit --project-name matching the guarded identity"
+    return 1
+  fi
+  compose_validate_project_name "$project_target" || return 1
+  if [ "$project_target" != "$COMPOSE_PROJECT_NAME" ]; then
+    compose_guard_error "docker compose project '$project_target' does not match guarded project '$COMPOSE_PROJECT_NAME'"
+    return 1
+  fi
+}
+
+# Internal helpers can run under the lock by passing a shell function. Direct
+# Docker Compose commands must always satisfy the exact project-target check.
+compose_assert_mutation_target() {
+  if [ "${1:-}" = docker ] && [ "${2:-}" = compose ]; then
+    compose_assert_compose_project_target "$@"
+  fi
+}
+
 compose_lock_path_mtime() {
   local lock_path="$1"
   if stat -f %m "$lock_path" > /dev/null 2>&1; then
@@ -326,6 +491,67 @@ compose_lock_recover_stale() {
   return 1
 }
 
+compose_lock_expected_path() {
+  local lock_root="${MULTICA_COMPOSE_LOCK_ROOT:-${TMPDIR:-/tmp}/multica-compose-locks}"
+  if [ ! -d "$lock_root" ]; then
+    compose_guard_error "Compose lock root is missing during release: $lock_root"
+    return 1
+  fi
+  lock_root="$(compose_canonical_path "$lock_root")" || return 1
+  printf '%s' "$lock_root/multica-compose-lock-$COMPOSE_PROJECT_NAME"
+}
+
+compose_lock_metadata_is_complete() {
+  local lock_path="$1"
+  [ -f "$lock_path/owner.meta" ] || return 1
+  awk -F= '
+    $1 == "pid" || $1 == "pid_start" || $1 == "project" || $1 == "owner" || $1 == "worktree_path" || $1 == "started_epoch" {
+      value = substr($0, length($1) + 2)
+      if (++seen[$1] != 1) invalid = 1
+      if ($1 != "worktree_path" && value == "") invalid = 1
+      if (($1 == "pid" || $1 == "started_epoch") && value !~ /^[0-9]+$/) invalid = 1
+      next
+    }
+    { invalid = 1 }
+    END {
+      if (seen["pid"] != 1 || seen["pid_start"] != 1 || seen["project"] != 1 || seen["owner"] != 1 || seen["worktree_path"] != 1 || seen["started_epoch"] != 1) invalid = 1
+      exit invalid ? 1 : 0
+    }
+  ' "$lock_path/owner.meta"
+}
+
+compose_lock_owner_matches_current_process() {
+  local lock_path="$1"
+  local owner_pid
+  local owner_start
+  local owner_project
+  local owner
+  local owner_path
+  local current_pid
+  local current_start
+
+  if ! compose_lock_metadata_is_complete "$lock_path"; then
+    compose_guard_error "Compose lock '$lock_path' has malformed owner evidence; refusing release"
+    return 1
+  fi
+
+  owner_pid="$(compose_lock_metadata_value "$lock_path" pid)"
+  owner_start="$(compose_lock_metadata_value "$lock_path" pid_start)"
+  owner_project="$(compose_lock_metadata_value "$lock_path" project)"
+  owner="$(compose_lock_metadata_value "$lock_path" owner)"
+  owner_path="$(compose_lock_metadata_value "$lock_path" worktree_path)"
+  current_pid="${BASHPID:-$$}"
+  current_start="$(ps -o lstart= -p "$current_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
+
+  if [[ ! "$owner_pid" =~ ^[0-9]+$ ]] || [ -z "$current_start" ] || \
+    [ "$owner_pid" != "$current_pid" ] || [ "$owner_start" != "$current_start" ] || \
+    [ "$owner_project" != "$COMPOSE_PROJECT_NAME" ] || [ "$owner" != "$MULTICA_OWNER" ] || \
+    [ "$owner_path" != "$WORKTREE_PATH" ]; then
+    compose_guard_error "Compose lock '$lock_path' is not owned by this process and canonical identity; refusing release"
+    return 1
+  fi
+}
+
 compose_lock_acquire() {
   compose_prepare_identity || return 1
 
@@ -340,8 +566,7 @@ compose_lock_acquire() {
   fi
 
   mkdir -p "$lock_root"
-  lock_root="$(compose_canonical_path "$lock_root")" || return 1
-  lock_path="$lock_root/multica-compose-lock-$COMPOSE_PROJECT_NAME"
+  lock_path="$(compose_lock_expected_path)" || return 1
   deadline=$(( $(date +%s) + timeout_seconds ))
 
   while :; do
@@ -356,7 +581,8 @@ compose_lock_acquire() {
       pid_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' || true)"
       if [ -z "$pid_start" ]; then
         compose_guard_error "could not record current process start evidence for Compose lock"
-        compose_lock_quarantine "$lock_path" "incomplete owner evidence" || true
+        compose_lock_quarantine "$lock_path" "incomplete owner evidence" || \
+          compose_guard_error "could not quarantine incomplete Compose lock '$lock_path'; leaving it fail-closed"
         return 1
       fi
       printf '%s\n' "$owner_pid" > "$lock_path/owner.pid"
@@ -369,7 +595,12 @@ owner=$MULTICA_OWNER
 worktree_path=$WORKTREE_PATH
 started_epoch=$now
 METADATA
-      mv "$pending_metadata" "$lock_path/owner.meta"
+      if ! mv "$pending_metadata" "$lock_path/owner.meta"; then
+        compose_guard_error "could not publish Compose lock owner evidence; leaving lock fail-closed"
+        compose_lock_quarantine "$lock_path" "owner evidence publication failed" || \
+          compose_guard_error "could not quarantine incomplete Compose lock '$lock_path'; leaving it fail-closed"
+        return 1
+      fi
       COMPOSE_OWNERSHIP_LOCK_PATH="$lock_path"
       export COMPOSE_OWNERSHIP_LOCK_PATH
       return 0
@@ -389,13 +620,25 @@ METADATA
 
 compose_lock_release() {
   local lock_path="${COMPOSE_OWNERSHIP_LOCK_PATH:-}"
+  local expected_lock_path
   [ -n "$lock_path" ] || return 0
-  [ -d "$lock_path" ] || return 0
+  if [ ! -d "$lock_path" ]; then
+    compose_guard_error "Compose lock '$lock_path' disappeared before its owner could release it"
+    return 1
+  fi
+
+  compose_prepare_identity || return 1
+  expected_lock_path="$(compose_lock_expected_path)" || return 1
+  if [ "$lock_path" != "$expected_lock_path" ]; then
+    compose_guard_error "Compose lock path does not match this canonical identity; refusing release"
+    return 1
+  fi
+  compose_lock_owner_matches_current_process "$lock_path" || return 1
 
   local timestamp
   local released_path
   timestamp="$(date +%s)"
-  released_path="${lock_path}.released.${timestamp}.$$.${RANDOM}"
+  released_path="${lock_path}.released.${timestamp}.${BASHPID:-$$}.${RANDOM}"
   if ! mv "$lock_path" "$released_path"; then
     compose_guard_error "could not release Compose lock '$lock_path'; leaving it fail-closed"
     return 1
@@ -405,13 +648,14 @@ compose_lock_release() {
 }
 
 # compose_with_ownership_lock provides the only mutation boundary used by the
-# worktree scripts: identity -> lock -> guard -> exact command -> quarantine
-# release. The subshell keeps its EXIT trap scoped to this invocation.
+# worktree scripts: identity -> lock -> guard -> exact command -> verified
+# release. A release failure is an operation failure and is never suppressed.
 compose_with_ownership_lock() (
   compose_prepare_identity
   compose_lock_acquire
-  trap 'status=$?; compose_lock_release || true; exit "$status"' EXIT
+  trap 'status=$?; if ! compose_lock_release; then exit 1; fi; exit "$status"' EXIT
   guard_compose_ownership
+  compose_assert_mutation_target "$@"
   "$@"
 )
 

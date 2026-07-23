@@ -96,6 +96,14 @@ is_local() {
 }
 
 ensure_local_postgres() {
+  # Validate the optional db-reset mutation before the first Compose command.
+  # This function runs inside compose_with_ownership_lock, after identity and
+  # lock acquisition, so its generated Compose commands and post mutation use
+  # the same canonical project target.
+  if [ "$#" -gt 0 ]; then
+    compose_assert_compose_project_target "$@" || return 1
+  fi
+
   local project_name="$COMPOSE_PROJECT_NAME"
   local compose_args=(-f docker-compose.yml --project-name "$project_name")
   local db_exists

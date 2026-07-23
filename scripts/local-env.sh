@@ -1,4 +1,4 @@
-# Shared local development env derivation. Source this after loading .env.
+# Local development env derivation. Source this after loading the current env file.
 
 POSTGRES_DB="${POSTGRES_DB:-multica}"
 POSTGRES_USER="${POSTGRES_USER:-multica}"

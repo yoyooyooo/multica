@@ -14,7 +14,7 @@ services:
     labels:
       multica.owner: "${MULTICA_OWNER:-deployment}"
       multica.worktree.path: "${WORKTREE_PATH:-}"
-      multica.worktree.project: "${COMPOSE_PROJECT_NAME:-}"
+      multica.worktree.project: "${COMPOSE_PROJECT_NAME:-multica}"
 
 volumes:
   pgdata:

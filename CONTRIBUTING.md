@@ -7,22 +7,22 @@ It covers:
 - first-time setup
 - day-to-day development in the main checkout
 - isolated worktree development
-- the shared PostgreSQL model
+- the isolated PostgreSQL Compose model
 - testing and verification
 - full-stack isolated testing (backend + frontend + daemon from source)
 - troubleshooting and destructive reset options
 
 ## Development Model
 
-Local development uses one shared PostgreSQL container and one database per checkout.
+The main checkout and every Git worktree use distinct PostgreSQL Compose identities.
 
-- the main checkout usually uses `.env` and `POSTGRES_DB=multica`
-- each Git worktree uses its own `.env.worktree`
-- every checkout connects to the same PostgreSQL host: `localhost:5432`
-- isolation happens at the database level, not by starting a separate Docker Compose project
-- backend and frontend ports are still unique per worktree
+- the main checkout usually uses `.env`, Compose project `multica`, and `POSTGRES_DB=multica`
+- each Git worktree uses a generated `.env.worktree`
+- a worktree gets a deterministic `wt_*` Compose project, PostgreSQL container, host port, volume, and database from its canonical physical path
+- a worktree must not use the deployment `multica` Compose project or its PostgreSQL port/volume
+- backend and frontend ports are also unique per worktree
 
-This keeps Docker simple while still isolating schema and data.
+This isolates schema, data, containers, volumes, and host ports across local worktrees.
 
 ## Prerequisites
 
@@ -55,6 +55,8 @@ cp .env.example .env
 By default, `.env` points to:
 
 ```bash
+COMPOSE_PROJECT_NAME=multica
+MULTICA_OWNER=deployment
 POSTGRES_DB=multica
 POSTGRES_PORT=5432
 DATABASE_URL=postgres://multica:multica@localhost:5432/multica?sslmode=disable
@@ -70,20 +72,24 @@ Generate `.env.worktree` from inside the worktree:
 make worktree-env
 ```
 
-That generates values like:
+That generates deterministic values like:
 
 ```bash
-POSTGRES_DB=multica_my_feature_702
-POSTGRES_PORT=5432
+COMPOSE_PROJECT_NAME=wt_multica_feature_702
+MULTICA_OWNER=worktree
+WORKTREE_PATH=/physical/path/to/multica-feature
+POSTGRES_DB=wt_multica_feature_702
+POSTGRES_PORT=16134
 PORT=18782
 FRONTEND_PORT=13702
-DATABASE_URL=postgres://multica:multica@localhost:5432/multica_my_feature_702?sslmode=disable
+DATABASE_URL=postgres://multica:multica@localhost:16134/wt_multica_feature_702?sslmode=disable
 ```
 
 Notes:
 
-- `POSTGRES_DB` is unique per worktree
-- `POSTGRES_PORT` stays fixed at `5432`
+- Compose project, PostgreSQL container, volume, database, and host port are unique per worktree
+- the values are derived from the canonical physical worktree path; a symlink resolves to the same identity
+- guarded Compose commands reject a copied, foreign, or manually retargeted `.env.worktree`
 - backend and frontend ports are derived from the worktree path hash
 - `make worktree-env` refuses to overwrite an existing `.env.worktree`
 
@@ -109,8 +115,8 @@ This single command:
 - creates the appropriate env file (`.env` or `.env.worktree`) if it doesn't exist
 - checks that prerequisites (Node.js, pnpm, Go, Docker) are installed
 - installs JavaScript dependencies
-- ensures the shared PostgreSQL container is running
-- creates the application database if it does not exist
+- ensures the current checkout's isolated PostgreSQL Compose project is running
+- creates the current checkout's application database if it does not exist
 - runs all migrations
 - starts both backend and frontend
 
@@ -160,7 +166,7 @@ make check-main
 
 ### Feature Worktree
 
-Use a worktree when you want isolated data and separate app ports.
+Use a worktree when you want isolated Compose resources, data, and app ports.
 
 ```bash
 git worktree add ../multica-feature -b feat/my-change main
@@ -183,32 +189,27 @@ This is a first-class workflow.
 Example:
 
 - main checkout
-  - database: `multica`
-  - backend: `8080`
-  - frontend: `3000`
+  - Compose project/container/volume: `multica` / `multica-postgres-1` / `multica_pgdata`
+  - database and PostgreSQL host port: `multica` / `5432`
+  - backend/frontend: `8080` / `3000`
 - worktree checkout
-  - database: `multica_my_feature_702`
-  - backend: generated worktree port such as `18782`
-  - frontend: generated worktree port such as `13702`
+  - Compose project/container/volume: generated `wt_*` identity
+  - database and PostgreSQL host port: generated `wt_*` database and unique port such as `16134`
+  - backend/frontend: generated worktree ports such as `18782` / `13702`
 
-Both checkouts use:
-
-- the same PostgreSQL container
-- the same PostgreSQL port: `5432`
-
-But they do not share application data, because each uses a different database.
+The two checkouts do not share PostgreSQL containers, volumes, databases, or host ports. Run `make db-up` and `make db-down` only from the checkout whose resources you intend to target.
 
 ## Command Reference
 
-### Shared Infrastructure
+### Current Checkout PostgreSQL
 
-Start the shared PostgreSQL container:
+Start the PostgreSQL container for the current env file's Compose project:
 
 ```bash
 make db-up
 ```
 
-Stop the shared PostgreSQL container:
+Stop that same current checkout project:
 
 ```bash
 make db-down
@@ -216,8 +217,9 @@ make db-down
 
 Important:
 
-- `make db-down` stops the container but keeps the Docker volume
-- your local databases are preserved
+- guarded commands require the exact generated worktree identity and explicit matching Compose project
+- `make db-down` stops the selected project but keeps its Docker volume
+- other worktree PostgreSQL containers, volumes, and databases are not targeted
 
 ### App Lifecycle
 
@@ -450,7 +452,7 @@ make cli ARGS="daemon stop --profile $PROFILE"
 make stop            # main checkout
 make stop-worktree   # worktree checkout
 
-# 3. (Optional) Stop shared PostgreSQL
+# 3. (Optional) Stop this checkout's PostgreSQL Compose project
 make db-down
 
 # 4. (Optional) Clean build artifacts
@@ -570,11 +572,19 @@ Look for:
 - `PORT`
 - `FRONTEND_PORT`
 
-### List All Local Databases in Shared PostgreSQL
+### List Databases in the Current Checkout's PostgreSQL Container
+
+Load the current checkout's env file, then use its explicit Compose project:
 
 ```bash
-docker compose exec -T postgres psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
+set -a
+. .env.worktree  # use .env in the main checkout
+set +a
+docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" exec -T postgres \
+  psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
 ```
+
+This lists only that project's PostgreSQL instance; it does not enumerate other worktree containers.
 
 ### Worktree Is Accidentally Using the Main Database
 
@@ -600,7 +610,7 @@ That is expected.
 
 only stop backend/frontend processes.
 
-To stop the shared PostgreSQL container:
+To stop the PostgreSQL container for the current checkout only:
 
 ```bash
 make db-down
@@ -608,7 +618,7 @@ make db-down
 
 ## Destructive Reset
 
-If you want to stop PostgreSQL and keep your local databases:
+If you want to stop the current checkout's PostgreSQL container and keep its local database:
 
 ```bash
 make db-down
@@ -623,20 +633,24 @@ make db-reset
 make start
 ```
 
-- only affects the current env's database; other worktree databases are untouched
+- only affects the current env's database; other worktree containers, volumes, and databases are untouched
 - refuses to run if `DATABASE_URL` points at a remote host
 - pass `ENV_FILE=.env.worktree` to target a specific worktree
 
-If you want to wipe all local PostgreSQL data for this repo:
+If you want to wipe PostgreSQL data for one explicitly selected checkout, load its env file and name its project:
 
 ```bash
-docker compose down -v
+set -a
+. .env.worktree  # use .env in the main checkout
+set +a
+docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" down -v
 ```
 
 Warning:
 
-- this deletes the shared Docker volume
-- this deletes the main database and every worktree database in that volume
+- this deletes the selected project's Docker volume and its database data
+- it does not delete other worktree projects, volumes, or databases
+- use the generated `wt_*` project only when you intend to reset that worktree
 - after that you must run `make setup-main` or `make setup-worktree` again
 
 ## Typical Flows

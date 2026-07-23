@@ -223,7 +223,7 @@ stop: ## Stop backend and frontend processes for the current checkout
 	@-lsof -ti:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null
 	@case "$(DATABASE_URL)" in \
 		""|*@localhost:*|*@localhost/*|*@127.0.0.1:*|*@127.0.0.1/*|*@\[::1\]:*|*@\[::1\]/*) \
-			echo "✓ App processes stopped. Shared PostgreSQL is still running on localhost:$(POSTGRES_PORT)." ;; \
+			echo "✓ App processes stopped. PostgreSQL for Compose project '$(or $(COMPOSE_PROJECT_NAME),multica)' is still running on localhost:$(POSTGRES_PORT)." ;; \
 		*) \
 			echo "✓ App processes stopped. Remote PostgreSQL was not affected." ;; \
 	esac
