@@ -1,6 +1,6 @@
 # External PR Integration
 
-> Scope: 当前为本 fork 新增能力，AGS 是第一个接入方。设计目标是通用外部 PR/MR/change 集成，而不是把 Multica 内核语义写死为 AGS 专用。
+> Scope: 这是 `fork/v0.4.8` 拥有的 fork capability，AGS 是第一个接入方。源码与测试通过 generation PR 验收后才属于当前 source generation；部署和运行时可用性需要独立证据。设计目标是通用外部 PR/MR/change 集成，而不是把 Multica 内核语义写死为 AGS 专用。
 
 ## 目标
 
@@ -17,7 +17,7 @@ External PR Integration 让外部代码协作系统把一个 PR/MR/change 与 Mu
 
 ### 表
 
-迁移文件：`server/migrations/135_external_pr_integration.up.sql`
+迁移文件：`server/migrations/212_external_pr_integration.up.sql`
 
 新增表：`external_pull_request_link`
 
