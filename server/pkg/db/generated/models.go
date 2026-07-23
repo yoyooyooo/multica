@@ -1097,3 +1097,12 @@ type WorkspaceInvitation struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
+
+type WorkspaceWorkloadAuthority struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	TeamIdentityID  pgtype.UUID        `json:"team_identity_id"`
+	MembershipEpoch int64              `json:"membership_epoch"`
+	PolicyClass     string             `json:"policy_class"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}

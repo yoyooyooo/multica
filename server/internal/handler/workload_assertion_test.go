@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestCreateWorkloadAssertionExternalPRUsesServerTaskContext(t *testing.T) {
@@ -126,6 +128,8 @@ func TestCreateWorkloadAssertionSessionExchangeUsesDistinctAudienceAndSignedScop
 	requestBody := map[string]any{
 		"purpose":                "ags_session_exchange",
 		"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
+		"requested_resource":     map[string]any{"service": "ags", "repository": "jackie/agent-kit"},
+		"requested_operation":    map[string]any{"name": "repo.read", "constraints": map[string]any{}},
 		"requested_capabilities": []string{"repo:read"},
 	}
 	issue := func() (string, jwt.MapClaims) {
@@ -142,8 +146,17 @@ func TestCreateWorkloadAssertionSessionExchangeUsesDistinctAudienceAndSignedScop
 		if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 			t.Fatal(err)
 		}
-		if response.Purpose != "ags_session_exchange" || response.Assertion == "" {
+		if response.Purpose != "ags_session_exchange" || response.Assertion == "" || response.Workload.WorkloadContext == nil || response.Workload.Authority == nil {
 			t.Fatalf("response = %#v", response)
+		}
+		if response.Workload.WorkloadContext.Schema != workloadContextSchema || response.Workload.WorkloadContext.IssuerInstanceID != issuer || response.Workload.WorkloadContext.AgentID != agentID || response.Workload.WorkloadContext.TaskID != taskID || response.Workload.WorkloadContext.RunID != taskID {
+			t.Fatalf("response workload context = %#v", response.Workload.WorkloadContext)
+		}
+		if response.Workload.Actor == nil || response.Workload.Actor.Type != "agent" || response.Workload.Actor.ID != agentID {
+			t.Fatalf("response actor = %#v", response.Workload.Actor)
+		}
+		if response.Workload.Authority.Schema != workloadAuthoritySchema || response.Workload.Authority.TeamIdentityID != testWorkspaceID || response.Workload.Authority.MembershipEpoch < 1 || response.Workload.Authority.PolicyClass != workspaceDefaultPolicyClass {
+			t.Fatalf("response workload authority = %#v", response.Workload.Authority)
 		}
 		claims := jwt.MapClaims{}
 		token, err := jwt.ParseWithClaims(response.Assertion, claims, func(*jwt.Token) (any, error) { return []byte(secret), nil }, jwt.WithAudience(audience), jwt.WithIssuer(issuer), jwt.WithExpirationRequired())
@@ -169,6 +182,31 @@ func TestCreateWorkloadAssertionSessionExchangeUsesDistinctAudienceAndSignedScop
 	if !ok || target["provider"] != "ags" || target["instance"] != "mini" || target["repository"] != "jackie/agent-kit" {
 		t.Fatalf("target = %#v", first["target"])
 	}
+	workload, ok := first["workload"].(map[string]any)
+	if !ok {
+		t.Fatalf("workload = %#v", first["workload"])
+	}
+	context, ok := workload["workload_context"].(map[string]any)
+	if !ok || context["schema"] != workloadContextSchema || context["issuer_instance_id"] != issuer || context["workspace_id"] != testWorkspaceID || context["agent_id"] != agentID || context["task_id"] != taskID || context["run_id"] != taskID || context["correlation_id"] != first["jti"] {
+		t.Fatalf("workload context = %#v", workload["workload_context"])
+	}
+	authority, ok := workload["authority"].(map[string]any)
+	epoch, epochOK := authority["membership_epoch"].(float64)
+	if !ok || !epochOK || authority["schema"] != workloadAuthoritySchema || authority["team_identity_id"] != testWorkspaceID || epoch < 1 || authority["policy_class"] != workspaceDefaultPolicyClass {
+		t.Fatalf("workload authority = %#v", workload["authority"])
+	}
+	scope, ok := first["scope"].(map[string]any)
+	if !ok || scope["schema"] != workloadScopeSchema {
+		t.Fatalf("scope = %#v", first["scope"])
+	}
+	resource, ok := scope["resource"].(map[string]any)
+	if !ok || resource["service"] != "ags" || resource["repository"] != "jackie/agent-kit" {
+		t.Fatalf("scope resource = %#v", scope["resource"])
+	}
+	operation, ok := scope["operation"].(map[string]any)
+	if !ok || operation["name"] != "repo.read" {
+		t.Fatalf("scope operation = %#v", scope["operation"])
+	}
 }
 
 func TestCreateWorkloadAssertionSessionExchangeRejectsIncompleteScope(t *testing.T) {
@@ -177,7 +215,11 @@ func TestCreateWorkloadAssertionSessionExchangeRejectsIncompleteScope(t *testing
 		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{"repo:read"}},
 		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "forgejo", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{"repo:read"}},
 		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{}},
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_resource": map[string]any{"service": "ags", "repository": "jackie/agent-kit"}, "requested_capabilities": []string{"repo:read"}},
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_resource": map[string]any{"service": "ags", "repository": "jackie/other"}, "requested_operation": map[string]any{"name": "repo.read", "constraints": map[string]any{}}, "requested_capabilities": []string{"repo:read"}},
+		{"purpose": "ags_session_exchange", "target": map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"}, "requested_resource": map[string]any{"service": "ags", "repository": "jackie/agent-kit"}, "requested_operation": map[string]any{"name": "git.push", "constraints": map[string]any{}}, "requested_capabilities": []string{"repo:read"}},
 	}
+
 	for index, body := range cases {
 		req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", body)
 		req.Header.Set("X-Actor-Source", "task_token")
@@ -187,6 +229,130 @@ func TestCreateWorkloadAssertionSessionExchangeRejectsIncompleteScope(t *testing
 			t.Fatalf("case %d status=%d body=%s", index, rr.Code, rr.Body.String())
 		}
 	}
+}
+
+func TestCreateWorkloadAssertionSessionExchangeFailsClosedWithoutAuthority(t *testing.T) {
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "workload-session-assertion-secret")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "https://multica.test")
+
+	issueID := createExternalPRTestIssue(t, "missing workload authority", "todo", "", nil)
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
+	agentID := createHandlerTestAgent(t, "missing-workload-authority-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+
+	if _, err := testPool.Exec(context.Background(), `DELETE FROM workspace_workload_authority WHERE workspace_id=$1`, testWorkspaceID); err != nil {
+		t.Fatalf("delete workload authority: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			INSERT INTO workspace_workload_authority (workspace_id, team_identity_id, membership_epoch, policy_class)
+			VALUES ($1, $1, 1, $2)
+			ON CONFLICT (workspace_id) DO NOTHING`, testWorkspaceID, workspaceDefaultPolicyClass)
+	})
+
+	req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
+		"purpose":                "ags_session_exchange",
+		"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
+		"requested_resource":     map[string]any{"service": "ags", "repository": "jackie/agent-kit"},
+		"requested_operation":    map[string]any{"name": "repo.read", "constraints": map[string]any{}},
+		"requested_capabilities": []string{"repo:read"},
+	})
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	rr := httptest.NewRecorder()
+
+	testHandler.CreateWorkloadAssertion(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateWorkloadAssertionSessionExchangeRequiresConfiguredIssuer(t *testing.T) {
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "workload-session-assertion-secret")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "")
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO workspace_workload_authority (workspace_id, team_identity_id, membership_epoch, policy_class)
+		VALUES ($1, $1, 1, $2)
+		ON CONFLICT (workspace_id) DO NOTHING`, testWorkspaceID, workspaceDefaultPolicyClass); err != nil {
+		t.Fatalf("ensure workload authority: %v", err)
+	}
+
+	issueID := createExternalPRTestIssue(t, "missing workload issuer", "todo", "", nil)
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
+	agentID := createHandlerTestAgent(t, "missing-workload-issuer-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
+		"purpose":                "ags_session_exchange",
+		"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
+		"requested_resource":     map[string]any{"service": "ags", "repository": "jackie/agent-kit"},
+		"requested_operation":    map[string]any{"name": "repo.read", "constraints": map[string]any{}},
+		"requested_capabilities": []string{"repo:read"},
+	})
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	rr := httptest.NewRecorder()
+
+	testHandler.CreateWorkloadAssertion(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNormalizeSessionExchangeScopePreservesLegacyCapabilitiesAsTypedInput(t *testing.T) {
+	target := workloadAssertionTarget{Provider: "ags", Instance: "mini", Repository: "jackie/agent-kit"}
+	scope, err := normalizeSessionExchangeScope(workloadAssertionRequest{RequestedCapabilities: []string{"repo:read"}}, target)
+	if err != nil {
+		t.Fatalf("normalize legacy scope: %v", err)
+	}
+	if scope.CompatibilityInput != "legacy_capability_mapping_v1" || scope.Operation.Name != "repo.read" || scope.Resource != (workloadAssertionResource{Service: "ags", Repository: "jackie/agent-kit"}) {
+		t.Fatalf("scope = %#v", scope)
+	}
+}
+
+func TestWorkspaceWorkloadAuthorityAdvancesMembershipEpoch(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("requires test database")
+	}
+	ctx := context.Background()
+	workspace, err := testHandler.Queries.CreateWorkspace(ctx, db.CreateWorkspaceParams{
+		Name: "workload authority trigger",
+		Slug: "workload-authority-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM workspace_workload_authority WHERE workspace_id=$1`, workspace.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE id=$1`, workspace.ID)
+	})
+
+	assertAuthority := func(wantEpoch int64) {
+		t.Helper()
+		authority, err := testHandler.Queries.GetWorkspaceWorkloadAuthority(ctx, workspace.ID)
+		if err != nil {
+			t.Fatalf("get workload authority: %v", err)
+		}
+		if authority.TeamIdentityID != workspace.ID || authority.MembershipEpoch != wantEpoch || authority.PolicyClass != workspaceDefaultPolicyClass {
+			t.Fatalf("authority = %#v, want workspace=%s epoch=%d", authority, uuidToString(workspace.ID), wantEpoch)
+		}
+	}
+	assertAuthority(1)
+
+	member, err := testHandler.Queries.CreateMember(ctx, db.CreateMemberParams{WorkspaceID: workspace.ID, UserID: parseUUID(testUserID), Role: "owner"})
+	if err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	assertAuthority(2)
+	if _, err := testHandler.Queries.UpdateMemberRole(ctx, db.UpdateMemberRoleParams{ID: member.ID, Role: "admin"}); err != nil {
+		t.Fatalf("update member: %v", err)
+	}
+	assertAuthority(3)
+	if err := testHandler.Queries.DeleteMember(ctx, member.ID); err != nil {
+		t.Fatalf("delete member: %v", err)
+	}
+	assertAuthority(4)
 }
 
 func TestNormalizeWorkloadAssertionTargetTrimsRepositorySegments(t *testing.T) {
