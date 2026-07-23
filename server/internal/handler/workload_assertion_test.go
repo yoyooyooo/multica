@@ -355,6 +355,46 @@ func TestWorkspaceWorkloadAuthorityAdvancesMembershipEpoch(t *testing.T) {
 	assertAuthority(4)
 }
 
+func TestWorkspaceWorkloadAuthorityDoesNotBlockWorkspaceFixtureCleanup(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("requires test database")
+	}
+	ctx := context.Background()
+	workspace, err := testHandler.Queries.CreateWorkspace(ctx, db.CreateWorkspaceParams{
+		Name: "workload authority cleanup",
+		Slug: "workload-authority-cleanup-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		// Keep the test database clean if the regression assertion fails before
+		// the workspace cascade can complete.
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM member WHERE workspace_id=$1`, workspace.ID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace_workload_authority WHERE workspace_id=$1`, workspace.ID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, workspace.ID)
+	})
+
+	if _, err := testHandler.Queries.CreateMember(ctx, db.CreateMemberParams{
+		WorkspaceID: workspace.ID,
+		UserID:      parseUUID(testUserID),
+		Role:        "owner",
+	}); err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `DELETE FROM workspace WHERE id=$1`, workspace.ID); err != nil {
+		t.Fatalf("workspace fixture cleanup must cascade without refreshing deleted authority: %v", err)
+	}
+
+	var authorityCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM workspace_workload_authority WHERE workspace_id=$1`, workspace.ID).Scan(&authorityCount); err != nil {
+		t.Fatalf("count authority rows: %v", err)
+	}
+	if authorityCount != 0 {
+		t.Fatalf("authority rows after workspace cleanup = %d, want 0", authorityCount)
+	}
+}
+
 func TestNormalizeWorkloadAssertionTargetTrimsRepositorySegments(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS", "ags")
 	target, err := normalizeWorkloadAssertionTarget(workloadAssertionTarget{
