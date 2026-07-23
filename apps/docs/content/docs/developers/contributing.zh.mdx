@@ -11,7 +11,10 @@ The main checkout and every Git worktree use separate PostgreSQL Compose identit
 - Each Git worktree uses a generated `.env.worktree`
 - A worktree derives a deterministic `wt_*` Compose project, container, host port, volume, and database from its canonical physical path
 - A worktree must not target the deployment `multica` project, port, or volume
-- Backend and frontend ports are also unique per worktree
+- PostgreSQL host ports use a 1,000-slot modulo allocation, so distinct worktrees can collide
+- Backend and frontend ports are also derived from the worktree path hash
+
+Compose project, database, container, and volume identities are isolated. A same-port PostgreSQL contender is serialized by the fixed `/tmp/multica-compose-locks/multica-compose-lock-port-<port>` authority; after the first identity is observed, a different project sharing that port is refused before mutation.
 
 ## Prerequisites
 
@@ -59,7 +62,10 @@ make start-worktree
 
 `make worktree-env` writes the worktree's canonical `COMPOSE_PROJECT_NAME`,
 `WORKTREE_PATH`, `POSTGRES_PORT`, and `POSTGRES_DB`. Do not copy or retarget
-another checkout's `.env.worktree`.
+another checkout's `.env.worktree`. `POSTGRES_PORT` uses a modulo-1,000
+allocation and can collide: guarded mutations use the fixed
+`/tmp/multica-compose-locks/multica-compose-lock-port-<port>` authority to
+serialize a same-port attempt and refuse a different project before mutation.
 
 ## Daily Workflow
 
@@ -97,7 +103,7 @@ projects and resources:
 | | Main | Worktree |
 |---|---|---|
 | Compose project/container/volume | `multica` / `multica-postgres-1` / `multica_pgdata` | generated `wt_*` identity |
-| Database / PostgreSQL host port | `multica` / `5432` | generated `wt_*` database / unique port |
+| Database / PostgreSQL host port | `multica` / `5432` | generated `wt_*` database / modulo-allocated port (collisions serialize, then foreign projects are refused) |
 | Backend port | `8080` | generated (e.g. `18782`) |
 | Frontend port | `3000` | generated (e.g. `13702`) |
 

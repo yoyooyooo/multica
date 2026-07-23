@@ -184,7 +184,7 @@ else
     echo "==> Verifying credential-backed readiness (remote)..."
     if ! command -v psql > /dev/null 2>&1; then
       echo "WARNING: psql not found; skipping authenticated readiness check for remote DB"
-    elif ! PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$db_host" -p "$db_port" -U "$POSTGRES_USER" -d "$db_name" -v ON_ERROR_STOP=1 -Atqc "SELECT 1" > /dev/null 2>&1; then
+    elif ! env -u PGPASSWORD psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atqc "SELECT 1" > /dev/null 2>&1; then
       echo "ERROR: Credential-backed readiness check failed for remote database '$db_name'" >&2
       exit 1
     fi
