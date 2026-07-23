@@ -35,7 +35,8 @@ Rules:
 2. New work starts from and targets the active `fork/vX.Y.Z` branch.
 3. The GitHub default branch identifies the active fork generation. There is no `fork/latest` branch or movable latest tag.
 4. Feature branches must be rebased on the active generation before integration. The generation branch advances by fast-forward only; merge commits are forbidden.
-5. Prior generation branches and deployment tags are retained as immutable history and rollback evidence. Do not rewrite or delete them.
+5. Required CI workflows must listen to both `main` and `fork/**`; a generation PR without its required checks is not merge-ready.
+6. Prior generation branches and deployment tags are retained as immutable history and rollback evidence. Do not rewrite or delete them.
 
 ## Fork delta model
 

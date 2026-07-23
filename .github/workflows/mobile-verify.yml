@@ -19,7 +19,7 @@ name: Mobile Verify
 
 on:
   push:
-    branches: [main]
+    branches: [main, "fork/**"]
     paths:
       - "apps/mobile/**"
       - "packages/core/**"
@@ -29,7 +29,7 @@ on:
       - "turbo.json"
       - ".github/workflows/mobile-verify.yml"
   pull_request:
-    branches: [main]
+    branches: [main, "fork/**"]
     paths:
       - "apps/mobile/**"
       - "packages/core/**"
