@@ -73,18 +73,33 @@ if is_local; then
   # a worktree from accidentally recreating or relabeling live "multica-*"
   # deployment containers.
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  ORIGINAL_COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
 
   # shellcheck disable=SC1091
-  if ! . "$SCRIPT_DIR/compose-ownership-guard.sh"; then
+  . "$SCRIPT_DIR/compose-ownership-guard.sh"
+
+  # Invoke the guard function explicitly (sourcing alone is not enough)
+  if ! guard_compose_ownership; then
     echo "ERROR: Compose ownership guard rejected the operation." >&2
     echo "  Did you mean to use a different env file or worktree name?" >&2
     exit 1
   fi
 
+  # ---------- TOCTOU lock ----------
+  # Cross-process atomic reservation: two worktrees choosing the same hash
+  # /port/project must not both pass the guard. We acquire a mkdir-based
+  # lock and hold it through the first compose up. The lock file name
+  # includes the project name so unrelated projects do not block each other.
+  lock_target="/tmp/multica-compose-lock-${COMPOSE_PROJECT_NAME:-multica}"
+  if ! mkdir "$lock_target" 2>/dev/null; then
+    echo "ERROR: Could not acquire compose lock for project '${COMPOSE_PROJECT_NAME:-multica}'" >&2
+    echo "  Another process may be setting up this project concurrently." >&2
+    echo "  If no other process is running, remove: $lock_target" >&2
+    exit 1
+  fi
+  _release_lock() { rm -rf "$lock_target"; }
+  trap _release_lock EXIT
+
   # ---------- Local: use Docker ----------
-  # Use --project-name explicitly so the Compose project identity matches
-  # what the env file prescribes, not the directory name.
   project_name="${COMPOSE_PROJECT_NAME:-multica}"
   compose_args=(-f docker-compose.yml --project-name "$project_name")
 
@@ -107,6 +122,19 @@ if is_local; then
       > /dev/null
   fi
 
+  # ---------- Credential-backed readiness (SELECT 1) ----------
+  # pg_isready only verifies the postmaster is accepting TCP connections.
+  # An authenticated SELECT 1 against the configured database/credential
+  # proves that our credentials work and the intended database is usable.
+  echo "==> Verifying credential-backed readiness..."
+  if ! docker compose "${compose_args[@]}" exec -T postgres \
+    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+    -Atqc "SELECT 1" > /dev/null 2>&1; then
+    echo "ERROR: Credential-backed readiness check failed for $POSTGRES_DB" >&2
+    echo "  User $POSTGRES_USER could not authenticate to database $POSTGRES_DB" >&2
+    exit 1
+  fi
+
   echo "✓ PostgreSQL ready (local Docker). Project: $project_name, Database: $POSTGRES_DB"
 else
   # ---------- Remote: skip Docker, verify connectivity ----------
@@ -116,6 +144,18 @@ else
     until pg_isready -d "$DATABASE_URL" > /dev/null 2>&1; do
       sleep 1
     done
+
+    # Remote readiness also needs credential-backed check
+    echo "==> Verifying credential-backed readiness (remote)..."
+    if ! command -v psql > /dev/null 2>&1; then
+      echo "  WARNING: psql not found; skipping authenticated readiness check for remote DB"
+    else
+      if ! PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$db_host" -p "$db_port" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atqc "SELECT 1" > /dev/null 2>&1; then
+        echo "ERROR: Credential-backed readiness check failed for remote $POSTGRES_DB at $db_host:$db_port" >&2
+        exit 1
+      fi
+    fi
+
     echo "✓ PostgreSQL ready (remote: $db_host:$db_port). Database: $db_name"
   else
     echo "==> pg_isready not found. Skipping remote connectivity preflight."
