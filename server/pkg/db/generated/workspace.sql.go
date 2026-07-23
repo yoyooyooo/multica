@@ -135,6 +135,17 @@ func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const deleteWorkspaceWorkloadAuthority = `-- name: DeleteWorkspaceWorkloadAuthority :exec
+DELETE FROM workspace_workload_authority WHERE workspace_id = $1
+`
+
+// workspace_workload_authority has intentionally no FK: clean it after the
+// workspace DELETE so member-delete triggers cannot recreate it during teardown.
+func (q *Queries) DeleteWorkspaceWorkloadAuthority(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceWorkloadAuthority, workspaceID)
+	return err
+}
+
 const getDaemonWorkspace = `-- name: GetDaemonWorkspace :one
 SELECT id, name
 FROM workspace

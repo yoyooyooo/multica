@@ -355,7 +355,7 @@ func TestWorkspaceWorkloadAuthorityAdvancesMembershipEpoch(t *testing.T) {
 	assertAuthority(4)
 }
 
-func TestWorkspaceWorkloadAuthorityDoesNotBlockWorkspaceFixtureCleanup(t *testing.T) {
+func TestWorkspaceWorkloadAuthorityCleansUpWithWorkspace(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("requires test database")
 	}
@@ -382,8 +382,12 @@ func TestWorkspaceWorkloadAuthorityDoesNotBlockWorkspaceFixtureCleanup(t *testin
 	}); err != nil {
 		t.Fatalf("create member: %v", err)
 	}
-	if _, err := testPool.Exec(ctx, `DELETE FROM workspace WHERE id=$1`, workspace.ID); err != nil {
-		t.Fatalf("workspace fixture cleanup must cascade without refreshing deleted authority: %v", err)
+	w := httptest.NewRecorder()
+	req := newRequest(http.MethodDelete, "/api/workspaces/"+uuidToString(workspace.ID), nil)
+	req = withURLParam(req, "id", uuidToString(workspace.ID))
+	testHandler.DeleteWorkspace(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("workspace cleanup status=%d body=%s", w.Code, w.Body.String())
 	}
 
 	var authorityCount int
