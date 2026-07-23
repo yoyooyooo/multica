@@ -105,7 +105,7 @@ pnpm exec playwright test
 pnpm ui:add badge     # shadcn/Base UI component into packages/ui
 ```
 
-Each Git worktree gets an isolated PostgreSQL Compose project, container, host port, volume, and database through generated `.env.worktree`; it must not target the deployment `multica` project. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. `pnpm dev:desktop` additionally self-isolates per worktree (its own renderer port + app name) automatically, independent of `.env.worktree`.
+Each Git worktree gets an isolated PostgreSQL Compose project, container, host port, volume, and database through generated `.env.worktree`; it must not target the deployment `multica` project. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. Use `make db-up`, `make db-down`, and `make db-reset` for local PostgreSQL lifecycle: their guard binds the current checkout's config, env file, project, service, user, and database; do not pass raw Compose selectors or post-readiness SQL commands. `pnpm dev:desktop` additionally self-isolates per worktree (its own renderer port + app name) automatically, independent of `.env.worktree`.
 
 CI runs Node 22, Go 1.26.1, and a `pgvector/pgvector:pg17` PostgreSQL service.
 

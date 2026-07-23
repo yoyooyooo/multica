@@ -30,11 +30,8 @@ Use the worktree env file and the canonical lock boundary. This stops only the
 already verified worktree project and retains its data volume for inspection:
 
 ```bash
-set -a
-. .env.worktree
-set +a
-bash scripts/compose-guard-mustpass.sh .env.worktree -- \
-  docker compose --project-name "$COMPOSE_PROJECT_NAME" stop
+test -f .env.worktree || { echo "Missing .env.worktree" >&2; exit 1; }
+make db-down ENV_FILE=.env.worktree
 ```
 
 Never substitute `multica` for a `wt_*` project. Never use a broad wildcard,

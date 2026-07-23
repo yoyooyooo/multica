@@ -27,6 +27,23 @@ compose_canonical_path() {
   )
 }
 
+# Compose mutations consume both an env file and a Compose config. Require each
+# selected file to be a regular, non-symlink file so the canonical checkout is
+# the sole configuration authority rather than a caller-controlled alias.
+compose_canonical_regular_file() {
+  local requested_path="${1:-}"
+  local directory
+  local filename
+
+  if [ -z "$requested_path" ] || [ ! -f "$requested_path" ] || [ -L "$requested_path" ]; then
+    compose_guard_error "Compose input must be an existing regular non-symlink file: ${requested_path:-(missing)}"
+    return 1
+  fi
+  directory="$(compose_canonical_path "$(dirname "$requested_path")")" || return 1
+  filename="$(basename "$requested_path")"
+  printf '%s/%s' "$directory" "$filename"
+}
+
 compose_validate_project_name() {
   local project_name="$1"
   if [[ ! "$project_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
@@ -300,9 +317,10 @@ guard_compose_ownership() {
   compose_check_port || return 1
 }
 
-# compose_assert_compose_project_target parses only Docker Compose global
-# options, then requires exactly one explicit project selector. The guarded
-# project, lock key, labels, and mutation target therefore cannot diverge.
+# The public mutation seam accepts only high-level intents, never Compose
+# selectors. The runner below supplies the project, config, project directory,
+# and env file from the already validated checkout identity. This prevents a
+# matching project name from being paired with another Compose resource graph.
 compose_assert_compose_project_target() {
   if [ "${1:-}" != docker ] || [ "${2:-}" != compose ]; then
     compose_guard_error "expected a docker compose command inside the ownership boundary"
@@ -310,94 +328,67 @@ compose_assert_compose_project_target() {
   fi
   shift 2
 
-  local project_target=""
-  local project_seen=false
-  local option
-  while [ "$#" -gt 0 ]; do
-    option="$1"
-    case "$option" in
-      --project-name)
-        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
-          compose_guard_error "docker compose --project-name requires a value"
-          return 1
-        fi
-        if [ "$project_seen" = true ]; then
-          compose_guard_error "docker compose must specify exactly one project name"
-          return 1
-        fi
-        project_target="$2"
-        project_seen=true
-        shift 2
-        ;;
-      --project-name=*)
-        project_target="${option#--project-name=}"
-        if [ -z "$project_target" ] || [ "$project_seen" = true ]; then
-          compose_guard_error "docker compose must specify exactly one non-empty project name"
-          return 1
-        fi
-        project_seen=true
-        shift
-        ;;
-      -p)
-        if [ "$#" -lt 2 ] || [ -z "${2:-}" ] || [ "$project_seen" = true ]; then
-          compose_guard_error "docker compose -p requires one non-empty project name"
-          return 1
-        fi
-        project_target="$2"
-        project_seen=true
-        shift 2
-        ;;
-      -p?*)
-        project_target="${option#-p}"
-        if [ -z "$project_target" ] || [ "$project_seen" = true ]; then
-          compose_guard_error "docker compose must specify exactly one non-empty project name"
-          return 1
-        fi
-        project_seen=true
-        shift
-        ;;
-      -f|--file|--env-file|--project-directory|--ansi|--parallel|--progress)
-        if [ "$#" -lt 2 ]; then
-          compose_guard_error "docker compose option '$option' requires a value"
-          return 1
-        fi
-        shift 2
-        ;;
-      --file=*|--env-file=*|--project-directory=*|--ansi=*|--parallel=*|--progress=*)
-        shift
-        ;;
-      --dry-run|--all-resources|--compatibility|--menu)
-        shift
-        ;;
-      --)
-        break
-        ;;
-      -*)
-        # Unknown global flags are left to Docker Compose. They cannot provide
-        # a project target unless they use one of the explicit forms above.
-        shift
-        ;;
-      *)
-        # The first non-option is the Compose subcommand; do not interpret its
-        # arguments as global selectors.
-        break
-        ;;
-    esac
-  done
+  case "${1:-}" in
+    up)
+      if [ "$#" -eq 3 ] && [ "$2" = -d ] && [ "$3" = postgres ]; then
+        return 0
+      fi
+      ;;
+    down)
+      if [ "$#" -eq 1 ]; then
+        return 0
+      fi
+      ;;
+  esac
 
-  if [ "$project_seen" != true ]; then
-    compose_guard_error "docker compose mutation must use an explicit --project-name matching the guarded identity"
-    return 1
-  fi
-  compose_validate_project_name "$project_target" || return 1
-  if [ "$project_target" != "$COMPOSE_PROJECT_NAME" ]; then
-    compose_guard_error "docker compose project '$project_target' does not match guarded project '$COMPOSE_PROJECT_NAME'"
-    return 1
-  fi
+  compose_guard_error "direct Compose mutations must be exactly 'up -d postgres' or 'down'; project, config, env, and directory selectors are supplied canonically"
+  return 1
+}
+
+compose_assert_no_external_compose_selectors() {
+  local selector
+  local value
+
+  for selector in COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PATH_SEPARATOR COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE; do
+    case "$selector" in
+      COMPOSE_FILE) value="${COMPOSE_FILE:-}" ;;
+      COMPOSE_ENV_FILES) value="${COMPOSE_ENV_FILES:-}" ;;
+      COMPOSE_PATH_SEPARATOR) value="${COMPOSE_PATH_SEPARATOR:-}" ;;
+      COMPOSE_PROFILES) value="${COMPOSE_PROFILES:-}" ;;
+      COMPOSE_DISABLE_ENV_FILE) value="${COMPOSE_DISABLE_ENV_FILE:-}" ;;
+    esac
+    if [ -n "$value" ]; then
+      compose_guard_error "$selector is not allowed for a guarded Compose mutation"
+      return 1
+    fi
+  done
+}
+
+# compose_run_canonical is for internal helpers after identity and lock checks.
+# It binds every Compose input to the current physical checkout and clears the
+# selector environment before invoking Docker Compose.
+compose_run_canonical() {
+  local canonical_config
+  local canonical_env_file
+
+  compose_assert_no_external_compose_selectors || return 1
+  canonical_config="$(compose_canonical_regular_file "$COMPOSE_CURRENT_CHECKOUT_PATH/docker-compose.yml")" || return 1
+  canonical_env_file="$(compose_canonical_regular_file "${MULTICA_COMPOSE_ENV_FILE:-}")" || return 1
+
+  (
+    unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PATH_SEPARATOR COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE
+    CDPATH= cd -P -- "$COMPOSE_CURRENT_CHECKOUT_PATH"
+    docker compose \
+      --project-name "$COMPOSE_PROJECT_NAME" \
+      --project-directory "$COMPOSE_CURRENT_CHECKOUT_PATH" \
+      --env-file "$canonical_env_file" \
+      --file "$canonical_config" \
+      "$@"
+  )
 }
 
 # Internal helpers can run under the lock by passing a shell function. Direct
-# Docker Compose commands must always satisfy the exact project-target check.
+# Docker Compose commands must always satisfy the narrow canonical intent.
 compose_assert_mutation_target() {
   if [ "${1:-}" = docker ] && [ "${2:-}" = compose ]; then
     compose_assert_compose_project_target "$@"
@@ -656,7 +647,12 @@ compose_with_ownership_lock() (
   trap 'status=$?; if ! compose_lock_release; then exit 1; fi; exit "$status"' EXIT
   guard_compose_ownership
   compose_assert_mutation_target "$@"
-  "$@"
+  if [ "${1:-}" = docker ] && [ "${2:-}" = compose ]; then
+    shift 2
+    compose_run_canonical "$@"
+  else
+    "$@"
+  fi
 )
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

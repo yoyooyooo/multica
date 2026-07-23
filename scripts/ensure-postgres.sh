@@ -6,18 +6,13 @@ if [ "$#" -gt 0 ]; then
   shift
 fi
 
-POST_MUTATION=()
+RESET_DATABASE=false
 if [ "$#" -gt 0 ]; then
-  if [ "$1" != "--" ]; then
-    echo "Usage: $0 <env-file> [-- <post-readiness Docker mutation>]" >&2
+  if [ "$#" -ne 1 ] || [ "$1" != "--reset-database" ]; then
+    echo "Usage: $0 <env-file> [--reset-database]" >&2
     exit 1
   fi
-  shift
-  if [ "$#" -eq 0 ] || [ "$1" != docker ] || [ "${2:-}" != compose ]; then
-    echo "ERROR: post-readiness mutation must be a non-empty docker compose command" >&2
-    exit 1
-  fi
-  POST_MUTATION=("$@")
+  RESET_DATABASE=true
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -96,32 +91,35 @@ is_local() {
 }
 
 ensure_local_postgres() {
-  # Validate the optional db-reset mutation before the first Compose command.
-  # This function runs inside compose_with_ownership_lock, after identity and
-  # lock acquisition, so its generated Compose commands and post mutation use
-  # the same canonical project target.
-  if [ "$#" -gt 0 ]; then
-    compose_assert_compose_project_target "$@" || return 1
-  fi
-
+  local reset_database="${1:-false}"
   local project_name="$COMPOSE_PROJECT_NAME"
-  local compose_args=(-f docker-compose.yml --project-name "$project_name")
   local db_exists
 
+  if [ "$reset_database" != true ] && [ "$reset_database" != false ]; then
+    echo "ERROR: internal PostgreSQL mutation mode is invalid" >&2
+    return 1
+  fi
+
+  # compose_prepare_identity ran before this function entered the lock. Check
+  # the resulting values again here because every SQL mutation is built from
+  # this canonical identity, never from a caller-supplied Compose command.
+  validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
+  validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
+
   echo "==> Ensuring PostgreSQL container for project '$project_name' on localhost:${POSTGRES_PORT:-5432}..."
-  docker compose "${compose_args[@]}" up -d postgres
+  compose_run_canonical up -d postgres
 
   echo "==> Waiting for PostgreSQL to be ready..."
-  until docker compose "${compose_args[@]}" exec -T postgres pg_isready -U "$POSTGRES_USER" -d postgres > /dev/null 2>&1; do
+  until compose_run_canonical exec -T postgres pg_isready -U "$POSTGRES_USER" -d postgres > /dev/null 2>&1; do
     sleep 1
   done
 
   echo "==> Ensuring database '$POSTGRES_DB' exists..."
-  db_exists="$(docker compose "${compose_args[@]}" exec -T postgres \
+  db_exists="$(compose_run_canonical exec -T postgres \
     psql -U "$POSTGRES_USER" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'")"
 
   if [ "$db_exists" != 1 ]; then
-    docker compose "${compose_args[@]}" exec -T postgres \
+    compose_run_canonical exec -T postgres \
       psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
       -c "CREATE DATABASE \"$POSTGRES_DB\"" \
       > /dev/null
@@ -132,7 +130,7 @@ ensure_local_postgres() {
   # remains inside the already configured container environment and is never
   # printed or placed in a host command argument.
   echo "==> Verifying credential-backed readiness..."
-  if ! docker compose "${compose_args[@]}" exec -T postgres \
+  if ! compose_run_canonical exec -T postgres \
     sh -ceu 'PGPASSWORD="$POSTGRES_PASSWORD" exec psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atqc "SELECT 1"' \
     > /dev/null 2>&1; then
     echo "ERROR: Credential-backed readiness check failed for database '$POSTGRES_DB'" >&2
@@ -142,26 +140,26 @@ ensure_local_postgres() {
 
   echo "✓ PostgreSQL ready (local Docker). Project: $project_name, Database: $POSTGRES_DB"
 
-  # db-reset supplies its exact Docker exec mutation here. It remains inside
-  # the same ownership lock as the guard and PostgreSQL initialization.
-  if [ "$#" -gt 0 ]; then
-    "$@"
+  if [ "$reset_database" = true ]; then
+    echo "==> Dropping and recreating canonical database '$POSTGRES_DB'..."
+    compose_run_canonical exec -T postgres \
+      psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
+      -c "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);" \
+      -c "CREATE DATABASE \"$POSTGRES_DB\";"
   fi
 }
 
 if is_local; then
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  MULTICA_COMPOSE_ENV_FILE="$ENV_FILE"
+  export MULTICA_COMPOSE_ENV_FILE
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/compose-ownership-guard.sh"
 
-  if [ "${#POST_MUTATION[@]}" -gt 0 ]; then
-    compose_with_ownership_lock ensure_local_postgres "${POST_MUTATION[@]}"
-  else
-    compose_with_ownership_lock ensure_local_postgres
-  fi
+  compose_with_ownership_lock ensure_local_postgres "$RESET_DATABASE"
 else
-  if [ "${#POST_MUTATION[@]}" -gt 0 ]; then
-    echo "ERROR: A post-readiness Docker mutation is only valid for a local database." >&2
+  if [ "$RESET_DATABASE" = true ]; then
+    echo "ERROR: Database reset is only valid for a local Docker database." >&2
     exit 1
   fi
 

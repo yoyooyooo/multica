@@ -5,7 +5,10 @@
 #
 # Usage:
 #   bash scripts/compose-guard-mustpass.sh .env.worktree -- \
-#     docker compose --project-name "$COMPOSE_PROJECT_NAME" up -d postgres
+#     docker compose up -d postgres
+#
+# The caller supplies only the allowed high-level intent. The guard binds the
+# project, config, env file, and project directory to the current checkout.
 set -euo pipefail
 
 ENV_FILE="${1:-.env}"
@@ -39,6 +42,8 @@ set -a
 set +a
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MULTICA_COMPOSE_ENV_FILE="$ENV_FILE"
+export MULTICA_COMPOSE_ENV_FILE
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/compose-ownership-guard.sh"
 
