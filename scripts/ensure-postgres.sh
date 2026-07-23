@@ -87,6 +87,17 @@ if is_local; then
       > /dev/null
   fi
 
+  # The shared Postgres Docker volume may have been initialized with a
+  # different password (e.g. by make selfhost, which generates a random
+  # one). Ensure the pg_user password matches the env file so that TCP
+  # connections via Docker port forwarding (which go through scram-sha-256
+  # auth) succeed.
+  echo "==> Ensuring password matches env file..."
+  docker compose exec -T postgres \
+    psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
+    -c "ALTER USER \"$POSTGRES_USER\" PASSWORD '${POSTGRES_PASSWORD//\'/\'\'}'" \
+    > /dev/null
+
   echo "✓ PostgreSQL ready (local Docker). Database: $POSTGRES_DB"
 else
   # ---------- Remote: skip Docker, verify connectivity ----------
