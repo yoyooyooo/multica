@@ -272,7 +272,12 @@ The following commands all ensure the target database exists before they continu
 - `make migrate-down`
 - `make check`
 
-That logic lives in `scripts/ensure-postgres.sh`.
+That logic lives in `scripts/ensure-postgres.sh`. Its local and remote readiness
+checks share `MULTICA_POSTGRES_READY_TIMEOUT_SECONDS` (an integer from 1 through
+300, default 60). A remote `DATABASE_URL` is passed only through the libpq
+environment for the bounded probe and authenticated `SELECT 1`; it is never
+printed or passed as command-line input. Missing `pg_isready` or `psql` fails
+closed rather than claiming readiness.
 
 ## Testing
 

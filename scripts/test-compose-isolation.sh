@@ -344,21 +344,61 @@ done
 cat > "$FAKE_BIN/pg_isready" <<'FAKE_PG_ISREADY'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$@" > "${FAKE_DOCKER_STATE:?}/remote-pg-isready-argv"
+# The production command clears its environment. Derive this fake-only state
+# location from the fixture worktree when FAKE_DOCKER_STATE is intentionally
+# absent, so the recording seam never requires a propagated libpq variable.
+state_root="${FAKE_DOCKER_STATE:-${PWD%/worktree}/state}"
+printf '%s\n' "$@" >> "$state_root/remote-pg-isready-argv"
+{
+  [ -n "${PGDATABASE+x}" ] && echo 'PGDATABASE=set' || echo 'PGDATABASE=unset'
+  [ -n "${PGPASSWORD+x}" ] && echo 'PGPASSWORD=set' || echo 'PGPASSWORD=unset'
+  [ -n "${PGHOST+x}" ] && echo 'PGHOST=set' || echo 'PGHOST=unset'
+  [ -n "${PGPORT+x}" ] && echo 'PGPORT=set' || echo 'PGPORT=unset'
+  [ -n "${PGUSER+x}" ] && echo 'PGUSER=set' || echo 'PGUSER=unset'
+  [ -n "${PGSSLMODE+x}" ] && echo 'PGSSLMODE=set' || echo 'PGSSLMODE=unset'
+  [ -n "${POSTGRES_DB+x}" ] && echo 'POSTGRES_DB=set' || echo 'POSTGRES_DB=unset'
+  [ -n "${POSTGRES_USER+x}" ] && echo 'POSTGRES_USER=set' || echo 'POSTGRES_USER=unset'
+  [ -n "${POSTGRES_PASSWORD+x}" ] && echo 'POSTGRES_PASSWORD=set' || echo 'POSTGRES_PASSWORD=unset'
+} > "$state_root/remote-pg-isready-libpq-env"
+printf 'call\n' >> "$state_root/remote-pg-isready-calls"
+if [ "${FAKE_REMOTE_PG_ISREADY_FAIL:-0}" = 1 ] || [ -f "$state_root/remote-pg-isready-fail" ]; then
+  exit 1
+fi
 FAKE_PG_ISREADY
 chmod +x "$FAKE_BIN/pg_isready"
 
 cat > "$FAKE_BIN/psql" <<'FAKE_PSQL'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ -z "${PGPASSWORD+x}" ]; then
-  printf 'unset\n' > "${FAKE_DOCKER_STATE:?}/remote-psql-pgpassword"
-else
-  printf 'set\n' > "${FAKE_DOCKER_STATE:?}/remote-psql-pgpassword"
-fi
-printf '%s\n' "$@" > "${FAKE_DOCKER_STATE:?}/remote-psql-argv"
+state_root="${FAKE_DOCKER_STATE:-${PWD%/worktree}/state}"
+printf '%s\n' "$@" > "$state_root/remote-psql-argv"
+{
+  [ -n "${PGDATABASE+x}" ] && echo 'PGDATABASE=set' || echo 'PGDATABASE=unset'
+  [ -n "${PGPASSWORD+x}" ] && echo 'PGPASSWORD=set' || echo 'PGPASSWORD=unset'
+  [ -n "${PGHOST+x}" ] && echo 'PGHOST=set' || echo 'PGHOST=unset'
+  [ -n "${PGPORT+x}" ] && echo 'PGPORT=set' || echo 'PGPORT=unset'
+  [ -n "${PGUSER+x}" ] && echo 'PGUSER=set' || echo 'PGUSER=unset'
+  [ -n "${PGSSLMODE+x}" ] && echo 'PGSSLMODE=set' || echo 'PGSSLMODE=unset'
+  [ -n "${PGCONNECT_TIMEOUT+x}" ] && echo 'PGCONNECT_TIMEOUT=set' || echo 'PGCONNECT_TIMEOUT=unset'
+  [ -n "${POSTGRES_DB+x}" ] && echo 'POSTGRES_DB=set' || echo 'POSTGRES_DB=unset'
+  [ -n "${POSTGRES_USER+x}" ] && echo 'POSTGRES_USER=set' || echo 'POSTGRES_USER=unset'
+  [ -n "${POSTGRES_PASSWORD+x}" ] && echo 'POSTGRES_PASSWORD=set' || echo 'POSTGRES_PASSWORD=unset'
+} > "$state_root/remote-psql-libpq-env"
 FAKE_PSQL
 chmod +x "$FAKE_BIN/psql"
+
+FAKE_PG_ONLY="$TEST_ROOT/fake-pg-only"
+mkdir -p "$FAKE_PG_ONLY"
+ln -s "$FAKE_BIN/pg_isready" "$FAKE_PG_ONLY/pg_isready"
+cat > "$FAKE_PG_ONLY/date" <<'FAKE_DATE'
+#!/usr/bin/env bash
+exec /bin/date "$@"
+FAKE_DATE
+cat > "$FAKE_PG_ONLY/env" <<'FAKE_ENV'
+#!/usr/bin/env bash
+exec /usr/bin/env "$@"
+FAKE_ENV
+chmod +x "$FAKE_PG_ONLY/date" "$FAKE_PG_ONLY/env"
 
 cat > "$FAKE_BIN/mv" <<'FAKE_MV'
 #!/usr/bin/env bash
@@ -473,6 +513,18 @@ run_ensure() {
   (
     cd "$worktree"
     bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$env_file" "$@"
+  )
+}
+
+run_ensure_without_psql() {
+  local worktree="$1"
+  local env_file="$2"
+  shift 2
+  (
+    cd "$worktree"
+    PATH="$FAKE_PG_ONLY"
+    export PATH
+    /bin/bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$env_file" "$@"
   )
 }
 
@@ -1464,11 +1516,8 @@ test_first_initialization_and_readiness() {
   fi
 }
 
-test_remote_database_url_authority() {
-  new_fixture remote-database-url-authority
-  local worktree="$CASE_ROOT/worktree"
-  local env_file="$CASE_ROOT/remote.env"
-  mkdir -p "$worktree"
+write_remote_env() {
+  local env_file="$1"
   cat > "$env_file" <<'ENV'
 POSTGRES_DB=env_db
 POSTGRES_USER=env_user
@@ -1476,15 +1525,104 @@ POSTGRES_PASSWORD=env_password
 POSTGRES_PORT=5432
 DATABASE_URL=postgres://url_user:url_password@db.example.test:6543/url_db?sslmode=require
 ENV
+}
 
-  if run_ensure "$worktree" "$env_file" > "$CASE_ROOT/ensure.out" 2>&1 && \
-    [ "$(cat "$FAKE_DOCKER_STATE/remote-psql-pgpassword")" = unset ] && \
-    grep -Fx -- '-d' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
-    grep -Fx -- 'postgres://url_user:url_password@db.example.test:6543/url_db?sslmode=require' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
-    ! grep -Ex -- '-h|-p|-U|env_user|env_db' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null; then
-    pass "remote authenticated readiness uses DATABASE_URL credentials and target authority"
+assert_secret_free_remote_client_evidence() {
+  local file
+  for file in \
+    "$FAKE_DOCKER_STATE/remote-pg-isready-argv" \
+    "$FAKE_DOCKER_STATE/remote-psql-argv" \
+    "$CASE_ROOT/ensure.out"; do
+    if grep -Fq 'url_password' "$file" || grep -Fq 'postgres://url_user:' "$file"; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+test_remote_database_url_authority() {
+  new_fixture remote-database-url-authority
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/remote.env"
+  mkdir -p "$worktree"
+  write_remote_env "$env_file"
+
+  if PGHOST=foreign.example.test PGPORT=4444 PGUSER=foreign_user \
+    PGSSLMODE=disable PGPASSWORD=foreign_password \
+    run_ensure "$worktree" "$env_file" > "$CASE_ROOT/ensure.out" 2>&1 && \
+    grep -Fx -- '-t' "$FAKE_DOCKER_STATE/remote-pg-isready-argv" > /dev/null && \
+    grep -Fx -- '1' "$FAKE_DOCKER_STATE/remote-pg-isready-argv" > /dev/null && \
+    grep -Fx -- 'PGDATABASE=set' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGPASSWORD=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGHOST=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGPORT=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGUSER=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGSSLMODE=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_PASSWORD=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGCONNECT_TIMEOUT=set' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGDATABASE=set' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    grep -Fx -- 'PGPASSWORD=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    ! grep -Ex -- '-d|-h|-p|-U|env_user|env_db|foreign_user' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
+    assert_secret_free_remote_client_evidence; then
+    pass "remote readiness keeps DATABASE_URL out of argv and ignores ambient libpq authority"
   else
-    fail "remote authenticated readiness mixed DATABASE_URL with standalone PostgreSQL credentials"
+    fail "remote readiness leaked DATABASE_URL or mixed it with ambient PostgreSQL authority"
+  fi
+}
+
+test_remote_readiness_timeout() {
+  new_fixture remote-readiness-timeout
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/remote.env"
+  mkdir -p "$worktree"
+  write_remote_env "$env_file"
+
+  : > "$FAKE_DOCKER_STATE/remote-pg-isready-fail"
+  if MULTICA_POSTGRES_READY_TIMEOUT_SECONDS=1 \
+    run_ensure "$worktree" "$env_file" > "$CASE_ROOT/timeout.out" 2>&1; then
+    fail "remote PostgreSQL readiness loop accepted repeated failures"
+  elif [ "$(wc -l < "$FAKE_DOCKER_STATE/remote-pg-isready-calls" | tr -d ' ')" -ge 2 ] && \
+    grep -Fq 'Remote PostgreSQL did not become ready within 1 seconds' "$CASE_ROOT/timeout.out" && \
+    [ ! -e "$FAKE_DOCKER_STATE/mutation.log" ]; then
+    pass "remote PostgreSQL readiness fails at the shared bounded deadline"
+  else
+    fail "remote PostgreSQL readiness failure was not bounded or attempted a Docker mutation"
+  fi
+}
+
+test_remote_missing_psql_fails_closed() {
+  new_fixture remote-missing-psql
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/remote.env"
+  mkdir -p "$worktree"
+  write_remote_env "$env_file"
+
+  if run_ensure_without_psql "$worktree" "$env_file" > "$CASE_ROOT/missing-psql.out" 2>&1; then
+    fail "remote PostgreSQL readiness accepted a missing authenticated client"
+  elif grep -Fq 'psql is required to verify authenticated remote PostgreSQL readiness' "$CASE_ROOT/missing-psql.out" && \
+    ! grep -Fq '✓ PostgreSQL ready' "$CASE_ROOT/missing-psql.out" && \
+    [ ! -e "$FAKE_DOCKER_STATE/remote-pg-isready-calls" ]; then
+    pass "missing psql fails closed without claiming remote readiness"
+  else
+    fail "missing psql did not produce a non-ready authenticated result"
+  fi
+}
+
+test_invalid_shared_readiness_timeout() {
+  new_fixture invalid-shared-readiness-timeout
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/remote.env"
+  mkdir -p "$worktree"
+  write_remote_env "$env_file"
+
+  if MULTICA_POSTGRES_READY_TIMEOUT_SECONDS=0 \
+    run_ensure "$worktree" "$env_file" > "$CASE_ROOT/invalid-timeout.out" 2>&1; then
+    fail "invalid shared readiness timeout was accepted for a remote database"
+  elif grep -Fq 'MULTICA_POSTGRES_READY_TIMEOUT_SECONDS must be an integer from 1 through 300' "$CASE_ROOT/invalid-timeout.out" && \
+    [ ! -e "$FAKE_DOCKER_STATE/remote-pg-isready-calls" ]; then
+    pass "shared readiness timeout validation rejects out-of-range remote values"
+  else
+    fail "shared readiness timeout validation ran remote checks before refusing invalid input"
   fi
 }
 
@@ -1854,6 +1992,9 @@ run_case nonowner-lock-release-refusal test_nonowner_lock_release_refusal
 run_case release-failure-propagation test_release_failure_propagation
 run_case first-initialization-and-readiness test_first_initialization_and_readiness
 run_case remote-database-url-authority test_remote_database_url_authority
+run_case remote-readiness-timeout test_remote_readiness_timeout
+run_case remote-missing-psql test_remote_missing_psql_fails_closed
+run_case invalid-shared-readiness-timeout test_invalid_shared_readiness_timeout
 run_case readiness-timeout test_readiness_timeout
 run_case idempotency-and-production-identity test_idempotency_and_production_identity
 run_case static-safety-contract test_static_safety_contract

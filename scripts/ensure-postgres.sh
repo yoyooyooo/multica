@@ -43,7 +43,11 @@ validate_postgres_identifier() {
 validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
 validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
 
-export PGPASSWORD="$POSTGRES_PASSWORD"
+ready_timeout="${MULTICA_POSTGRES_READY_TIMEOUT_SECONDS:-60}"
+if [[ ! "$ready_timeout" =~ ^[0-9]+$ ]] || [ "$ready_timeout" -lt 1 ] || [ "$ready_timeout" -gt 300 ]; then
+  echo "ERROR: MULTICA_POSTGRES_READY_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
+  exit 1
+fi
 
 db_host=""
 db_port="${POSTGRES_PORT:-5432}"
@@ -93,7 +97,6 @@ is_local() {
 ensure_local_postgres() {
   local reset_database="${1:-false}"
   local project_name="$COMPOSE_PROJECT_NAME"
-  local ready_timeout="${MULTICA_POSTGRES_READY_TIMEOUT_SECONDS:-60}"
   local ready_deadline
   local db_exists
 
@@ -107,10 +110,6 @@ ensure_local_postgres() {
   # this canonical identity, never from a caller-supplied Compose command.
   validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
   validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
-  if [[ ! "$ready_timeout" =~ ^[0-9]+$ ]] || [ "$ready_timeout" -lt 1 ] || [ "$ready_timeout" -gt 300 ]; then
-    echo "ERROR: MULTICA_POSTGRES_READY_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
-    return 1
-  fi
   ready_deadline=$(( $(date +%s) + ready_timeout ))
 
   echo "==> Ensuring PostgreSQL container for project '$project_name' on localhost:${POSTGRES_PORT:-5432}..."
@@ -174,24 +173,66 @@ else
     exit 1
   fi
 
-  echo "==> Remote database detected (host: $db_host). Skipping Docker."
-  if command -v pg_isready > /dev/null 2>&1; then
-    echo "==> Waiting for PostgreSQL at $db_host:$db_port to be ready..."
-    until pg_isready -d "$DATABASE_URL" > /dev/null 2>&1; do
+  # A remote URL is the complete libpq authority. Start each client with a
+  # cleared environment so ambient PG*/POSTGRES_* values cannot retarget it,
+  # and keep the URL out of argv and logs by transporting it through
+  # PGDATABASE. PGCONNECT_TIMEOUT bounds the authenticated connection attempt;
+  # the URI retains its own host, credentials, database, and options.
+  remote_pg_isready() {
+    env -i PATH="$PATH" PGDATABASE="$DATABASE_URL" pg_isready -t 1
+  }
+
+  remote_psql() {
+    local client_pid
+
+    if [ "$(date +%s)" -ge "$remote_ready_deadline" ]; then
+      return 1
+    fi
+
+    env -i PATH="$PATH" PGDATABASE="$DATABASE_URL" PGCONNECT_TIMEOUT=1 \
+      psql -v ON_ERROR_STOP=1 -Atqc "SELECT 1" &
+    client_pid=$!
+
+    while kill -0 "$client_pid" > /dev/null 2>&1; do
+      if [ "$(date +%s)" -ge "$remote_ready_deadline" ]; then
+        # This is our own client process, started immediately above. Reap it so
+        # the readiness deadline cannot leave a credential-bearing connection
+        # attempt running in the background.
+        kill -KILL "$client_pid" > /dev/null 2>&1 || true
+        wait "$client_pid" > /dev/null 2>&1 || true
+        return 1
+      fi
       sleep 1
     done
 
-    echo "==> Verifying credential-backed readiness (remote)..."
-    if ! command -v psql > /dev/null 2>&1; then
-      echo "WARNING: psql not found; skipping authenticated readiness check for remote DB"
-    elif ! env -u PGPASSWORD psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atqc "SELECT 1" > /dev/null 2>&1; then
-      echo "ERROR: Credential-backed readiness check failed for remote database '$db_name'" >&2
+    wait "$client_pid"
+  }
+
+  echo "==> Remote database detected (host: $db_host). Skipping Docker."
+  if ! command -v pg_isready > /dev/null 2>&1; then
+    echo "ERROR: pg_isready is required to verify remote PostgreSQL readiness." >&2
+    exit 1
+  fi
+  if ! command -v psql > /dev/null 2>&1; then
+    echo "ERROR: psql is required to verify authenticated remote PostgreSQL readiness." >&2
+    exit 1
+  fi
+
+  remote_ready_deadline=$(( $(date +%s) + ready_timeout ))
+  echo "==> Waiting for PostgreSQL at $db_host:$db_port to be ready..."
+  until remote_pg_isready > /dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$remote_ready_deadline" ]; then
+      echo "ERROR: Remote PostgreSQL did not become ready within ${ready_timeout} seconds at $db_host:$db_port." >&2
       exit 1
     fi
+    sleep 1
+  done
 
-    echo "✓ PostgreSQL ready (remote: $db_host:$db_port). Database: $db_name"
-  else
-    echo "==> pg_isready not found. Skipping remote connectivity preflight."
-    echo "✓ PostgreSQL configured (remote: $db_host:$db_port). Database: $db_name"
+  echo "==> Verifying credential-backed readiness (remote)..."
+  if ! remote_psql > /dev/null 2>&1; then
+    echo "ERROR: Credential-backed readiness check failed for remote database '$db_name'" >&2
+    exit 1
   fi
+
+  echo "✓ PostgreSQL ready (remote: $db_host:$db_port). Database: $db_name"
 fi
