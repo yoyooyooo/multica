@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
-# ==========================================================================
-# Regression tests: worktree Compose isolation
+# Regression tests for worktree Compose isolation.
 #
-# Tests that:
-#   1. A fresh worktree env generates an isolated Compose project.
-#   2. Ownership guard runs before any Docker mutation (not dead code).
-#   3. Ownership guard rejects foreign project name (running containers).
-#   4. Ownership guard rejects foreign project name (stopped containers).
-#   5. Ownership guard rejects foreign port collision.
-#   6. Ownership guard rejects absent/malformed labels.
-#   7. Ownership guard rejects foreign volume ownership.
-#   8. Isolated worktree PostgreSQL starts on its own port/volume/labels.
-#   9. Live deployment containers (IDs, start times, labels, volume) unchanged.
-#  10. Idempotent re-run succeeds.
-#  11. Cleanup isolation: db-down only stops worktree project's container.
-#  12. Cleanup refusal: cleanup does not stop/remove foreign resources.
-#  13. TOCTOU lock prevents concurrent race.
-#  14. Credential-backed readiness (SELECT 1) passes.
-#  15. Port check works with grep -E (portable on macOS/Linux).
-#  16. Integration: `docker compose up` is never reached after foreign collision.
-# ==========================================================================
+# Public seams under test:
+#   1. compose-guard-mustpass.sh <env> -- <docker-compose-mutation>
+#   2. ensure-postgres.sh <env> [-- <post-readiness-mutation>]
+#
+# The suite uses a deterministic fake Docker binary only. It never contacts
+# the host daemon and intentionally retains its artifacts for inspection.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
+ONLY_CASE="${1:-}"
+TEST_ROOT="${TEST_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/multica-compose-isolation.XXXXXX")}"
+FAKE_BIN="$TEST_ROOT/bin"
 
 PASS=0
 FAIL=0
@@ -32,451 +21,826 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-pass() { PASS=$((PASS+1)); echo -e "${GREEN}PASS${NC} $1"; }
-fail() { FAIL=$((FAIL+1)); echo -e "${RED}FAIL${NC} $1"; }
+pass() {
+  PASS=$((PASS + 1))
+  echo -e "${GREEN}PASS${NC} $1"
+}
 
-# ---------- Snapshot: live deployment containers before testing ----------
-echo ""
-echo "=== Test suite: worktree Compose isolation ==="
-echo ""
+fail() {
+  FAIL=$((FAIL + 1))
+  echo -e "${RED}FAIL${NC} $1"
+}
 
-LIVE_SNAPSHOT=$(mktemp)
-trap 'rm -f "$LIVE_SNAPSHOT"' EXIT
+run_case() {
+  local name="$1"
+  shift
+  if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != "$name" ]; then
+    return
+  fi
+  echo "--- $name ---"
+  "$@"
+}
 
-capture_live_state() {
-  # Capture container IDs, names, start times, labels, and volume identity
-  docker ps --format '{{.ID}} {{.Names}} {{.RunningFor}}' 2>/dev/null > "$LIVE_SNAPSHOT" || true
-  echo "---LABELS---" >> "$LIVE_SNAPSHOT"
-  for cname in $(docker ps --format '{{.Names}}' 2>/dev/null || true); do
-    local owner
-    owner="$(docker inspect --format '{{index .Config.Labels "multica.owner"}}' "$cname" 2>/dev/null || echo "(none)")"
-    local proj
-    proj="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$cname" 2>/dev/null || echo "(none)")"
-    echo "$cname | multica.owner=$owner | compose.project=$proj" >> "$LIVE_SNAPSHOT"
+mkdir -p "$FAKE_BIN"
+
+cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_root="${FAKE_DOCKER_STATE:?FAKE_DOCKER_STATE is required}"
+
+label_value() {
+  local resource_dir="$1"
+  local key="$2"
+  [ -f "$resource_dir/labels" ] || return 0
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$resource_dir/labels"
+}
+
+container_names() {
+  local all="$1"
+  local project="$2"
+  local wanted_state="$3"
+  local resource_dir name state actual_project
+  for resource_dir in "$state_root"/containers/*; do
+    [ -d "$resource_dir" ] || continue
+    name="$(basename "$resource_dir")"
+    state="$(cat "$resource_dir/state" 2>/dev/null || printf 'running')"
+    [ "$all" = true ] || [ "$state" = running ] || continue
+    if [ -n "$wanted_state" ] && [ "$state" != "$wanted_state" ]; then
+      continue
+    fi
+    actual_project="$(label_value "$resource_dir" 'com.docker.compose.project')"
+    [ -z "$project" ] || [ "$actual_project" = "$project" ] || continue
+    printf '%s\n' "$name"
   done
-  echo "---VOLUMES---" >> "$LIVE_SNAPSHOT"
-  for vol in $(docker volume ls --filter "label=com.docker.compose.project=multica" --format '{{.Name}}' 2>/dev/null || true); do
-    local driver
-    driver="$(docker volume inspect --format '{{.Driver}}' "$vol" 2>/dev/null || echo "unknown")"
-    echo "$vol | driver=$driver" >> "$LIVE_SNAPSHOT"
+}
+
+volume_names() {
+  local project="$1"
+  local resource_dir name actual_project
+  for resource_dir in "$state_root"/volumes/*; do
+    [ -d "$resource_dir" ] || continue
+    name="$(basename "$resource_dir")"
+    actual_project="$(label_value "$resource_dir" 'com.docker.compose.project')"
+    [ -z "$project" ] || [ "$actual_project" = "$project" ] || continue
+    printf '%s\n' "$name"
   done
 }
 
-LIVE_CONTAINERS=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
-capture_live_state
-
-# Wait for live containers to settle before snapshot comparison
-sleep 1
-
-# ---------- Test 1: worktree env generates isolated Compose project ----------
-echo "--- Test 1: fresh worktree env generates isolated project ---"
-TESTDIR=$(mktemp -d)
-cp -r "$REPO_ROOT"/{docker-compose.yml,scripts} "$TESTDIR/"
-mkdir -p "$TESTDIR/server" && cp "$REPO_ROOT/server/go.mod" "$TESTDIR/server/"
-
-WORKTREE_LABEL="test_wt_$$"
-pushd "$TESTDIR" > /dev/null
-  FORCE=1 WORKTREE_NAME="$WORKTREE_LABEL" bash scripts/init-worktree-env.sh .env.worktree 2>&1 || {
-    fail "init-worktree-env failed"; popd > /dev/null; rm -rf "$TESTDIR"; exit 1
-  }
-
-  set -a
-  # shellcheck disable=SC1090
-  . .env.worktree
-  set +a
-
-  if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
-    fail "COMPOSE_PROJECT_NAME is empty"
-  elif echo "$COMPOSE_PROJECT_NAME" | grep -qE "^wt_" 2>/dev/null; then
-    pass "COMPOSE_PROJECT_NAME starts with wt_: $COMPOSE_PROJECT_NAME"
-  else
-    fail "COMPOSE_PROJECT_NAME does not start with wt_: $COMPOSE_PROJECT_NAME"
+render_label() {
+  local resource_dir="$1"
+  local format="$2"
+  local key=""
+  if [ -z "$format" ]; then
+    printf '{}\n'
+    return 0
   fi
-
-  if [ "${MULTICA_OWNER:-}" != "worktree" ]; then
-    fail "MULTICA_OWNER is not 'worktree'"
-  else
-    pass "MULTICA_OWNER = worktree"
-  fi
-
-  if [ "${POSTGRES_PORT:-}" = "5432" ] || [ "${POSTGRES_PORT:-}" -lt 15432 ]; then
-    fail "POSTGRES_PORT is not isolated: ${POSTGRES_PORT:-}"
-  else
-    pass "POSTGRES_PORT = ${POSTGRES_PORT:-} (> 15432)"
-  fi
-
-  if [ "${WORKTREE_PATH:-}" != "$TESTDIR" ]; then
-    fail "WORKTREE_PATH mismatch: expected $TESTDIR, got $WORKTREE_PATH"
-  else
-    pass "WORKTREE_PATH = $TESTDIR"
-  fi
-popd > /dev/null
-rm -rf "$TESTDIR"
-
-# ---------- Test 2: guard is called (not dead code) ----------
-echo "--- Test 2: guard function executes when sourced ---"
-GUARD_TDIR=$(mktemp -d)
-cp "$REPO_ROOT/scripts/compose-ownership-guard.sh" "$GUARD_TDIR/"
-cp "$REPO_ROOT/scripts/ensure-postgres.sh" "$GUARD_TDIR/"
-
-# Direct call: guard should execute guard_compose_ownership
-COMPOSE_PROJECT_NAME=test_guard_exec_$$ \
-  POSTGRES_PORT=59888 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH="$GUARD_TDIR" \
-  bash -c '
-    . '"$GUARD_TDIR"'/compose-ownership-guard.sh
-    guard_compose_ownership
-    echo "GUARD_EXIT=$?"
-  ' 2>&1 | grep -q "GUARD_EXIT=0" && {
-  pass "guard_compose_ownership executes when sourced from bash"
-} || {
-  fail "guard_compose_ownership failed when sourced directly"
+  case "$format" in
+    *'multica.owner'*) key='multica.owner' ;;
+    *'multica.worktree.path'*) key='multica.worktree.path' ;;
+    *'multica.worktree.project'*) key='multica.worktree.project' ;;
+    *'com.docker.compose.project'*) key='com.docker.compose.project' ;;
+    *'.Driver'*) printf 'local\n'; return 0 ;;
+  esac
+  [ -n "$key" ] && label_value "$resource_dir" "$key"
 }
 
-# Integration test: ensure-postgres.sh calls the guard before compose up
-# We simulate a foreign collision and verify compose up is NOT reached
-COMPOSE_PROJECT_NAME=multica \
-  POSTGRES_PORT=5432 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH=/tmp/fake_path \
-  bash "$GUARD_TDIR/ensure-postgres.sh" 2>&1 && {
-  fail "ensure-postgres.sh should have failed (foreign collision, no compose up)"
-} || {
-  pass "ensure-postgres.sh fails early (guard blocks docker compose up)"
-}
+command_name="${1:-}"
+[ "$#" -gt 0 ] && shift
 
-rm -rf "$GUARD_TDIR"
+case "$command_name" in
+  ps)
+    all=false
+    project=""
+    wanted_state=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -a) all=true ;;
+        --filter)
+          shift
+          filter="${1:-}"
+          case "$filter" in
+            label=com.docker.compose.project=*) project="${filter#label=com.docker.compose.project=}" ;;
+            status=*) wanted_state="${filter#status=}" ;;
+          esac
+          ;;
+        --format) shift ;;
+      esac
+      shift || true
+    done
+    container_names "$all" "$project" "$wanted_state"
+    ;;
+  inspect)
+    format=""
+    while [ "$#" -gt 1 ]; do
+      case "$1" in
+        --format) shift; format="${1:-}" ;;
+      esac
+      shift || true
+    done
+    name="${1:-}"
+    resource_dir="$state_root/containers/$name"
+    [ -d "$resource_dir" ] || exit 1
+    render_label "$resource_dir" "$format"
+    ;;
+  port)
+    name="${1:-}"
+    resource_dir="$state_root/containers/$name"
+    [ -d "$resource_dir" ] || exit 1
+    if [ -f "$resource_dir/port" ]; then
+      printf '127.0.0.1:%s\n' "$(cat "$resource_dir/port")"
+    fi
+    ;;
+  volume)
+    subcommand="${1:-}"
+    [ "$#" -gt 0 ] && shift
+    case "$subcommand" in
+      ls)
+        project=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --filter)
+              shift
+              filter="${1:-}"
+              case "$filter" in
+                label=com.docker.compose.project=*) project="${filter#label=com.docker.compose.project=}" ;;
+              esac
+              ;;
+            --format) shift ;;
+          esac
+          shift || true
+        done
+        volume_names "$project"
+        ;;
+      inspect)
+        format=""
+        while [ "$#" -gt 1 ]; do
+          case "$1" in
+            --format) shift; format="${1:-}" ;;
+          esac
+          shift || true
+        done
+        name="${1:-}"
+        resource_dir="$state_root/volumes/$name"
+        [ -d "$resource_dir" ] || exit 1
+        render_label "$resource_dir" "$format"
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  compose)
+    arguments=("$@")
+    project="${COMPOSE_PROJECT_NAME:-multica}"
+    action=""
+    for ((index = 0; index < ${#arguments[@]}; index++)); do
+      case "${arguments[$index]}" in
+        --project-name)
+          index=$((index + 1))
+          project="${arguments[$index]:-}"
+          ;;
+        -f)
+          index=$((index + 1))
+          ;;
+        up|down|exec)
+          action="${arguments[$index]}"
+          break
+          ;;
+      esac
+    done
 
-# ---------- Test 3: guard rejects foreign running project ----------
-echo "--- Test 3: guard rejects foreign running project ---"
-COMPOSE_PROJECT_NAME=multica \
-  POSTGRES_PORT=5432 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH=/tmp/fake_path \
-  bash "$REPO_ROOT/scripts/compose-ownership-guard.sh" 2>&1 && {
-  fail "guard should reject foreign project 'multica'"
-} || {
-  pass "guard rejects foreign running project 'multica'"
-}
+    case "$action" in
+      up)
+        printf '%s\n' "${FAKE_DOCKER_ACTOR:-single}" >> "$state_root/mutation.log"
+        if [ "${FAKE_DOCKER_BLOCK_UP:-0}" = 1 ]; then
+          : > "$state_root/mutation.started"
+          while [ ! -f "$state_root/release-up" ]; do
+            sleep 0.05
+          done
+        fi
+        if [ "${FAKE_DOCKER_SKIP_RESOURCE_CREATE:-0}" != 1 ]; then
+          container_dir="$state_root/containers/${project}-postgres-1"
+          volume_dir="$state_root/volumes/${project}_pgdata"
+          mkdir -p "$container_dir" "$volume_dir"
+          printf 'running\n' > "$container_dir/state"
+          printf '%s\n' "${POSTGRES_PORT:-5432}" > "$container_dir/port"
+          for resource_dir in "$container_dir" "$volume_dir"; do
+            cat > "$resource_dir/labels" <<LABELS
+com.docker.compose.project=$project
+multica.owner=${MULTICA_OWNER:-deployment}
+multica.worktree.path=${WORKTREE_PATH:-}
+multica.worktree.project=$project
+LABELS
+          done
+        fi
+        printf '%s\n' "${POSTGRES_DB:-multica}" > "$state_root/initialized-db"
+        ;;
+      down)
+        printf 'down:%s\n' "$project" >> "$state_root/mutation.log"
+        ;;
+      exec)
+        argument_text="${arguments[*]}"
+        if [[ "$argument_text" == *'SELECT 1 FROM pg_database'* ]]; then
+          printf '1\n'
+        elif [[ "$argument_text" == *'SELECT 1'* ]]; then
+          database=""
+          user=""
+          for ((index = 0; index < ${#arguments[@]}; index++)); do
+            case "${arguments[$index]}" in
+              -d) index=$((index + 1)); database="${arguments[$index]:-}" ;;
+              -U) index=$((index + 1)); user="${arguments[$index]:-}" ;;
+            esac
+          done
+          database="${database:-${POSTGRES_DB:-}}"
+          user="${user:-${POSTGRES_USER:-}}"
+          printf '%s\n' "$database" > "$state_root/authenticated-db"
+          printf '%s\n' "$user" > "$state_root/authenticated-user"
+          printf '1\n'
+        elif [[ "$argument_text" == *'DROP DATABASE'* ]]; then
+          : > "$state_root/post-mutation.started"
+          if [ "${FAKE_DOCKER_BLOCK_POST:-0}" = 1 ]; then
+            while [ ! -f "$state_root/release-post-mutation" ]; do
+              sleep 0.05
+            done
+          fi
+          printf '%s\n' "$project" > "$state_root/post-mutation"
+        fi
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+FAKE_DOCKER
+chmod +x "$FAKE_BIN/docker"
 
-# ---------- Test 4: guard handles stopped containers ----------
-echo "--- Test 4: guard rejects foreign stopped project ---"
-STOPPED_TDIR=$(mktemp -d)
-
-# Create a stopped container with foreign labels by creating and stopping
-COMPOSE_PROJECT_NAME=test_stopped_foreign_$$ \
-  POSTGRES_PORT=59990 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH=/tmp/wrong_worktree \
-  bash -c '
-    . '"$REPO_ROOT"'/scripts/compose-ownership-guard.sh
-    # Simulate: guard should pass first (project doesnt exist)
-    guard_compose_ownership && echo "FIRST_GUARD_PASS"
-  ' 2>&1 | grep "FIRST_GUARD_PASS" && {
-  pass "first guard pass for test project (no existing containers)"
-} || {
-  fail "first guard failed for test project"
-}
-
-rm -rf "$STOPPED_TDIR"
-
-# ---------- Test 5: guard rejects port collision with grep -E ----------
-echo "--- Test 5: guard rejects foreign port collision ---"
-# Use grep -E (not basic-regex \|)
-LIVE_PORT=""
-for cname in $LIVE_CONTAINERS; do
-  port_info=$(docker port "$cname" 5432 2>/dev/null || true)
-  if echo "$port_info" | grep -E "(0\\.0\\.0\\.0|127\\.0\\.0\\.1):[0-9]+" 2>/dev/null; then
-    LIVE_PORT=$(echo "$port_info" | sed 's/.*://' | head -1)
-    break
-  fi
+for helper in lsof ss netstat; do
+  cat > "$FAKE_BIN/$helper" <<'FAKE_HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${FAKE_LSOF_PORT:-}" != "" ] && [ "$(basename "$0")" = lsof ]; then
+  printf 'fixture 4242 user 3u IPv4 0x0 TCP 127.0.0.1:%s (LISTEN)\n' "$FAKE_LSOF_PORT"
+  exit 0
+fi
+exit 1
+FAKE_HELPER
+  chmod +x "$FAKE_BIN/$helper"
 done
 
-if [ -n "$LIVE_PORT" ]; then
-  COMPOSE_PROJECT_NAME=test_port_collision_$$ \
-    POSTGRES_PORT="$LIVE_PORT" \
-    MULTICA_OWNER=worktree \
-    WORKTREE_PATH=/tmp/fake_path \
-    bash "$REPO_ROOT/scripts/compose-ownership-guard.sh" 2>&1 && {
-    fail "guard should reject port $LIVE_PORT collision"
-  } || {
-    pass "guard rejects port $LIVE_PORT collision"
-  }
-else
-  echo "  SKIP port collision test: no live PostgreSQL port detected"
+cat > "$FAKE_BIN/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = rev-parse ]; then
+  case "${2:-}" in
+    --git-common-dir)
+      printf '%s\n' "${FAKE_DOCKER_STATE:?}/git-common"
+      exit 0
+      ;;
+    --git-dir)
+      if [ "${FAKE_GIT_LINKED_WORKTREE:-0}" = 1 ]; then
+        printf '%s\n' "${FAKE_DOCKER_STATE:?}/git-linked"
+      else
+        printf '%s\n' "${FAKE_DOCKER_STATE:?}/git-common"
+      fi
+      exit 0
+      ;;
+  esac
 fi
+exit 1
+FAKE_GIT
+chmod +x "$FAKE_BIN/git"
 
-# ---------- Test 6: guard rejects missing/malformed labels ----------
-echo "--- Test 6: guard rejects missing labels ---"
-# Unlabeled running containers with our project name should be treated as
-# deployment-owned and rejected for worktree
-COMPOSE_PROJECT_NAME=multica \
-  POSTGRES_PORT=5432 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH=/tmp/label_test \
-  bash "$REPO_ROOT/scripts/compose-ownership-guard.sh" 2>&1 && {
-  fail "guard should reject unlabeled container (treated as deployment)"
-} || {
-  pass "guard rejects unlabeled container as deployment-owned"
+export PATH="$FAKE_BIN:$PATH"
+
+new_fixture() {
+  local name="$1"
+  CASE_ROOT="$TEST_ROOT/$name"
+  FAKE_DOCKER_STATE="$CASE_ROOT/state"
+  MULTICA_COMPOSE_LOCK_ROOT="$CASE_ROOT/locks"
+  export CASE_ROOT FAKE_DOCKER_STATE MULTICA_COMPOSE_LOCK_ROOT
+  mkdir -p "$FAKE_DOCKER_STATE/containers" "$FAKE_DOCKER_STATE/volumes" "$MULTICA_COMPOSE_LOCK_ROOT"
 }
 
-# ---------- Test 7: guard rejects foreign volume ownership ----------
-echo "--- Test 7: guard rejects foreign volume ownership ---"
-# The production multica volume exists; a worktree claiming that project should fail
-COMPOSE_PROJECT_NAME=multica \
-  POSTGRES_PORT=5432 \
-  MULTICA_OWNER=worktree \
-  WORKTREE_PATH=/tmp/vol_test \
-  bash "$REPO_ROOT/scripts/compose-ownership-guard.sh" 2>&1 && {
-  fail "guard should reject foreign volume 'multica_pgdata'"
-} || {
-  pass "guard rejects foreign volume 'multica_pgdata'"
-}
-
-# ---------- Test 8: isolated worktree PostgreSQL starts ----------
-echo "--- Test 8: isolated worktree PostgreSQL starts ---"
-TESTDIR8=$(mktemp -d)
-cp -r "$REPO_ROOT"/{docker-compose.yml,scripts} "$TESTDIR8/"
-mkdir -p "$TESTDIR8/server" && cp "$REPO_ROOT/server/go.mod" "$TESTDIR8/server/"
-
-pushd "$TESTDIR8" > /dev/null
-  FORCE=1 WORKTREE_NAME="isolation_test_$$" bash scripts/init-worktree-env.sh .env.worktree 2>&1 || {
-    fail "init-worktree-env failed"; popd > /dev/null; rm -rf "$TESTDIR8"; exit 1
-  }
-
-  set -a
-  # shellcheck disable=SC1090
-  . .env.worktree
-  set +a
-
-  bash scripts/ensure-postgres.sh .env.worktree 2>&1 || {
-    fail "ensure-postgres.sh failed"
-    popd > /dev/null; rm -rf "$TESTDIR8"; exit 1
-  }
-
-  pass "isolated PostgreSQL started for project $COMPOSE_PROJECT_NAME on port $POSTGRES_PORT"
-
-  container_name="${COMPOSE_PROJECT_NAME}-postgres-1"
-  if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
-    pass "container $container_name exists"
-    c_owner=$(docker inspect --format '{{index .Config.Labels "multica.owner"}}' "$container_name" 2>/dev/null || echo "MISSING")
-    if [ "$c_owner" = "worktree" ]; then
-      pass "container label multica.owner = worktree"
-    else
-      fail "container label multica.owner is '$c_owner', expected 'worktree'"
-    fi
-    c_path=$(docker inspect --format '{{index .Config.Labels "multica.worktree.path"}}' "$container_name" 2>/dev/null || echo "MISSING")
-    if [ "$c_path" = "$TESTDIR8" ]; then
-      pass "container label multica.worktree.path = $c_path"
-    else
-      fail "container label multica.worktree.path is '$c_path', expected '$TESTDIR8'"
-    fi
-    c_proj=$(docker inspect --format '{{index .Config.Labels "multica.worktree.project"}}' "$container_name" 2>/dev/null || echo "MISSING")
-    if [ "$c_proj" = "$COMPOSE_PROJECT_NAME" ]; then
-      pass "container label multica.worktree.project = $c_proj"
-    else
-      fail "container label multica.worktree.project is '$c_proj', expected '$COMPOSE_PROJECT_NAME'"
-    fi
-  else
-    fail "container $container_name not found"
-  fi
-popd > /dev/null
-
-# ---------- Test 9: live deployment containers unchanged (ID, time, labels) ----------
-echo "--- Test 9: live deployment containers unchanged ---"
-LIVE_AFTER=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
-
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  [ "$line" = "---LABELS---" ] && break
-  # line = "ID Names RunningFor"
-  cid=$(echo "$line" | awk '{print $1}')
-  cname=$(echo "$line" | awk '{print $2}')
-  ctime=$(echo "$line" | awk '{print $3}')
-
-  # Skip test containers
-  if echo "$cname" | grep -qE '^isolation_test_|^test_'; then
-    continue
-  fi
-
-  # Check still running with same ID
-  new_id=$(docker ps --filter "name=^${cname}$" --format '{{.ID}}' 2>/dev/null || true)
-  if [ -z "$new_id" ]; then
-    fail "live container '$cname' is no longer running"
-  elif [ "$new_id" != "$cid" ]; then
-    fail "live container '$cname' ID changed: was $cid, now $new_id"
-  else
-    pass "live container '$cname' ID unchanged ($cid)"
-  fi
-done < "$LIVE_SNAPSHOT"
-
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  [ "$line" = "---VOLUMES---" ] && continue
-  [ "$line" = "---LABELS---" ] && { reading_labels=true; continue; }
-done < "$LIVE_SNAPSHOT"
-
-# Check production volume still intact
-for vol in $(docker volume ls --filter "label=com.docker.compose.project=multica" --format '{{.Name}}' 2>/dev/null || true); do
-  if echo "$vol" | grep -qE '^isolation_test_|^test_'; then
-    continue
-  fi
-  pass "production volume '$vol' still present"
-done
-
-# ---------- Test 10: idempotent re-run ----------
-echo "--- Test 10: idempotent re-run ---"
-pushd "$TESTDIR8" > /dev/null
-  if bash scripts/ensure-postgres.sh .env.worktree 2>&1; then
-    pass "idempotent re-run succeeds"
-  else
-    fail "idempotent re-run failed"
-  fi
-popd > /dev/null
-
-# ---------- Test 11: credential-backed readiness (SELECT 1) ----------
-# Run BEFORE cleanup so the container is still up
-echo "--- Test 11: credential-backed readiness (SELECT 1) ---"
-pushd "$TESTDIR8" > /dev/null
-  set -a
-  # shellcheck disable=SC1090
-  . .env.worktree
-  set +a
-
-  # Direct authenticated query
-  if docker compose --project-name "$COMPOSE_PROJECT_NAME" exec -T postgres \
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
-    -Atqc "SELECT 1" 2>/dev/null; then
-    pass "credential-backed SELECT 1 succeeds for database $POSTGRES_DB"
-  else
-    fail "credential-backed SELECT 1 failed for database $POSTGRES_DB"
-  fi
-popd > /dev/null
-
-# ---------- Test 12: cleanup isolation (only our container stops) ----------
-echo "--- Test 12: cleanup isolation ---"
-pushd "$TESTDIR8" > /dev/null
-  set -a
-  # shellcheck disable=SC1090
-  . .env.worktree
-  set +a
-
-  docker compose --project-name "$COMPOSE_PROJECT_NAME" down 2>&1 || true
-popd > /dev/null
-
-container_name="${COMPOSE_PROJECT_NAME}-postgres-1"
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
-  fail "our container $container_name still running after db-down"
-else
-  pass "our container $container_name stopped by db-down"
-fi
-
-# ---------- Test 12: cleanup did not remove foreign resources ----------
-echo "--- Test 12: cleanup did not remove foreign resources ---"
-while IFS= read -r line; do
-  [ -z "$line" ] && continue
-  [ "$line" = "---LABELS---" ] && break
-  cid=$(echo "$line" | awk '{print $1}')
-  cname=$(echo "$line" | awk '{print $2}')
-
-  if echo "$cname" | grep -qE '^isolation_test_|^test_'; then
-    continue
-  fi
-
-  new_id=$(docker ps --filter "name=^${cname}$" --format '{{.ID}}' 2>/dev/null || true)
-  if [ -z "$new_id" ]; then
-    fail "live container '$cname' was removed by worktree cleanup"
-  elif [ "$new_id" != "$cid" ]; then
-    fail "live container '$cname' ID changed after cleanup: was $cid, now $new_id"
-  else
-    pass "live container '$cname' survived cleanup (ID: $cid)"
-  fi
-done < "$LIVE_SNAPSHOT"
-
-# ---------- Test 13: TOCTOU lock prevents concurrent race ----------
-echo "--- Test 13: TOCTOU lock ---"
-# Test that acquire/release works
-lock_test="/tmp/multica-compose-lock-totou_test_$$"
-mkdir "$lock_test" && {
-  # Second attempt should fail
-  if mkdir "$lock_test" 2>/dev/null; then
-    fail "TOCTOU lock allowed concurrent acquire"
-  else
-    pass "TOCTOU lock prevented concurrent acquire"
-  fi
-  rmdir "$lock_test"
-} || {
-  fail "TOCTOU lock first acquire failed"
-}
-
-# ---------- Test 14: port check with grep -E (macOS/Linux portable) ----------
-echo "--- Test 15: portable grep -E port check ---"
-MOCK_PORT=59997
-# Test that our grep -E pattern works (no basic-regex \|)
-echo "0.0.0.0:$MOCK_PORT" | grep -E "(0\\.0\\.0\\.0|127\\.0\\.0\\.1):$MOCK_PORT" > /dev/null 2>&1 && {
-  pass "grep -E pattern matches 0.0.0.0:$MOCK_PORT"
-} || {
-  fail "grep -E pattern does NOT match 0.0.0.0:$MOCK_PORT"
-}
-
-echo "127.0.0.1:$MOCK_PORT" | grep -E "(0\\.0\\.0\\.0|127\\.0\\.0\\.1):$MOCK_PORT" > /dev/null 2>&1 && {
-  pass "grep -E pattern matches 127.0.0.1:$MOCK_PORT"
-} || {
-  fail "grep -E pattern does NOT match 127.0.0.1:$MOCK_PORT"
-}
-
-# Test that basic-regex \| does NOT match (would be literal | on macOS)
-echo "0.0.0.0:$MOCK_PORT" | grep "0.0.0.0:$MOCK_PORT\\|127.0.0.1:$MOCK_PORT" > /dev/null 2>&1 && {
-  pass "grep basic-regex \\| also works (GNU extension)"
-} || {
-  # On macOS, \| is literal, so this should fail - that's fine
-  echo "  NOTE: grep basic-regex \\| is GNU-only; guard uses grep -E"
-}
-
-# ---------- Test 16: guard blocks compose up integration ----------
-echo "--- Test 16: guard blocks compose up integration ---"
-INTEG_TDIR=$(mktemp -d)
-mkdir -p "$INTEG_TDIR/scripts"
-cp "$REPO_ROOT/scripts/compose-ownership-guard.sh" "$INTEG_TDIR/scripts/"
-cp "$REPO_ROOT/scripts/ensure-postgres.sh" "$INTEG_TDIR/scripts/"
-cp "$REPO_ROOT/docker-compose.yml" "$INTEG_TDIR/"
-
-ENV=$(mktemp)
-cat > "$ENV" <<EOF
-COMPOSE_PROJECT_NAME=multica
+write_env() {
+  local env_file="$1"
+  local project="$2"
+  local path="$3"
+  local port="$4"
+  cat > "$env_file" <<ENV
+COMPOSE_PROJECT_NAME=$project
 MULTICA_OWNER=worktree
-WORKTREE_PATH=$INTEG_TDIR
-POSTGRES_PORT=5432
-POSTGRES_DB=multica
-POSTGRES_USER=multica
-POSTGRES_PASSWORD=multica
-EOF
-
-# ensure-postgres.sh should fail before compose up
-bash -c "
-  ENV_FILE='$ENV'
-  cd '$INTEG_TDIR'
-  bash scripts/ensure-postgres.sh '$ENV'
-" 2>&1 && {
-  fail "guard did not block compose up for foreign project (integration)"
-} || {
-  pass "guard blocks compose up for foreign project (integration)"
+WORKTREE_PATH=$path
+POSTGRES_DB=${project}_db
+POSTGRES_USER=fixture_user
+POSTGRES_PASSWORD=fixture-password-not-for-output
+POSTGRES_PORT=$port
+DATABASE_URL=postgres://fixture_user:fixture-password-not-for-output@localhost:$port/${project}_db?sslmode=disable
+ENV
 }
-rm -rf "$INTEG_TDIR" "$ENV"
 
-# ---------- Test 17: path alias detection ----------
-echo "--- Test 17: path alias detection ---"
-# WORKTREE_PATH must be an exact match, so /tmp/worktree and /tmp/worktree/
-# (if one has a trailing slash) should not be confused.
-# The guard doesn't normalize paths, so this is a design note.
-echo "  NOTE: path alias detection (trailing slash, symlinks) is not normalized."
-echo "  WORKTREE_PATH must match docker label exactly. Future: add realpath."
+fixture_container() {
+  local name="$1"
+  local state="$2"
+  local compose_project="$3"
+  local owner="$4"
+  local worktree_path="$5"
+  local worktree_project="$6"
+  local port="${7:-}"
+  local resource_dir="$FAKE_DOCKER_STATE/containers/$name"
+  mkdir -p "$resource_dir"
+  printf '%s\n' "$state" > "$resource_dir/state"
+  [ -z "$port" ] || printf '%s\n' "$port" > "$resource_dir/port"
+  cat > "$resource_dir/labels" <<LABELS
+com.docker.compose.project=$compose_project
+LABELS
+  [ "$owner" = '-' ] || printf 'multica.owner=%s\n' "$owner" >> "$resource_dir/labels"
+  [ "$worktree_path" = '-' ] || printf 'multica.worktree.path=%s\n' "$worktree_path" >> "$resource_dir/labels"
+  [ "$worktree_project" = '-' ] || printf 'multica.worktree.project=%s\n' "$worktree_project" >> "$resource_dir/labels"
+}
 
-# ---------- Cleanup ----------
-rm -rf "$TESTDIR8"
+fixture_volume() {
+  local name="$1"
+  local compose_project="$2"
+  local owner="$3"
+  local worktree_path="$4"
+  local worktree_project="$5"
+  local resource_dir="$FAKE_DOCKER_STATE/volumes/$name"
+  mkdir -p "$resource_dir"
+  cat > "$resource_dir/labels" <<LABELS
+com.docker.compose.project=$compose_project
+LABELS
+  [ "$owner" = '-' ] || printf 'multica.owner=%s\n' "$owner" >> "$resource_dir/labels"
+  [ "$worktree_path" = '-' ] || printf 'multica.worktree.path=%s\n' "$worktree_path" >> "$resource_dir/labels"
+  [ "$worktree_project" = '-' ] || printf 'multica.worktree.project=%s\n' "$worktree_project" >> "$resource_dir/labels"
+}
 
-# ---------- Results ----------
-echo ""
+mutation_count() {
+  if [ -f "$FAKE_DOCKER_STATE/mutation.log" ]; then
+    wc -l < "$FAKE_DOCKER_STATE/mutation.log" | tr -d ' '
+  else
+    printf '0\n'
+  fi
+}
+
+test_canonical_identity() {
+  new_fixture canonical-identity
+  local physical="$CASE_ROOT/physical-worktree"
+  local alias="$CASE_ROOT/path-alias"
+  local alias_env="$CASE_ROOT/alias.env"
+  local physical_env="$CASE_ROOT/physical.env"
+  mkdir -p "$physical"
+  ln -s "$physical" "$alias"
+
+  (
+    cd "$alias"
+    FORCE=1 bash "$REPO_ROOT/scripts/init-worktree-env.sh" "$alias_env" > "$CASE_ROOT/alias.out"
+  )
+  (
+    cd "$physical"
+    FORCE=1 bash "$REPO_ROOT/scripts/init-worktree-env.sh" "$physical_env" > "$CASE_ROOT/physical.out"
+  )
+
+  local canonical_physical alias_path physical_path alias_project physical_project alias_port physical_port
+  canonical_physical="$(cd "$physical" && pwd -P)"
+  alias_path="$(bash -c '. "$1"; printf "%s" "$WORKTREE_PATH"' _ "$alias_env")"
+  physical_path="$(bash -c '. "$1"; printf "%s" "$WORKTREE_PATH"' _ "$physical_env")"
+  alias_project="$(bash -c '. "$1"; printf "%s" "$COMPOSE_PROJECT_NAME"' _ "$alias_env")"
+  physical_project="$(bash -c '. "$1"; printf "%s" "$COMPOSE_PROJECT_NAME"' _ "$physical_env")"
+  alias_port="$(bash -c '. "$1"; printf "%s" "$POSTGRES_PORT"' _ "$alias_env")"
+  physical_port="$(bash -c '. "$1"; printf "%s" "$POSTGRES_PORT"' _ "$physical_env")"
+
+  if [ "$alias_path" = "$canonical_physical" ] && [ "$physical_path" = "$canonical_physical" ] && \
+    [ "$alias_project" = "$physical_project" ] && [ "$alias_port" = "$physical_port" ]; then
+    pass "canonical path produces one stable worktree identity"
+  else
+    fail "path aliases produced different worktree identities"
+  fi
+}
+
+test_linked_worktree_requires_owner() {
+  new_fixture linked-worktree-requires-owner
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_missing_owner"
+  mkdir -p "$worktree"
+  cat > "$env_file" <<ENV
+COMPOSE_PROJECT_NAME=$project
+WORKTREE_PATH=$worktree
+POSTGRES_DB=${project}_db
+POSTGRES_USER=fixture_user
+POSTGRES_PASSWORD=fixture-password-not-for-output
+POSTGRES_PORT=56000
+DATABASE_URL=postgres://fixture_user:fixture-password-not-for-output@localhost:56000/${project}_db?sslmode=disable
+ENV
+
+  local missing_refused=false
+  if ! FAKE_GIT_LINKED_WORKTREE=1 bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/missing-owner.out" 2>&1 && \
+    [ "$(mutation_count)" = 0 ]; then
+    missing_refused=true
+  fi
+
+  printf 'MULTICA_OWNER=deployment\n' >> "$env_file"
+  local deployment_refused=false
+  if ! FAKE_GIT_LINKED_WORKTREE=1 bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/deployment-owner.out" 2>&1 && \
+    [ "$(mutation_count)" = 0 ]; then
+    deployment_refused=true
+  fi
+
+  if [ "$missing_refused" = true ] && [ "$deployment_refused" = true ]; then
+    pass "linked worktree cannot inherit or request deployment Compose defaults"
+  else
+    fail "linked worktree accepted a deployment Compose ownership path"
+  fi
+}
+
+test_wrapper_mutation() {
+  new_fixture wrapper-mutation
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_wrapper_boundary"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56001
+
+  if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/wrapper.out" 2>&1 && \
+    [ "$(mutation_count)" = 1 ]; then
+    pass "canonical wrapper keeps guard and requested mutation in one boundary"
+  else
+    fail "canonical wrapper did not execute exactly one guarded mutation"
+  fi
+}
+
+test_stopped_foreign_refusal() {
+  new_fixture stopped-foreign-refusal
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_stopped_foreign"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56002
+  fixture_container "foreign-stopped-postgres" exited "$project" deployment /deploy/live multica 5432
+
+  if docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Names}}' | grep -q foreign-stopped-postgres; then
+    fail "stopped fixture leaked into running-container listing"
+  elif docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}' | grep -q foreign-stopped-postgres; then
+    if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+      docker compose --project-name "$project" down > "$CASE_ROOT/stopped.out" 2>&1; then
+      fail "stopped foreign resource reached cleanup mutation"
+    elif [ "$(mutation_count)" = 0 ]; then
+      pass "actual stopped foreign Compose fixture is refused before cleanup mutation"
+    else
+      fail "stopped foreign resource produced a mutation"
+    fi
+  else
+    fail "stopped fixture was not visible to docker ps -a"
+  fi
+}
+
+test_strict_volume_labels() {
+  new_fixture strict-volume-labels
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_strict_volume"
+  local canonical_worktree
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56003
+  fixture_volume "${project}_pgdata" "$project" - - -
+
+  local labeled_refused=false
+  if ! bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/volume.out" 2>&1 && \
+    [ "$(mutation_count)" = 0 ]; then
+    labeled_refused=true
+  fi
+
+  new_fixture strict-unlabeled-volume
+  worktree="$CASE_ROOT/worktree"
+  env_file="$CASE_ROOT/worktree.env"
+  mkdir -p "$worktree" "$FAKE_DOCKER_STATE/volumes/${project}_pgdata"
+  write_env "$env_file" "$project" "$worktree" 56003
+  : > "$FAKE_DOCKER_STATE/volumes/${project}_pgdata/labels"
+
+  local unlabeled_refused=false
+  if ! bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/unlabeled-volume.out" 2>&1 && \
+    [ "$(mutation_count)" = 0 ]; then
+    unlabeled_refused=true
+  fi
+
+  new_fixture strict-foreign-volume
+  worktree="$CASE_ROOT/worktree"
+  env_file="$CASE_ROOT/worktree.env"
+  mkdir -p "$worktree" "$FAKE_DOCKER_STATE/volumes/${project}_pgdata"
+  write_env "$env_file" "$project" "$worktree" 56003
+  canonical_worktree="$(cd "$worktree" && pwd -P)"
+  cat > "$FAKE_DOCKER_STATE/volumes/${project}_pgdata/labels" <<LABELS
+com.docker.compose.project=foreign_project
+multica.owner=worktree
+multica.worktree.path=$canonical_worktree
+multica.worktree.project=$project
+LABELS
+
+  local foreign_refused=false
+  if ! bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/foreign-volume.out" 2>&1 && \
+    [ "$(mutation_count)" = 0 ]; then
+    foreign_refused=true
+  fi
+
+  if [ "$labeled_refused" = true ] && [ "$unlabeled_refused" = true ] && [ "$foreign_refused" = true ]; then
+    pass "volumes with missing, unlabeled, or foreign project evidence are refused"
+  else
+    fail "a malformed volume ownership fixture was accepted"
+  fi
+}
+
+test_path_alias_refusal() {
+  new_fixture path-alias-refusal
+  local physical="$CASE_ROOT/physical-worktree"
+  local alias="$CASE_ROOT/path-alias"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_path_alias"
+  mkdir -p "$physical"
+  ln -s "$physical" "$alias"
+  write_env "$env_file" "$project" "$alias" 56004
+  fixture_container "${project}-postgres-1" running "$project" worktree "$alias" "$project" 56004
+
+  if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/alias.out" 2>&1; then
+    fail "noncanonical resource label was accepted through a path alias"
+  elif [ "$(mutation_count)" = 0 ]; then
+    pass "noncanonical path label is rejected before mutation"
+  else
+    fail "path-alias fixture produced a mutation"
+  fi
+}
+
+test_port_refusal() {
+  new_fixture port-refusal
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_port_refusal"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56005
+  fixture_container foreign-port-owner running foreign_project deployment /deploy/live foreign_project 56005
+
+  if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/docker-port.out" 2>&1; then
+    fail "foreign Docker port binder was accepted"
+  else
+    pass "foreign Docker port binder is refused"
+  fi
+
+  new_fixture nondocker-port-refusal
+  worktree="$CASE_ROOT/worktree"
+  env_file="$CASE_ROOT/worktree.env"
+  project="wt_nondocker_port"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56006
+  if FAKE_LSOF_PORT=56006 bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/nondocker-port.out" 2>&1; then
+    fail "non-Docker port binder was accepted"
+  else
+    pass "non-Docker port binder is refused through portable lsof detection"
+  fi
+}
+
+test_concurrent_collision() {
+  new_fixture concurrent-collision
+  local project="wt_concurrent_collision"
+  local worktree_a="$CASE_ROOT/worktree-a"
+  local worktree_b="$CASE_ROOT/worktree-b"
+  local env_a="$CASE_ROOT/a.env"
+  local env_b="$CASE_ROOT/b.env"
+  mkdir -p "$worktree_a" "$worktree_b"
+  write_env "$env_a" "$project" "$worktree_a" 56007
+  write_env "$env_b" "$project" "$worktree_b" 56007
+
+  FAKE_DOCKER_ACTOR=first FAKE_DOCKER_BLOCK_UP=1 MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5 \
+    bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_a" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/first.out" 2>&1 &
+  local first_pid=$!
+
+  local started=false
+  for _ in $(seq 1 100); do
+    if [ -f "$FAKE_DOCKER_STATE/mutation.started" ]; then
+      started=true
+      break
+    fi
+    sleep 0.05
+  done
+
+  if [ "$started" != true ]; then
+    fail "first contender did not reach the guarded mutation seam"
+    : > "$FAKE_DOCKER_STATE/release-up"
+    wait "$first_pid" || true
+    return
+  fi
+
+  local second_status=0
+  if FAKE_DOCKER_ACTOR=second MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=1 \
+    bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_b" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/second.out" 2>&1; then
+    second_status=0
+  else
+    second_status=$?
+  fi
+
+  : > "$FAKE_DOCKER_STATE/release-up"
+  local first_status=0
+  if wait "$first_pid"; then
+    first_status=0
+  else
+    first_status=$?
+  fi
+
+  if [ "$first_status" = 0 ] && [ "$second_status" -ne 0 ] && \
+    [ "$(mutation_count)" = 1 ] && grep -qx first "$FAKE_DOCKER_STATE/mutation.log"; then
+    pass "two colliding contenders allow at most one guard-plus-mutation pass"
+  else
+    fail "concurrent collision did not preserve one guarded mutation"
+  fi
+}
+
+test_post_mutation_boundary() {
+  new_fixture post-mutation-boundary
+  local project="wt_post_mutation"
+  local worktree_a="$CASE_ROOT/worktree-a"
+  local worktree_b="$CASE_ROOT/worktree-b"
+  local env_a="$CASE_ROOT/a.env"
+  local env_b="$CASE_ROOT/b.env"
+  mkdir -p "$worktree_a" "$worktree_b"
+  write_env "$env_a" "$project" "$worktree_a" 56011
+  write_env "$env_b" "$project" "$worktree_b" 56011
+
+  FAKE_DOCKER_ACTOR=first FAKE_DOCKER_BLOCK_POST=1 FAKE_DOCKER_SKIP_RESOURCE_CREATE=1 \
+    MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5 bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$env_a" -- \
+    docker compose --project-name "$project" exec -T postgres psql -U fixture_user -d postgres \
+    -c 'DROP DATABASE IF EXISTS "fixture";' > "$CASE_ROOT/first.out" 2>&1 &
+  local first_pid=$!
+
+  local started=false
+  for _ in $(seq 1 100); do
+    if [ -f "$FAKE_DOCKER_STATE/post-mutation.started" ]; then
+      started=true
+      break
+    fi
+    sleep 0.05
+  done
+
+  if [ "$started" != true ]; then
+    fail "ensure-postgres did not reach its post-readiness mutation seam"
+    : > "$FAKE_DOCKER_STATE/release-post-mutation"
+    wait "$first_pid" || true
+    return
+  fi
+
+  local second_status=0
+  if FAKE_DOCKER_ACTOR=second MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=1 \
+    bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_b" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/second.out" 2>&1; then
+    second_status=0
+  else
+    second_status=$?
+  fi
+
+  : > "$FAKE_DOCKER_STATE/release-post-mutation"
+  local first_status=0
+  if wait "$first_pid"; then
+    first_status=0
+  else
+    first_status=$?
+  fi
+
+  if [ "$first_status" = 0 ] && [ "$second_status" -ne 0 ] && \
+    [ "$(mutation_count)" = 1 ] && [ "$(cat "$FAKE_DOCKER_STATE/post-mutation")" = "$project" ]; then
+    pass "db-reset-style post mutation remains inside the canonical lock boundary"
+  else
+    fail "post-readiness mutation released the ownership lock too early"
+  fi
+}
+
+test_stale_lock_quarantine() {
+  new_fixture stale-lock-quarantine
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_stale_lock"
+  local lock_path="$MULTICA_COMPOSE_LOCK_ROOT/multica-compose-lock-$project"
+  mkdir -p "$worktree" "$lock_path"
+  write_env "$env_file" "$project" "$worktree" 56008
+  printf '999999\n' > "$lock_path/owner.pid"
+  cat > "$lock_path/owner.meta" <<META
+project=$project
+owner=worktree
+worktree_path=$worktree
+pid_start=unavailable
+started_epoch=1
+META
+
+  if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/stale.out" 2>&1 && \
+    find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name "multica-compose-lock-$project.stale.*" -print -quit | grep -q .; then
+    pass "stale lock is quarantined by rename before a bounded recovery"
+  else
+    fail "stale lock was not safely quarantined and recovered"
+  fi
+}
+
+test_first_initialization_and_readiness() {
+  new_fixture first-initialization-and-readiness
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local project="wt_first_init"
+  local database="${project}_db"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56009
+
+  if ! grep -Fq 'POSTGRES_DB: "${POSTGRES_DB:-multica}"' "$REPO_ROOT/docker-compose.yml"; then
+    fail "docker-compose.yml does not parameterize POSTGRES_DB for first initialization"
+    return
+  fi
+  if ! grep -Fq 'multica.owner: "${MULTICA_OWNER:-deployment}"' "$REPO_ROOT/docker-compose.yml" || \
+    ! grep -Fq 'multica.worktree.path: "${WORKTREE_PATH:-}"' "$REPO_ROOT/docker-compose.yml" || \
+    ! grep -Fq 'multica.worktree.project: "${COMPOSE_PROJECT_NAME:-multica}"' "$REPO_ROOT/docker-compose.yml"; then
+    fail "docker-compose.yml does not declare exact worktree volume ownership labels"
+    return
+  fi
+
+  if bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$env_file" > "$CASE_ROOT/ensure.out" 2>&1 && \
+    [ "$(cat "$FAKE_DOCKER_STATE/initialized-db")" = "$database" ] && \
+    [ "$(cat "$FAKE_DOCKER_STATE/authenticated-db")" = "$database" ] && \
+    [ "$(cat "$FAKE_DOCKER_STATE/authenticated-user")" = fixture_user ] && \
+    ! grep -Fq fixture-password-not-for-output "$CASE_ROOT/ensure.out"; then
+    pass "configured database is first-initialized and used by secret-safe authenticated SELECT 1"
+  else
+    fail "configured database initialization or authenticated readiness proof failed"
+  fi
+}
+
+test_idempotency_and_production_identity() {
+  new_fixture idempotency-and-production-identity
+  local project="wt_idempotent"
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  mkdir -p "$worktree"
+  write_env "$env_file" "$project" "$worktree" 56010
+  fixture_container multica-postgres-1 running multica deployment /deploy/live multica 5432
+  printf 'production-fixed-id\n' > "$FAKE_DOCKER_STATE/containers/multica-postgres-1/id"
+  printf 'production-start-time\n' > "$FAKE_DOCKER_STATE/containers/multica-postgres-1/started"
+  cp -R "$FAKE_DOCKER_STATE/containers/multica-postgres-1" "$CASE_ROOT/production-before"
+
+  if bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/first.out" 2>&1 && \
+    bash "$REPO_ROOT/scripts/compose-guard-mustpass.sh" "$env_file" -- \
+    docker compose --project-name "$project" up -d postgres > "$CASE_ROOT/second.out" 2>&1 && \
+    cmp -s "$CASE_ROOT/production-before/id" "$FAKE_DOCKER_STATE/containers/multica-postgres-1/id" && \
+    cmp -s "$CASE_ROOT/production-before/started" "$FAKE_DOCKER_STATE/containers/multica-postgres-1/started" && \
+    cmp -s "$CASE_ROOT/production-before/labels" "$FAKE_DOCKER_STATE/containers/multica-postgres-1/labels"; then
+    pass "idempotent worktree mutation preserves production identity fixture"
+  else
+    fail "idempotency or production-identity preservation failed"
+  fi
+}
+
+test_static_safety_contract() {
+  if rg -n -e '(^|[[:space:]])rm([[:space:]]|$)' \
+    "$REPO_ROOT/scripts/compose-ownership-guard.sh" \
+    "$REPO_ROOT/scripts/compose-guard-mustpass.sh" \
+    "$REPO_ROOT/scripts/ensure-postgres.sh" \
+    "$REPO_ROOT/scripts/test-compose-isolation.sh" > "$TEST_ROOT/delete-command.out"; then
+    fail "Compose isolation scripts contain a permanent deletion command"
+    return
+  fi
+  if rg -n 'docker rm|git checkout' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/unsafe-runbook.out"; then
+    fail "recovery runbook contains an unsafe direct deletion or checkout instruction"
+    return
+  fi
+  if rg -n 'ALTER[[:space:]]+USER' \
+    "$REPO_ROOT/docker-compose.yml" \
+    "$REPO_ROOT/scripts/compose-ownership-guard.sh" \
+    "$REPO_ROOT/scripts/compose-guard-mustpass.sh" \
+    "$REPO_ROOT/scripts/ensure-postgres.sh"; then
+    fail "isolation implementation contains a credential mutation"
+    return
+  fi
+  pass "isolation scripts and rollback runbook retain the no-delete/no-credential-mutation boundary"
+}
+
+echo "=== Deterministic fake-Docker worktree Compose isolation tests ==="
+echo "Artifacts retained at: $TEST_ROOT"
+run_case canonical-identity test_canonical_identity
+run_case linked-worktree-requires-owner test_linked_worktree_requires_owner
+run_case wrapper-mutation test_wrapper_mutation
+run_case stopped-foreign-refusal test_stopped_foreign_refusal
+run_case strict-volume-labels test_strict_volume_labels
+run_case path-alias-refusal test_path_alias_refusal
+run_case port-refusal test_port_refusal
+run_case concurrent-collision test_concurrent_collision
+run_case post-mutation-boundary test_post_mutation_boundary
+run_case stale-lock-quarantine test_stale_lock_quarantine
+run_case first-initialization-and-readiness test_first_initialization_and_readiness
+run_case idempotency-and-production-identity test_idempotency_and_production_identity
+run_case static-safety-contract test_static_safety_contract
+
 echo "=== Results: $PASS passed, $FAIL failed ==="
-exit $FAIL
+exit "$FAIL"
