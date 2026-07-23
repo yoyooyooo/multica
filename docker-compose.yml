@@ -1,4 +1,4 @@
-name: multica
+name: ${COMPOSE_PROJECT_NAME:-multica}
 
 services:
   postgres:
@@ -8,9 +8,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-multica}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-multica}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    labels:
+      multica.owner: "${MULTICA_OWNER:-deployment}"
+      multica.worktree.path: "${WORKTREE_PATH:-}"
+      multica.worktree.project: "${COMPOSE_PROJECT_NAME:-}"
 
 volumes:
   pgdata:

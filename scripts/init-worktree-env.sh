@@ -17,13 +17,23 @@ fi
 hash_value="$(printf '%s' "$PWD" | cksum | awk '{print $1}')"
 offset=$((hash_value % 1000))
 
-postgres_db="multica_${slug}_${offset}"
-postgres_port=5432
+# Deterministic unique identities per worktree: each worktree gets its own
+# Compose project, PostgreSQL host port, database name, and Docker volume so
+# no worktree ever touches "multica-*" production resources by default.
+compose_project="wt_${slug}_${offset}"
+postgres_port=$((15432 + (offset % 1000) % 1000))
+postgres_db="wt_${slug}_${offset}"
 backend_port=$((18080 + offset))
 frontend_port=$((13000 + offset))
 frontend_origin="http://localhost:${frontend_port}"
+multica_owner="worktree"
+worktree_path="$PWD"
 
 cat > "$ENV_FILE" <<EOF
+COMPOSE_PROJECT_NAME=${compose_project}
+MULTICA_OWNER=${multica_owner}
+WORKTREE_PATH=${worktree_path}
+
 POSTGRES_DB=${postgres_db}
 POSTGRES_USER=multica
 POSTGRES_PASSWORD=multica
@@ -47,10 +57,13 @@ NEXT_PUBLIC_WS_URL=ws://localhost:${backend_port}/ws
 EOF
 
 echo "Generated $ENV_FILE for worktree '$worktree_name'"
-echo "  Shared Postgres: localhost:${postgres_port}"
-echo "  Database: ${postgres_db}"
-echo "  Backend:  http://localhost:${backend_port}"
-echo "  Frontend: ${frontend_origin}"
+echo "  Compose project:  ${compose_project}"
+echo "  Postgres port:    localhost:${postgres_port}"
+echo "  Postgres volume:  ${compose_project}_pgdata"
+echo "  Database:         ${postgres_db}"
+echo "  Backend:          http://localhost:${backend_port}"
+echo "  Frontend:         ${frontend_origin}"
+echo "  Owner:            ${multica_owner}"
 echo ""
 echo "Next steps:"
 echo "  make setup-worktree"
