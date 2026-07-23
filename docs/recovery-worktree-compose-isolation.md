@@ -18,7 +18,7 @@ Expected ownership:
 | Resource | Required identity |
 | --- | --- |
 | Production `multica-*` resources | `multica.owner=deployment`; project `multica` |
-| Worktree `wt_*-postgres-1` and `wt_*_pgdata` | `multica.owner=worktree`, canonical physical worktree path, exact `wt_*` project |
+| Worktree `wt_*-postgres-1` and `wt_*_pgdata` | `multica.owner=worktree`, canonical physical worktree path, exact `wt_<basename>_<80-bit-path-digest>` project |
 
 A missing, malformed, path-aliased, or foreign custom label is a collision.
 Do not relabel it in place. Preserve it as evidence and stop the attempted
@@ -50,11 +50,14 @@ that record beneath one fixed host-local namespace:
 
 The physical path for that root is canonicalized. `MULTICA_COMPOSE_LOCK_ROOT`,
 `TMPDIR`, env-file values, current-directory aliases, and Compose variables do
-not select another lock namespace. The lock key is `postgres-port-<port>`, so
-distinct projects that resolve to one PostgreSQL host port serialize the whole
-preflight-and-mutation boundary. After the first operation creates the binding,
-a different project fails its ownership/port preflight instead of reaching a
-second mutation.
+not select another lock namespace. Compose project and database names use an
+80-bit SHA-256 prefix of the canonical physical worktree path (with a readable,
+length-bounded basename prefix); they do not reuse the bounded port slot. The
+PostgreSQL port remains a 1000-slot allocation, and the lock key is
+`postgres-port-<port>`, so distinct projects that resolve to one host port
+serialize the whole preflight-and-mutation boundary. After the first operation
+creates the binding, a different project fails its ownership/port preflight
+instead of reaching a second mutation.
 
 A competing operation reads one complete immutable record and waits only for
 the configured bounded interval. There is no caller-controlled initialization

@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$REPO_ROOT/scripts/worktree-identity.sh"
 ONLY_CASE="${1:-}"
 TEST_ROOT="${TEST_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/multica-compose-isolation.XXXXXX")}"
 FAKE_BIN="$TEST_ROOT/bin"
@@ -424,19 +425,11 @@ new_fixture() {
 }
 
 derive_worktree_identity() {
-  local requested_path="$1"
-  local worktree_name slug hash_value offset
-
-  FIXTURE_WORKTREE_PATH="$(cd "$requested_path" && pwd -P)"
-  worktree_name="$(basename "$FIXTURE_WORKTREE_PATH")"
-  slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
-  [ -n "$slug" ] || slug="multica"
-  hash_value="$(printf '%s' "$FIXTURE_WORKTREE_PATH" | cksum | awk '{print $1}')"
-  offset=$((hash_value % 1000))
-
-  FIXTURE_PROJECT="wt_${slug}_${offset}"
-  FIXTURE_PORT=$((15432 + offset))
-  FIXTURE_DATABASE="wt_${slug}_${offset}"
+  worktree_identity_derive "$1"
+  FIXTURE_WORKTREE_PATH="$WORKTREE_IDENTITY_PATH"
+  FIXTURE_PROJECT="$WORKTREE_IDENTITY_PROJECT"
+  FIXTURE_PORT="$WORKTREE_IDENTITY_PORT"
+  FIXTURE_DATABASE="$WORKTREE_IDENTITY_DATABASE"
 }
 
 write_env() {
@@ -1244,6 +1237,79 @@ test_same_port_distinct_projects_serialize() {
   fi
 }
 
+test_same_basename_port_collision_has_distinct_resources() {
+  new_fixture same-basename-port-collision-has-distinct-resources
+  local candidates="$CASE_ROOT/candidates"
+  local seen_ports="$CASE_ROOT/seen-ports"
+  local attempt=0
+  local candidate
+  local port_record
+  local worktree_a=""
+  local worktree_b=""
+  local env_a="$CASE_ROOT/a.env"
+  local env_b="$CASE_ROOT/b.env"
+  local project_a
+  local project_b
+  local database_a
+  local database_b
+  local port_a
+  local port_b
+  mkdir -p "$candidates" "$seen_ports"
+
+  # Keep the basename fixed so this fixture distinguishes resource identity
+  # from the deliberately bounded port allocation. A modulo-1000 collision is
+  # guaranteed after at most 1001 physical paths.
+  while [ "$attempt" -le 1000 ]; do
+    candidate="$candidates/parent-$attempt/worktree"
+    mkdir -p "$candidate"
+    derive_worktree_identity "$candidate"
+    port_record="$seen_ports/$FIXTURE_PORT"
+    if [ -f "$port_record" ]; then
+      worktree_a="$(awk 'NR == 1 { print; exit }' "$port_record")"
+      worktree_b="$candidate"
+      break
+    fi
+    printf '%s\n' "$candidate" > "$port_record"
+    attempt=$((attempt + 1))
+  done
+
+  if [ -z "$worktree_a" ] || [ -z "$worktree_b" ]; then
+    fail "could not find two same-basename worktrees with one bounded PostgreSQL port"
+    return
+  fi
+
+  : > "$worktree_a/docker-compose.yml"
+  : > "$worktree_b/docker-compose.yml"
+  (
+    cd "$worktree_a"
+    FORCE=1 bash "$REPO_ROOT/scripts/init-worktree-env.sh" "$env_a" > "$CASE_ROOT/init-a.out"
+  )
+  (
+    cd "$worktree_b"
+    FORCE=1 bash "$REPO_ROOT/scripts/init-worktree-env.sh" "$env_b" > "$CASE_ROOT/init-b.out"
+  )
+
+  project_a="$(env_value "$env_a" COMPOSE_PROJECT_NAME)"
+  project_b="$(env_value "$env_b" COMPOSE_PROJECT_NAME)"
+  database_a="$(env_value "$env_a" POSTGRES_DB)"
+  database_b="$(env_value "$env_b" POSTGRES_DB)"
+  port_a="$(env_value "$env_a" POSTGRES_PORT)"
+  port_b="$(env_value "$env_b" POSTGRES_PORT)"
+
+  if [ "$(basename "$worktree_a")" = "$(basename "$worktree_b")" ] && \
+    [ "$port_a" = "$port_b" ] && [ "$project_a" != "$project_b" ] && \
+    [ "$database_a" != "$database_b" ] && [ "$project_a" = "$database_a" ] && \
+    [ "$project_b" = "$database_b" ] && \
+    run_guard "$worktree_a" "$env_a" docker compose up -d postgres > "$CASE_ROOT/guard-a.out" 2>&1 && \
+    [ "$(mutation_count)" = 1 ] && \
+    [ -d "$FAKE_DOCKER_STATE/containers/${project_a}-postgres-1" ] && \
+    [ -d "$FAKE_DOCKER_STATE/volumes/${project_a}_pgdata" ]; then
+    pass "same-basename worktrees sharing a port use distinct Compose and database identities"
+  else
+    fail "same-basename port collision shared a Compose project or database identity"
+  fi
+}
+
 test_post_mutation_boundary() {
   new_fixture post-mutation-boundary
   local project database
@@ -1780,6 +1846,7 @@ run_case concurrent-collision test_concurrent_collision
 run_case atomic-lock-publication test_atomic_lock_publication
 run_case lock-root-override-serialization test_lock_root_override_serialization
 run_case same-port-distinct-projects-serialize test_same_port_distinct_projects_serialize
+run_case same-basename-port-collision-has-distinct-resources test_same_basename_port_collision_has_distinct_resources
 run_case post-mutation-boundary test_post_mutation_boundary
 run_case post-mutation-scope-refusal test_post_mutation_scope_refusal
 run_case stale-lock-quarantine test_stale_lock_quarantine

@@ -11,6 +11,9 @@
 # Direct execution runs the read-only ownership check only.
 set -euo pipefail
 
+COMPOSE_GUARD_SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$COMPOSE_GUARD_SCRIPT_DIR/worktree-identity.sh"
+
 compose_guard_error() {
   echo "ERROR: $*" >&2
 }
@@ -73,25 +76,15 @@ compose_current_checkout_path() {
   fi
 }
 
-# compose_derive_worktree_identity mirrors init-worktree-env.sh. Every
-# worktree-owned mutation recomputes these values from the physical checkout
-# instead of accepting a caller-controlled project, port, or database.
+# compose_derive_worktree_identity shares init-worktree-env.sh's canonical
+# derivation. Every worktree-owned mutation recomputes these values from the
+# physical checkout instead of accepting a caller-controlled project, port, or
+# database. Project/database identity is wider than the bounded port slot.
 compose_derive_worktree_identity() {
-  local physical_path="$1"
-  local worktree_name
-  local slug
-  local hash_value
-  local offset
-
-  worktree_name="$(basename "$physical_path")"
-  slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
-  [ -n "$slug" ] || slug="multica"
-  hash_value="$(printf '%s' "$physical_path" | cksum | awk '{print $1}')"
-  offset=$((hash_value % 1000))
-
-  COMPOSE_EXPECTED_PROJECT="wt_${slug}_${offset}"
-  COMPOSE_EXPECTED_PORT=$((15432 + offset))
-  COMPOSE_EXPECTED_DATABASE="wt_${slug}_${offset}"
+  worktree_identity_derive "$1" || return 1
+  COMPOSE_EXPECTED_PROJECT="$WORKTREE_IDENTITY_PROJECT"
+  COMPOSE_EXPECTED_PORT="$WORKTREE_IDENTITY_PORT"
+  COMPOSE_EXPECTED_DATABASE="$WORKTREE_IDENTITY_DATABASE"
 }
 
 compose_require_exact_identity_value() {
