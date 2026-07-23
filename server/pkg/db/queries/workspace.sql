@@ -166,3 +166,8 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
+
+-- name: DeleteWorkspaceWorkloadAuthority :exec
+-- workspace_workload_authority has intentionally no FK: clean it after the
+-- workspace DELETE so member-delete triggers cannot recreate it during teardown.
+DELETE FROM workspace_workload_authority WHERE workspace_id = $1;

@@ -796,6 +796,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
 		return
 	}
+	if err := qtx.DeleteWorkspaceWorkloadAuthority(r.Context(), requester.WorkspaceID); err != nil {
+		slog.Warn("delete workspace workload authority failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit workspace delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
