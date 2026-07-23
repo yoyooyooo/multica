@@ -75,10 +75,13 @@ VALUES ($1, $2, $3, 'local', $4, now()) ON CONFLICT (id) DO NOTHING`, rbAgentArc
 }
 
 // cleanRebindOwners drops the seeded workspaces; the FK ON DELETE CASCADE takes
-// the runtime and agents with them. channel_installation has no such FK — the
-// bug under test — so those rows are cleaned by app_id separately.
+// the runtime and agents with them. workspace_workload_authority intentionally
+// has no FK, so this raw fixture cleanup removes it explicitly. channel_installation
+// also has no such FK and is cleaned by app_id separately.
 func cleanRebindOwners(ctx context.Context, pool *pgxpool.Pool) {
-	_, _ = pool.Exec(ctx, `DELETE FROM workspace WHERE id = ANY($1)`, []string{rbWS, rbWS2})
+	workspaceIDs := []string{rbWS, rbWS2}
+	_, _ = pool.Exec(ctx, `DELETE FROM workspace WHERE id = ANY($1)`, workspaceIDs)
+	_, _ = pool.Exec(ctx, `DELETE FROM workspace_workload_authority WHERE workspace_id = ANY($1)`, workspaceIDs)
 }
 
 // TestChannelStore_ReclaimDeadRevokedFences guards the REVOKED branch of the
