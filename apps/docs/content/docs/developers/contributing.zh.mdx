@@ -5,13 +5,13 @@ description: Local development workflow for contributors working on the Multica 
 
 ## Development Model
 
-Local development uses one shared PostgreSQL container and one database per checkout.
+The main checkout and every Git worktree use separate PostgreSQL Compose identities.
 
-- The main checkout usually uses `.env` and `POSTGRES_DB=multica`
-- Each Git worktree uses its own `.env.worktree`
-- Every checkout connects to the same PostgreSQL host: `localhost:5432`
-- Isolation happens at the database level, not by starting a separate Docker Compose project
-- Backend and frontend ports are still unique per worktree
+- The main checkout usually uses `.env`, Compose project `multica`, and `POSTGRES_DB=multica`
+- Each Git worktree uses a generated `.env.worktree`
+- A worktree derives a deterministic `wt_*` Compose project, container, host port, volume, and database from its canonical physical path
+- A worktree must not target the deployment `multica` project, port, or volume
+- Backend and frontend ports are also unique per worktree
 
 ## Prerequisites
 
@@ -32,8 +32,8 @@ make setup-main
 What `make setup-main` does:
 
 - Installs JavaScript dependencies with `pnpm install`
-- Ensures the shared PostgreSQL container is running
-- Creates the application database if it does not exist
+- Ensures the main checkout's PostgreSQL Compose project is running
+- Creates that project's application database if it does not exist
 - Runs all migrations against that database
 
 Start the app:
@@ -56,6 +56,10 @@ Start the worktree app:
 ```bash
 make start-worktree
 ```
+
+`make worktree-env` writes the worktree's canonical `COMPOSE_PROJECT_NAME`,
+`WORKTREE_PATH`, `POSTGRES_PORT`, and `POSTGRES_DB`. Do not copy or retarget
+another checkout's `.env.worktree`.
 
 ## Daily Workflow
 
@@ -87,11 +91,13 @@ make check-worktree
 
 ## Running Main and Worktree Simultaneously
 
-This is a first-class workflow. Both checkouts use the same PostgreSQL container but different databases and ports:
+This is a first-class workflow. The checkouts use separate PostgreSQL Compose
+projects and resources:
 
 | | Main | Worktree |
 |---|---|---|
-| Database | `multica` | `multica_my_feature_702` |
+| Compose project/container/volume | `multica` / `multica-postgres-1` / `multica_pgdata` | generated `wt_*` identity |
+| Database / PostgreSQL host port | `multica` / `5432` | generated `wt_*` database / unique port |
 | Backend port | `8080` | generated (e.g. `18782`) |
 | Frontend port | `3000` | generated (e.g. `13702`) |
 
@@ -152,14 +158,19 @@ make worktree-env
 cat .env           # or .env.worktree
 ```
 
-Look for `POSTGRES_DB`, `DATABASE_URL`, `PORT`, `FRONTEND_PORT`.
+Look for `COMPOSE_PROJECT_NAME`, `WORKTREE_PATH`, `POSTGRES_DB`, `POSTGRES_PORT`, `DATABASE_URL`, `PORT`, and `FRONTEND_PORT`.
 
-### List All Local Databases
+### List Databases in the Current Checkout's PostgreSQL Container
 
 ```bash
-docker compose exec -T postgres psql -U multica -d postgres \
-  -At -c "select datname from pg_database order by datname;"
+set -a
+. .env.worktree  # use .env in the main checkout
+set +a
+docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" exec -T postgres \
+  psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
 ```
+
+This reads only the selected project's PostgreSQL instance.
 
 ### Destructive Reset
 
@@ -169,7 +180,7 @@ Stop PostgreSQL and keep local databases:
 make db-down
 ```
 
-Reset only the current checkout's database (drops `POSTGRES_DB`, recreates it, re-runs all migrations). Other worktree databases are untouched.
+Reset only the current checkout's database (drops `POSTGRES_DB`, recreates it, re-runs all migrations). Other worktree containers, volumes, and databases are untouched.
 
 ```bash
 make stop
@@ -179,10 +190,13 @@ make start
 
 > `make db-reset` refuses to run if `DATABASE_URL` points at a remote host.
 
-Wipe all local PostgreSQL data:
+Wipe PostgreSQL data for one explicitly selected checkout:
 
 ```bash
-docker compose down -v
+set -a
+. .env.worktree  # use .env in the main checkout
+set +a
+docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" down -v
 ```
 
-> **Warning:** This deletes the shared Docker volume and all databases. After that you must run `make setup-main` or `make setup-worktree` again.
+> **Warning:** This deletes only the selected project's Docker volume and database data. After that you must run `make setup-main` or `make setup-worktree` again.

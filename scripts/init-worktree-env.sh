@@ -8,10 +8,15 @@ if [ -f "$ENV_FILE" ] && [ "${FORCE:-0}" != "1" ]; then
   exit 1
 fi
 
-# Canonicalize before deriving every worktree identity. A symlinked checkout
-# must generate the same project, port, database, labels, and lock key as its
-# physical path.
-worktree_path="$(pwd -P)"
+# Canonicalize the physical checkout root before deriving every worktree
+# identity. A symlinked checkout or a call from one of its subdirectories must
+# generate the same project, port, database, labels, and lock key.
+git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$git_root" ]; then
+  worktree_path="$(cd "$git_root" && pwd -P)"
+else
+  worktree_path="$(pwd -P)"
+fi
 worktree_name="$(basename "$worktree_path")"
 slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
 if [ -z "$slug" ]; then

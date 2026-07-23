@@ -9,8 +9,8 @@ reference, not permission to operate the live deployment.
 List running and stopped resources with their ownership evidence:
 
 ```bash
-docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}\t{{.Labels "multica.worktree.project"}}\t{{.Labels "com.docker.compose.project"}}'
-docker volume ls --format 'table {{.Name}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}\t{{.Labels "multica.worktree.project"}}\t{{.Labels "com.docker.compose.project"}}'
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Label "multica.owner"}}\t{{.Label "multica.worktree.path"}}\t{{.Label "multica.worktree.project"}}\t{{.Label "com.docker.compose.project"}}'
+docker volume ls --format 'table {{.Name}}\t{{.Label "multica.owner"}}\t{{.Label "multica.worktree.path"}}\t{{.Label "multica.worktree.project"}}\t{{.Label "com.docker.compose.project"}}'
 ```
 
 Expected ownership:
@@ -53,7 +53,9 @@ A competing operation waits only for the configured bounded interval. If the
 owner process is gone, its start evidence no longer matches, or evidence never
 finishes initialization, the helper atomically renames the directory to a
 `.stale.*` quarantine before continuing. A normal release is likewise renamed
-to a `.released.*` record.
+to a `.released.*` record only after the releasing process matches the recorded
+PID, process-start, project, owner, and canonical worktree path; a mismatch or
+rename failure remains fail-closed.
 
 Do not manually delete lock or test directories. Keep quarantined evidence in
 place; if host administration later requires disposal, use the platform's
