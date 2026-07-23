@@ -20,9 +20,10 @@ The main checkout and every Git worktree use distinct PostgreSQL Compose identit
 - each Git worktree uses a generated `.env.worktree`
 - a worktree gets a deterministic `wt_*` Compose project, PostgreSQL container, host port, volume, and database from its canonical physical path
 - a worktree must not use the deployment `multica` Compose project or its PostgreSQL port/volume
-- backend and frontend ports are also unique per worktree
+- PostgreSQL host ports use a 1,000-slot modulo allocation, so distinct worktrees can collide
+- backend and frontend ports are also derived from the worktree path hash
 
-This isolates schema, data, containers, volumes, and host ports across local worktrees.
+Compose project, database, container, and volume identities are isolated. A same-port PostgreSQL contender is serialized by the fixed `/tmp/multica-compose-locks/multica-compose-lock-port-<port>` authority; after the first identity is observed, a different project sharing that port is refused before mutation rather than treated as independently safe.
 
 ## Prerequisites
 
@@ -87,10 +88,10 @@ DATABASE_URL=postgres://multica:multica@localhost:16134/wt_multica_feature_702?s
 
 Notes:
 
-- Compose project, PostgreSQL container, volume, database, and host port are unique per worktree
-- the values are derived from the canonical physical worktree path; a symlink resolves to the same identity
-- guarded Compose commands reject a copied, foreign, or manually retargeted `.env.worktree`
-- backend and frontend ports are derived from the worktree path hash
+- Compose project, PostgreSQL container, volume, and database are derived from the canonical physical worktree path; a symlink resolves to the same identity
+- PostgreSQL host ports use the path hash modulo 1,000 and can collide across distinct worktrees
+- guarded Compose commands use `/tmp/multica-compose-locks/multica-compose-lock-port-<port>` to serialize same-port attempts, then reject a foreign project before mutation
+- backend and frontend ports are also derived from the worktree path hash
 - `make worktree-env` refuses to overwrite an existing `.env.worktree`
 
 To regenerate a worktree env file:
@@ -194,10 +195,10 @@ Example:
   - backend/frontend: `8080` / `3000`
 - worktree checkout
   - Compose project/container/volume: generated `wt_*` identity
-  - database and PostgreSQL host port: generated `wt_*` database and unique port such as `16134`
+  - database and PostgreSQL host port: generated `wt_*` database and a modulo-allocated port such as `16134`
   - backend/frontend: generated worktree ports such as `18782` / `13702`
 
-The two checkouts do not share PostgreSQL containers, volumes, databases, or host ports. Run `make db-up` and `make db-down` only from the checkout whose resources you intend to target.
+The two checkouts do not share PostgreSQL containers, volumes, or databases. PostgreSQL host ports can collide; `/tmp/multica-compose-locks/multica-compose-lock-port-<port>` serializes the collision and prevents a different project from reaching mutation. Run `make db-up` and `make db-down` only from the checkout whose resources you intend to target.
 
 ## Command Reference
 
@@ -458,8 +459,9 @@ make db-down
 # 4. (Optional) Clean build artifacts
 make clean
 
-# 5. (Optional) Remove profile config
-rm -rf "$HOME/.multica/profiles/$PROFILE"
+# 5. (Optional) Retain profile config for inspection
+# Do not permanently delete it. If disposal is approved, move this one reviewed
+# absolute path through your OS's verified recycle/trash mechanism.
 ```
 
 ### Desktop App Local Testing
@@ -524,7 +526,7 @@ Nothing in this flow touches the system-installed `multica` or the default
 | Database | remote / production | local Docker: generated `wt_<slug>_<offset>` |
 | Desktop profile | `desktop-api.multica.ai` | `desktop-localhost-<port>` |
 
-Multiple worktrees can run simultaneously without conflict.
+Multiple worktrees can run simultaneously when their derived resources do not collide. A PostgreSQL host-port collision is serialized by `/tmp/multica-compose-locks/multica-compose-lock-port-<port>` and the foreign project is refused before mutation; regenerate or choose a different worktree path before retrying.
 
 ## Troubleshooting
 

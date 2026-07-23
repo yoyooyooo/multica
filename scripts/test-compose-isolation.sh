@@ -340,6 +340,25 @@ FAKE_HELPER
   chmod +x "$FAKE_BIN/$helper"
 done
 
+cat > "$FAKE_BIN/pg_isready" <<'FAKE_PG_ISREADY'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "${FAKE_DOCKER_STATE:?}/remote-pg-isready-argv"
+FAKE_PG_ISREADY
+chmod +x "$FAKE_BIN/pg_isready"
+
+cat > "$FAKE_BIN/psql" <<'FAKE_PSQL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "${PGPASSWORD+x}" ]; then
+  printf 'unset\n' > "${FAKE_DOCKER_STATE:?}/remote-psql-pgpassword"
+else
+  printf 'set\n' > "${FAKE_DOCKER_STATE:?}/remote-psql-pgpassword"
+fi
+printf '%s\n' "$@" > "${FAKE_DOCKER_STATE:?}/remote-psql-argv"
+FAKE_PSQL
+chmod +x "$FAKE_BIN/psql"
+
 cat > "$FAKE_BIN/mv" <<'FAKE_MV'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1299,6 +1318,30 @@ test_first_initialization_and_readiness() {
   fi
 }
 
+test_remote_database_url_authority() {
+  new_fixture remote-database-url-authority
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/remote.env"
+  mkdir -p "$worktree"
+  cat > "$env_file" <<'ENV'
+POSTGRES_DB=env_db
+POSTGRES_USER=env_user
+POSTGRES_PASSWORD=env_password
+POSTGRES_PORT=5432
+DATABASE_URL=postgres://url_user:url_password@db.example.test:6543/url_db?sslmode=require
+ENV
+
+  if run_ensure "$worktree" "$env_file" > "$CASE_ROOT/ensure.out" 2>&1 && \
+    [ "$(cat "$FAKE_DOCKER_STATE/remote-psql-pgpassword")" = unset ] && \
+    grep -Fx -- '-d' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
+    grep -Fx -- 'postgres://url_user:url_password@db.example.test:6543/url_db?sslmode=require' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
+    ! grep -Ex -- '-h|-p|-U|env_user|env_db' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null; then
+    pass "remote authenticated readiness uses DATABASE_URL credentials and target authority"
+  else
+    fail "remote authenticated readiness mixed DATABASE_URL with standalone PostgreSQL credentials"
+  fi
+}
+
 test_readiness_timeout() {
   new_fixture readiness-timeout
   local worktree="$CASE_ROOT/worktree"
@@ -1441,6 +1484,9 @@ test_nonowner_lock_release_refusal() {
   local port
   local lock_path
   local key_mismatch_lock="$CASE_ROOT/key-mismatch-lock"
+  local release_records_before
+  local release_records_after_nonowner
+  local release_records_after
   local nonowner_refused=false
   local key_mismatch_refused=false
   mkdir -p "$worktree"
@@ -1448,6 +1494,7 @@ test_nonowner_lock_release_refusal() {
   project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
   port="$(env_value "$env_file" POSTGRES_PORT)"
   lock_path="$(lock_path_for_env "$worktree" "$env_file")"
+  release_records_before="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
   mkdir -p "$lock_path"
   cat > "$lock_path/owner.meta" <<META
 pid=999999
@@ -1470,8 +1517,11 @@ META
     compose_lock_release
   ) > "$CASE_ROOT/nonowner-release.out" 2>&1; then
     nonowner_refused=false
-  elif [ -d "$lock_path" ] && ! find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
-    nonowner_refused=true
+  else
+    release_records_after_nonowner="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+    if [ -d "$lock_path" ] && [ "$release_records_before" = "$release_records_after_nonowner" ]; then
+      nonowner_refused=true
+    fi
   fi
 
   # Keep every owner fact exact except the port-derived key. The release matcher
@@ -1503,7 +1553,8 @@ META
     key_mismatch_refused=true
   fi
 
-  if [ "$nonowner_refused" = true ] && [ "$key_mismatch_refused" = true ]; then
+  release_records_after="$(find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print | wc -l | tr -d ' ')"
+  if [ "$nonowner_refused" = true ] && [ "$key_mismatch_refused" = true ] && [ "$release_records_before" = "$release_records_after" ]; then
     pass "only the recorded owner and its port-derived lock key can release a Compose lock"
   else
     fail "non-owner or mismatched lock-key release did not remain fail-closed"
@@ -1530,49 +1581,99 @@ test_release_failure_propagation() {
   fi
 }
 
+STATIC_SCAN_MESSAGE=""
+
+static_scan_no_match() {
+  local output="$1"
+  shift
+
+  local status
+  if rg -n "$@" > "$output" 2>&1; then
+    STATIC_SCAN_MESSAGE="static scan found a forbidden match: $*"
+    return 1
+  else
+    status=$?
+  fi
+
+  if [ "$status" -eq 1 ]; then
+    STATIC_SCAN_MESSAGE=""
+    return 0
+  fi
+
+  STATIC_SCAN_MESSAGE="static scan error (rg exit $status): $*"
+  return 1
+}
+
 test_static_safety_contract() {
-  if rg -n 'MULTICA_COMPOSE_LOCK_ROOT|TMPDIR' "$REPO_ROOT/scripts/compose-ownership-guard.sh" > "$TEST_ROOT/caller-lock-root.out"; then
-    fail "production Compose locking still accepts a caller-selected namespace"
+  if ! static_scan_no_match "$TEST_ROOT/caller-lock-root.out" 'MULTICA_COMPOSE_LOCK_ROOT|TMPDIR' "$REPO_ROOT/scripts/compose-ownership-guard.sh"; then
+    fail "$STATIC_SCAN_MESSAGE"
     return
   fi
-  if rg -n '\$\{TMPDIR' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/stale-lock-root-doc.out" || \
+  if ! static_scan_no_match "$TEST_ROOT/stale-lock-root-doc.out" '\$\{TMPDIR' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" || \
     ! grep -Fq '/tmp/multica-compose-locks/multica-compose-lock-port-<port>' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; then
-    fail "recovery runbook does not document the fixed port-keyed lock namespace"
+    fail "recovery runbook does not document the fixed port-keyed lock namespace: ${STATIC_SCAN_MESSAGE:-required authority is absent}"
     return
   fi
-  if rg -n '\.Labels[[:space:]]+"' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/invalid-runbook-formatter.out" || \
+  if ! static_scan_no_match "$TEST_ROOT/invalid-runbook-formatter.out" '\.Labels[[:space:]]+"' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" || \
     ! grep -Fq '{{.Label "multica.owner"}}' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; then
-    fail "recovery runbook does not use Docker's runnable single-label formatter"
+    fail "recovery runbook does not use Docker's runnable single-label formatter: ${STATIC_SCAN_MESSAGE:-required formatter is absent}"
     return
   fi
-  if rg -n -e '(^|[[:space:]])rm([[:space:]]|$)' \
+  if ! static_scan_no_match "$TEST_ROOT/delete-command.out" '(^|[[:space:]])rm([[:space:]]|$)' \
     "$REPO_ROOT/scripts/compose-ownership-guard.sh" \
     "$REPO_ROOT/scripts/compose-guard-mustpass.sh" \
     "$REPO_ROOT/scripts/ensure-postgres.sh" \
-    "$REPO_ROOT/scripts/test-compose-isolation.sh" > "$TEST_ROOT/delete-command.out"; then
-    fail "Compose isolation scripts contain a permanent deletion command"
+    "$REPO_ROOT/scripts/test-compose-isolation.sh"; then
+    fail "Compose isolation scripts contain a permanent deletion command or could not be scanned: $STATIC_SCAN_MESSAGE"
     return
   fi
-  if rg -n 'docker rm|git checkout' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/unsafe-runbook.out"; then
-    fail "recovery runbook contains an unsafe direct deletion or checkout instruction"
+  if ! static_scan_no_match "$TEST_ROOT/unsafe-runbook.out" 'docker rm|git checkout' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; then
+    fail "recovery runbook contains an unsafe direct deletion or checkout instruction: $STATIC_SCAN_MESSAGE"
     return
   fi
-  if rg -n 'multica_<slug>_<hash>' "$REPO_ROOT/CONTRIBUTING.md" > "$TEST_ROOT/stale-identity.out" || \
-    rg -n 'docker compose.*down[[:space:]]+-v' \
+  if ! static_scan_no_match "$TEST_ROOT/stale-identity.out" 'multica_<slug>_<hash>|rm[[:space:]]+-rf' "$REPO_ROOT/CONTRIBUTING.md" || \
+    ! static_scan_no_match "$TEST_ROOT/unsafe-contributor-reset.out" 'docker compose.*down[[:space:]]+-v' \
       "$REPO_ROOT/CONTRIBUTING.md" \
-      "$REPO_ROOT/apps/docs/content/docs/developers/contributing.zh.mdx" > "$TEST_ROOT/unsafe-contributor-reset.out"; then
-    fail "contributor docs retain stale identity or an unguarded volume-deletion path"
+      "$REPO_ROOT/apps/docs/content/docs/developers/contributing.zh.mdx"; then
+    fail "contributor docs retain stale identity, permanent deletion, or an unguarded volume-deletion path: $STATIC_SCAN_MESSAGE"
     return
   fi
-  if rg -n 'ALTER[[:space:]]+USER' \
+  if ! static_scan_no_match "$TEST_ROOT/credential-mutation.out" 'ALTER[[:space:]]+USER' \
     "$REPO_ROOT/docker-compose.yml" \
     "$REPO_ROOT/scripts/compose-ownership-guard.sh" \
     "$REPO_ROOT/scripts/compose-guard-mustpass.sh" \
     "$REPO_ROOT/scripts/ensure-postgres.sh"; then
-    fail "isolation implementation contains a credential mutation"
+    fail "isolation implementation contains a credential mutation or could not be scanned: $STATIC_SCAN_MESSAGE"
     return
   fi
-  pass "isolation scripts and rollback runbook retain the no-delete/no-credential-mutation boundary"
+  local document
+  for document in \
+    "$REPO_ROOT/CLAUDE.md" \
+    "$REPO_ROOT/CONTRIBUTING.md" \
+    "$REPO_ROOT/apps/docs/content/docs/developers/contributing.zh.mdx" \
+    "$REPO_ROOT/.env.example" \
+    "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; do
+    if ! grep -Fq '/tmp/multica-compose-locks/multica-compose-lock-port-<port>' "$document"; then
+      fail "isolation documentation lacks the fixed port-keyed lock authority: $document"
+      return
+    fi
+  done
+  if ! static_scan_no_match "$TEST_ROOT/stale-port-contract.out" 'unique port|without conflict|rm[[:space:]]+-rf' \
+    "$REPO_ROOT/CLAUDE.md" \
+    "$REPO_ROOT/CONTRIBUTING.md" \
+    "$REPO_ROOT/apps/docs/content/docs/developers/contributing.zh.mdx" \
+    "$REPO_ROOT/.env.example"; then
+    fail "isolation documentation retains an invalid port or permanent-deletion contract: $STATIC_SCAN_MESSAGE"
+    return
+  fi
+  if static_scan_no_match "$TEST_ROOT/static-scan-error.out" 'never-matches' "$TEST_ROOT/does-not-exist"; then
+    fail "static scan accepted a missing target"
+    return
+  elif [[ "$STATIC_SCAN_MESSAGE" != static\ scan\ error* ]]; then
+    fail "static scan did not distinguish a scan error from a clean absence"
+    return
+  fi
+  pass "isolation static scans distinguish matches, clean absence, and scan errors"
 }
 
 echo "=== Deterministic fake-Docker worktree Compose isolation tests ==="
@@ -1600,6 +1701,7 @@ run_case stale-lock-quarantine test_stale_lock_quarantine
 run_case nonowner-lock-release-refusal test_nonowner_lock_release_refusal
 run_case release-failure-propagation test_release_failure_propagation
 run_case first-initialization-and-readiness test_first_initialization_and_readiness
+run_case remote-database-url-authority test_remote_database_url_authority
 run_case readiness-timeout test_readiness_timeout
 run_case idempotency-and-production-identity test_idempotency_and_production_identity
 run_case static-safety-contract test_static_safety_contract
