@@ -1091,6 +1091,36 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  it("keeps distinct external PR activities separate inside the coalesce window", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "external-pr-1",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        action: "external_pr_linked",
+        details: { provider: "ags", external_repo: "acme/one", external_number: 1 },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+      {
+        type: "activity",
+        id: "external-pr-2",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        action: "external_pr_linked",
+        details: { provider: "ags", external_repo: "acme/two", external_number: 2 },
+        created_at: "2026-01-18T00:01:00Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("linked external PR ags:acme/one#1")).toBeInTheDocument();
+    });
+    expect(screen.getByText("linked external PR ags:acme/two#2")).toBeInTheDocument();
+  });
+
   it("truncates the trailing activity block to the most recent 8 entries with a show-more toggle", async () => {
     // 10 activities, all in the trailing block (no comment after them, so it's
     // the trailing block by definition). Alternating action types so the

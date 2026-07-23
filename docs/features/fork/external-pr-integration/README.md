@@ -17,7 +17,7 @@ External PR Integration 让外部代码协作系统把一个 PR/MR/change 与 Mu
 
 ### 表
 
-迁移文件：`server/migrations/212_external_pr_integration.up.sql`
+迁移文件：`server/migrations/212_external_pr_integration.up.sql` 创建表；`213`–`215` 分别以单语句 concurrent migration 创建 identity、issue-state 和 idempotency indexes。
 
 新增表：`external_pull_request_link`
 

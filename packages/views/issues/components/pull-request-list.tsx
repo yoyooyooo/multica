@@ -106,9 +106,9 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   );
 }
 
-export function ExternalPullRequestList({ issueId }: { issueId: string }) {
+export function ExternalPullRequestList({ wsId, issueId }: { wsId: string; issueId: string }) {
   const { t } = useT("issues");
-  const { data, isLoading } = useQuery(issueExternalPullRequestsOptions(issueId));
+  const { data, isLoading } = useQuery(issueExternalPullRequestsOptions(wsId, issueId));
   const prs = data?.external_pull_requests ?? [];
 
   if (isLoading) {

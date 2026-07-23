@@ -339,7 +339,11 @@ func (q *Queries) CreateIssueWithOrigin(ctx context.Context, arg CreateIssueWith
 }
 
 const deleteIssue = `-- name: DeleteIssue :exec
-DELETE FROM issue WHERE id = $1 AND workspace_id = $2
+WITH cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link
+    WHERE issue_id = $1 AND workspace_id = $2
+)
+DELETE FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2
 `
 
 type DeleteIssueParams struct {
@@ -352,6 +356,8 @@ type DeleteIssueParams struct {
 // (loadIssueForUser / GetIssueInWorkspace) already enforce membership today,
 // but a future loader bypass or a new caller skipping the loader would be
 // silently catastrophic without this guard. See incident #1661.
+// external_pull_request_link intentionally has no FK; delete its dependent rows
+// in the same statement so cleanup and the guarded issue delete are atomic.
 func (q *Queries) DeleteIssue(ctx context.Context, arg DeleteIssueParams) error {
 	_, err := q.db.Exec(ctx, deleteIssue, arg.ID, arg.WorkspaceID)
 	return err

@@ -4,8 +4,8 @@
 -- hierarchy guards.
 CREATE TABLE external_pull_request_link (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id      UUID NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
-    issue_id          UUID NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+    workspace_id      UUID NOT NULL,
+    issue_id          UUID NOT NULL,
     provider          TEXT NOT NULL,
     external_repo     TEXT NOT NULL,
     external_number   INTEGER NOT NULL,
@@ -22,14 +22,5 @@ CREATE TABLE external_pull_request_link (
         CHECK (state IN ('open', 'draft', 'closed', 'merged')),
     idempotency_key   TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (workspace_id, provider, external_repo, external_number)
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX idx_external_pr_link_issue_state
-    ON external_pull_request_link(workspace_id, issue_id, state)
-    WHERE completion_intent AND link_confidence = 'authoritative';
-
-CREATE UNIQUE INDEX idx_external_pr_link_idempotency
-    ON external_pull_request_link(idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
