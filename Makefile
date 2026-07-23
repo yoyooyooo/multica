@@ -8,6 +8,8 @@ ifneq ($(wildcard $(ENV_FILE)),)
 include $(ENV_FILE)
 endif
 
+COMPOSE_ARGS = --project-name $(or $(COMPOSE_PROJECT_NAME),multica)
+
 POSTGRES_DB ?= multica
 POSTGRES_USER ?= multica
 POSTGRES_PASSWORD ?= multica
@@ -230,16 +232,16 @@ check: ## Run typecheck, TS tests, Go tests, and Playwright E2E for the current 
 	$(REQUIRE_ENV)
 	@ENV_FILE="$(ENV_FILE)" bash scripts/check.sh
 
-db-up: ## Start the shared PostgreSQL container used by main and worktrees
-	@$(COMPOSE) up -d postgres
+db-up: ## Start the PostgreSQL container for the current env's Compose project
+	@$(COMPOSE) $(COMPOSE_ARGS) up -d postgres
 
-db-down: ## Stop the shared PostgreSQL container without removing its Docker volume
-	@$(COMPOSE) down
+db-down: ## Stop the PostgreSQL container for the current env's Compose project
+	@$(COMPOSE) $(COMPOSE_ARGS) down
 
 # Drop + recreate the current env's database, then run all migrations.
 # Use for a clean slate in local dev. Only affects the DB named in
-# ENV_FILE (POSTGRES_DB); the shared postgres container and other
-# worktree DBs are untouched. Refuses to run against a remote host.
+# ENV_FILE (POSTGRES_DB); the current project's postgres container and
+# other project DBs are untouched. Refuses to run against a remote host.
 db-reset: ## Drop and recreate the current env's database, then re-run all migrations
 	$(REQUIRE_ENV)
 	@case "$(DATABASE_URL)" in \
@@ -248,7 +250,7 @@ db-reset: ## Drop and recreate the current env's database, then re-run all migra
 	esac
 	@bash scripts/ensure-postgres.sh "$(ENV_FILE)"
 	@echo "==> Dropping and recreating database '$(POSTGRES_DB)'..."
-	@$(COMPOSE) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -v ON_ERROR_STOP=1 \
+	@$(COMPOSE) $(COMPOSE_ARGS) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -v ON_ERROR_STOP=1 \
 		-c "DROP DATABASE IF EXISTS \"$(POSTGRES_DB)\" WITH (FORCE);" \
 		-c "CREATE DATABASE \"$(POSTGRES_DB)\";"
 	@echo "==> Running migrations..."

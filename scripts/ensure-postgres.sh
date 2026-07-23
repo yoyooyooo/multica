@@ -67,27 +67,47 @@ is_local() {
 }
 
 if is_local; then
+  # ---------- Compose ownership guard ----------
+  # Before any Docker mutation, verify that our requested Compose project
+  # name and host port do not collide with foreign ownership. This prevents
+  # a worktree from accidentally recreating or relabeling live "multica-*"
+  # deployment containers.
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  ORIGINAL_COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-}"
+
+  # shellcheck disable=SC1091
+  if ! . "$SCRIPT_DIR/compose-ownership-guard.sh"; then
+    echo "ERROR: Compose ownership guard rejected the operation." >&2
+    echo "  Did you mean to use a different env file or worktree name?" >&2
+    exit 1
+  fi
+
   # ---------- Local: use Docker ----------
-  echo "==> Ensuring shared PostgreSQL container is running on localhost:5432..."
-  docker compose up -d postgres
+  # Use --project-name explicitly so the Compose project identity matches
+  # what the env file prescribes, not the directory name.
+  project_name="${COMPOSE_PROJECT_NAME:-multica}"
+  compose_args=(-f docker-compose.yml --project-name "$project_name")
+
+  echo "==> Ensuring PostgreSQL container for project '$project_name' on localhost:${POSTGRES_PORT:-5432}..."
+  docker compose "${compose_args[@]}" up -d postgres
 
   echo "==> Waiting for PostgreSQL to be ready..."
-  until docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d postgres > /dev/null 2>&1; do
+  until docker compose "${compose_args[@]}" exec -T postgres pg_isready -U "$POSTGRES_USER" -d postgres > /dev/null 2>&1; do
     sleep 1
   done
 
   echo "==> Ensuring database '$POSTGRES_DB' exists..."
-  db_exists="$(docker compose exec -T postgres \
+  db_exists="$(docker compose "${compose_args[@]}" exec -T postgres \
     psql -U "$POSTGRES_USER" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB'")"
 
   if [ "$db_exists" != "1" ]; then
-    docker compose exec -T postgres \
+    docker compose "${compose_args[@]}" exec -T postgres \
       psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
       -c "CREATE DATABASE \"$POSTGRES_DB\"" \
       > /dev/null
   fi
 
-  echo "✓ PostgreSQL ready (local Docker). Database: $POSTGRES_DB"
+  echo "✓ PostgreSQL ready (local Docker). Project: $project_name, Database: $POSTGRES_DB"
 else
   # ---------- Remote: skip Docker, verify connectivity ----------
   echo "==> Remote database detected (host: $db_host). Skipping Docker."
