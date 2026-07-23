@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -171,6 +172,33 @@ func TestListExternalPullRequestsForIssue(t *testing.T) {
 	}
 	if len(parentPayload.ExternalPullRequests) != 0 {
 		t.Fatalf("parent inherited %d child external PRs, want exact-issue empty list", len(parentPayload.ExternalPullRequests))
+	}
+}
+
+func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
+	ctx := context.Background()
+	issueID := createExternalPRTestIssue(t, "external-pr delete cleanup", "todo", "", nil)
+	req := externalPRCompletionReq(testWorkspaceID, issueID, 1501)
+	if err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
+		t.Fatalf("seed external PR link: %v", err)
+	}
+
+	if err := testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{
+		ID:          parseUUID(issueID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		t.Fatalf("delete issue with external PR link: %v", err)
+	}
+
+	var count int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM external_pull_request_link WHERE issue_id = $1`,
+		parseUUID(issueID),
+	).Scan(&count); err != nil {
+		t.Fatalf("count external PR links after issue delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("external PR links after issue delete = %d, want 0", count)
 	}
 }
 

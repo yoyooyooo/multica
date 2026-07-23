@@ -1024,10 +1024,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // Coalesce consecutive activities from the same actor + action.
     // - task_completed / task_failed: no time limit (these repeat across runs)
     // - all other actions: within a 2-minute window
-    // - squad_leader_evaluated: never coalesce; outcome/reason are audit data
+    // - audit/detail-bearing actions: never coalesce because each event owns
+    //   distinct evidence that the formatter does not summarize
     const COALESCE_MS = 2 * 60 * 1000;
     const NO_TIME_LIMIT_ACTIONS = new Set(["task_completed", "task_failed"]);
-    const NEVER_COALESCE_ACTIONS = new Set(["squad_leader_evaluated"]);
+    const NEVER_COALESCE_ACTIONS = new Set([
+      "external_pr_linked",
+      "external_pr_merged",
+      "squad_leader_evaluated",
+    ]);
     const coalesced: TimelineEntry[] = [];
     for (const entry of topLevel) {
       if (entry.type === "activity") {
@@ -1804,7 +1809,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {t(($) => $.detail.section_external_prs)}
           <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${externalPRsOpen ? "rotate-90" : ""}`} />
         </button>
-        {externalPRsOpen && <div className="pl-2"><ExternalPullRequestList issueId={id} /></div>}
+        {externalPRsOpen && <div className="pl-2"><ExternalPullRequestList wsId={wsId} issueId={id} /></div>}
       </div>
 
       {/* Pull requests — hidden when the workspace disables the PR sidebar

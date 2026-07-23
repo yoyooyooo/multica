@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY } from "./client";
+import { EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE } from "./schemas";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,6 +42,27 @@ describe("ApiClient label response schemas", () => {
     ).resolves.toEqual({ labels: [] });
 
     expect(fetchMock).toHaveBeenCalledTimes(10);
+  });
+});
+
+describe("ApiClient external PR response schema", () => {
+  it.each([
+    ["missing list", {}],
+    ["invalid list", { external_pull_requests: "not-an-array" }],
+  ])("falls back to the typed empty response for %s", async (_name, body) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listIssueExternalPullRequests("issue-1")).resolves.toBe(
+      EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE,
+    );
   });
 });
 

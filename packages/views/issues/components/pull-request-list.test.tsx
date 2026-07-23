@@ -20,10 +20,10 @@ vi.mock("@multica/core/github/queries", async () => {
       queryFn: async () => ({ pull_requests: mockPRs }),
       enabled: !!issueId,
     }),
-    issueExternalPullRequestsOptions: (issueId: string) => ({
-      queryKey: ["external-prs", issueId],
+    issueExternalPullRequestsOptions: (wsId: string, issueId: string) => ({
+      queryKey: ["external-prs", wsId, issueId],
       queryFn: async () => ({ external_pull_requests: mockExternalPRs }),
-      enabled: !!issueId,
+      enabled: !!wsId && !!issueId,
     }),
   };
 });
@@ -107,7 +107,7 @@ async function waitForRender() {
 describe("ExternalPullRequestList sidebar rows", () => {
   it("renders provider-neutral linked and merged details", async () => {
     mockExternalPRs = [makeExternalPR()];
-    renderWithI18n(<ExternalPullRequestList issueId="issue-1" />);
+    renderWithI18n(<ExternalPullRequestList wsId="ws-1" issueId="issue-1" />);
     await screen.findByTestId("external-pull-request-row");
 
     expect(screen.getByText("ags:jackie/ags-team-share#4")).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe("ExternalPullRequestList sidebar rows", () => {
 
   it("renders external and merge URLs as separate links when both are present", async () => {
     mockExternalPRs = [makeExternalPR()];
-    renderWithI18n(<ExternalPullRequestList issueId="issue-1" />);
+    renderWithI18n(<ExternalPullRequestList wsId="ws-1" issueId="issue-1" />);
     await screen.findByTestId("external-pull-request-row");
 
     expect(screen.getByRole("link", { name: "ags:jackie/ags-team-share#4" })).toHaveAttribute(
@@ -132,7 +132,7 @@ describe("ExternalPullRequestList sidebar rows", () => {
 
   it("keeps the merge URL clickable when the provider PR URL is absent", async () => {
     mockExternalPRs = [makeExternalPR({ external_url: null })];
-    renderWithI18n(<ExternalPullRequestList issueId="issue-1" />);
+    renderWithI18n(<ExternalPullRequestList wsId="ws-1" issueId="issue-1" />);
     await screen.findByTestId("external-pull-request-row");
 
     expect(screen.queryByRole("link", { name: "ags:jackie/ags-team-share#4" })).not.toBeInTheDocument();

@@ -601,7 +601,7 @@ export const ExternalPullRequestLinkSchema = z.object({
 }).loose();
 
 export const ExternalPullRequestLinksResponseSchema = z.object({
-  external_pull_requests: z.array(ExternalPullRequestLinkSchema).default([]),
+  external_pull_requests: z.array(ExternalPullRequestLinkSchema),
 }).loose();
 
 export const EMPTY_EXTERNAL_PULL_REQUEST_LINKS_RESPONSE: ListExternalPullRequestLinksResponse = {
