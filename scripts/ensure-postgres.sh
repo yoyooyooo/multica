@@ -40,20 +40,22 @@ validate_postgres_identifier() {
   fi
 }
 
-validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
-validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
-
 ready_timeout="${MULTICA_POSTGRES_READY_TIMEOUT_SECONDS:-60}"
 if [[ ! "$ready_timeout" =~ ^[0-9]+$ ]] || [ "$ready_timeout" -lt 1 ] || [ "$ready_timeout" -gt 300 ]; then
   echo "ERROR: MULTICA_POSTGRES_READY_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
   exit 1
 fi
 
-db_host=""
-db_port="${POSTGRES_PORT:-5432}"
-db_name="$POSTGRES_DB"
+# These are display-only facts for a selected remote URL. Do not seed them
+# from POSTGRES_*: libpq defaults to port 5432, and a URL without a database
+# leaves database selection to libpq.
+db_host="(libpq default)"
+db_port="5432"
+db_name="(libpq default)"
 
 parse_database_url() {
+  # Extract only secret-free display facts. The URL itself remains the sole
+  # libpq authority and is never reconstructed or passed in argv.
   local rest authority hostport path port_part
 
   rest="${DATABASE_URL#*://}"
@@ -108,6 +110,8 @@ ensure_local_postgres() {
   # compose_prepare_identity ran before this function entered the lock. Check
   # the resulting values again here because every SQL mutation is built from
   # this canonical identity, never from a caller-supplied Compose command.
+  # Identifier validation belongs exclusively to local Compose mutations;
+  # remote DATABASE_URL operation must not depend on unrelated POSTGRES_*.
   validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
   validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
   ready_deadline=$(( $(date +%s) + ready_timeout ))
