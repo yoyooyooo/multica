@@ -4,6 +4,16 @@
 -- independent of display names, roles, individual Agents, and Squad labels.
 -- The policy class is assigned only by this server-side migration/trigger; it
 -- is consumed by target-local AGS Team Bindings.
+--
+-- Keep workspace writers out until the backfill and creation trigger commit as
+-- one unit. The migration-runner advisory lock only serializes runners, not
+-- application INSERTs; SHARE ROW EXCLUSIVE conflicts with their ROW EXCLUSIVE
+-- lock. A writer that commits before this lock is acquired is backfilled, and a
+-- writer that arrives later waits for the trigger.
+BEGIN;
+
+LOCK TABLE workspace IN SHARE ROW EXCLUSIVE MODE;
+
 CREATE TABLE workspace_workload_authority (
     -- This is intentionally a plain UUID. Workspace teardown deletes this row
     -- explicitly in the application transaction; migrations must not add FKs
@@ -35,3 +45,5 @@ CREATE TRIGGER workspace_workload_authority_on_workspace_create
 AFTER INSERT ON workspace
 FOR EACH ROW
 EXECUTE FUNCTION ensure_workspace_workload_authority();
+
+COMMIT;
