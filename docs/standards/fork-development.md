@@ -80,9 +80,10 @@ For a new official release `vX.Y.Z`:
    - `superseded`: upstream independently provides equivalent behavior;
    - `retire`: the fork no longer needs it;
    - `blocked`: migration cannot yet meet its evidence or safety gate.
-6. Replay only accepted deltas through bounded PRs, in dependency order.
-7. Run source, migration, frontend, daemon, and capability-specific verification required by the accepted deltas.
-8. Switch the GitHub default branch and any deployment source only after generation acceptance. Branch creation or PR merge alone does not authorize deployment.
+6. Before replaying migrations, inspect the new generation's highest migration number and allocate non-overlapping ranges for every accepted delta in dependency order. Old generation numbers are evidence, not reusable authority; renumber colliding migrations and preserve the repository's concurrent-index rules.
+7. Replay only accepted deltas through bounded PRs, in dependency order.
+8. Run source, migration, frontend, daemon, and capability-specific verification required by the accepted deltas.
+9. Switch the GitHub default branch and any deployment source only after generation acceptance. Branch creation or PR merge alone does not authorize deployment.
 
 Do not rebase or force-update the prior generation in place. Do not mechanically replay every historical commit: fixups, obsolete generated files, conflict-only changes, and superseded behavior must not be preserved without a current reason.
 
@@ -129,10 +130,18 @@ vX.Y.Z-N-g<hex-sha>
 
 A bare official `vX.Y.Z` is valid only for an artifact built from that exact official tag. Dirty builds and arbitrary labels such as `mini-runtime-<sha>` are not deployable.
 
-This constraint is enforced by the capability gates in:
+This constraint is enforced before the Makefile artifact build by:
+
+- Make target `validate-cli-build-version`;
+- `scripts/validate-cli-build-version.sh`;
+- `scripts/validate-cli-build-version.test.sh`.
+
+The resulting value must also remain compatible with the product capability gates in:
 
 - `packages/core/runtimes/cli-version.ts`;
 - `server/pkg/agent/version.go`.
+
+`make multica` remains a local source-execution path and may run from a dirty tree, but its output is not a deployable artifact or deployment evidence.
 
 Before activation, record and compare:
 
