@@ -26,6 +26,19 @@ Multica is an AI-native task management platform for small teams, with agents as
 
 Shared packages export raw `.ts` / `.tsx` and are compiled by consuming apps. Dependency direction is `views -> core + ui`; `core` and `ui` must stay independent.
 
+## Fork Branch and Generation Rules
+
+This repository is operated as a pure fork. [Fork Development Standard](docs/standards/fork-development.md) is the detailed operating procedure; the rules below are binding:
+
+- `main` is an exact, bot-managed mirror of `upstream/main`. Fork-only PRs must never target `main`.
+- The active fork source authority is a versioned generation branch named `fork/v<upstream-release>`, created from the exact official release tag. Do not create `fork/latest`.
+- Feature and fix branches start from and target the active generation. Rebase them before integration so the generation branch advances by fast-forward only; merge commits are forbidden.
+- An upstream upgrade creates a new generation from the new official tag. Classify every prior fork delta as `keep`, `rework`, `superseded`, `retire`, or `blocked`, then replay only accepted deltas. Never rewrite the prior generation in place.
+- The GitHub default branch is the mutable pointer to the active generation. Immutable exact commits, artifact digests, and deployment tags are the deployment authority.
+- Current fork capability narratives belong under `docs/features/fork/`; generation manifests belong under `docs/releases/fork-generations/`. Tracker issues own active work status and runtime evidence.
+- Source-built CLI/daemon artifacts must use the clean Makefile-generated `git describe` version (`vX.Y.Z-N-g<sha>`). Arbitrary labels such as `mini-runtime-<sha>` are invalid because frontend and server capability gates reject them.
+- Before switching a daemon binary, verify the exact commit, `multica -v`, artifact digest, daemon task drain, post-restart runtime `metadata.cli_version`, and the capability gate that motivated the deployment.
+
 ## State Rules
 
 Keep server state and client state separate.
@@ -226,8 +239,9 @@ Do not claim verification passed unless you ran it. If you skip checks because t
 ## Commits and Releases
 
 - Commits should be atomic and use conventional prefixes: `feat(scope)`, `fix(scope)`, `refactor(scope)`, `docs`, `test(scope)`, `chore(scope)`.
-- A production deployment requires a CLI release tag on `main`: create `v0.x.x`, push it, and let `release.yml` publish binaries and the Homebrew tap.
-- Bump patch by default unless the user specifies a version.
+- Official `vX.Y.Z` tags are upstream baseline tags. Do not create or move one for fork commits.
+- Fork source promotion and deployment follow [Fork Development Standard](docs/standards/fork-development.md): versioned generation branch, exact commit, clean git-describe version, immutable deployment evidence, and an explicit rollback boundary.
+- Bump patch by default only when working in the upstream release workflow; fork generations retain the upstream base version and record their own revision separately.
 
 ## Domain Reminders
 
