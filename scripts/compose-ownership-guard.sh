@@ -22,7 +22,7 @@ compose_canonical_path() {
     return 1
   fi
   (
-    CDPATH= cd -P -- "$requested_path"
+    CDPATH='' cd -P -- "$requested_path"
     pwd -P
   )
 }
@@ -377,7 +377,7 @@ compose_run_canonical() {
 
   (
     unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PATH_SEPARATOR COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE
-    CDPATH= cd -P -- "$COMPOSE_CURRENT_CHECKOUT_PATH"
+    CDPATH='' cd -P -- "$COMPOSE_CURRENT_CHECKOUT_PATH"
     docker compose \
       --project-name "$COMPOSE_PROJECT_NAME" \
       --project-directory "$COMPOSE_CURRENT_CHECKOUT_PATH" \

@@ -93,6 +93,8 @@ is_local() {
 ensure_local_postgres() {
   local reset_database="${1:-false}"
   local project_name="$COMPOSE_PROJECT_NAME"
+  local ready_timeout="${MULTICA_POSTGRES_READY_TIMEOUT_SECONDS:-60}"
+  local ready_deadline
   local db_exists
 
   if [ "$reset_database" != true ] && [ "$reset_database" != false ]; then
@@ -105,12 +107,21 @@ ensure_local_postgres() {
   # this canonical identity, never from a caller-supplied Compose command.
   validate_postgres_identifier "$POSTGRES_DB" POSTGRES_DB
   validate_postgres_identifier "$POSTGRES_USER" POSTGRES_USER
+  if [[ ! "$ready_timeout" =~ ^[0-9]+$ ]] || [ "$ready_timeout" -lt 1 ] || [ "$ready_timeout" -gt 300 ]; then
+    echo "ERROR: MULTICA_POSTGRES_READY_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
+    return 1
+  fi
+  ready_deadline=$(( $(date +%s) + ready_timeout ))
 
   echo "==> Ensuring PostgreSQL container for project '$project_name' on localhost:${POSTGRES_PORT:-5432}..."
   compose_run_canonical up -d postgres
 
   echo "==> Waiting for PostgreSQL to be ready..."
   until compose_run_canonical exec -T postgres pg_isready -U "$POSTGRES_USER" -d postgres > /dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$ready_deadline" ]; then
+      echo "ERROR: PostgreSQL did not become ready within ${ready_timeout} seconds for project '$project_name' on localhost:${POSTGRES_PORT:-5432}." >&2
+      return 1
+    fi
     sleep 1
   done
 

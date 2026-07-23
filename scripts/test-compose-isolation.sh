@@ -269,7 +269,9 @@ LABELS
         ;;
       exec)
         argument_text="${arguments[*]}"
-        if [[ "$argument_text" == *'SELECT 1 FROM pg_database'* ]]; then
+        if [[ "$argument_text" == *'pg_isready'* ]] && [ "${FAKE_DOCKER_PG_ISREADY_FAIL:-0}" = 1 ]; then
+          exit 1
+        elif [[ "$argument_text" == *'SELECT 1 FROM pg_database'* ]]; then
           printf '1\n'
         elif [[ "$argument_text" == *'SELECT 1'* ]]; then
           database=""
@@ -1080,6 +1082,25 @@ test_first_initialization_and_readiness() {
   fi
 }
 
+test_readiness_timeout() {
+  new_fixture readiness-timeout
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  mkdir -p "$worktree"
+  write_env "$env_file" ignored "$worktree" ignored
+
+  if FAKE_DOCKER_PG_ISREADY_FAIL=1 MULTICA_POSTGRES_READY_TIMEOUT_SECONDS=1 \
+    run_ensure "$worktree" "$env_file" > "$CASE_ROOT/timeout.out" 2>&1; then
+    fail "unready PostgreSQL was accepted indefinitely"
+  elif [ "$(mutation_count)" = 1 ] && \
+    grep -Fq 'did not become ready within 1 seconds' "$CASE_ROOT/timeout.out" && \
+    find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name 'multica-compose-lock-*.released.*' -print -quit | grep -q .; then
+    pass "PostgreSQL readiness has a bounded failure path that releases the lock"
+  else
+    fail "PostgreSQL readiness timeout did not preserve bounded lock cleanup"
+  fi
+}
+
 test_idempotency_and_production_identity() {
   new_fixture idempotency-and-production-identity
   local project
@@ -1309,6 +1330,7 @@ run_case stale-lock-quarantine test_stale_lock_quarantine
 run_case nonowner-lock-release-refusal test_nonowner_lock_release_refusal
 run_case release-failure-propagation test_release_failure_propagation
 run_case first-initialization-and-readiness test_first_initialization_and_readiness
+run_case readiness-timeout test_readiness_timeout
 run_case idempotency-and-production-identity test_idempotency_and_production_identity
 run_case static-safety-contract test_static_safety_contract
 
