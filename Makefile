@@ -233,12 +233,10 @@ check: ## Run typecheck, TS tests, Go tests, and Playwright E2E for the current 
 	@ENV_FILE="$(ENV_FILE)" bash scripts/check.sh
 
 db-up: ## Start the PostgreSQL container for the current env's Compose project
-	@bash scripts/compose-guard-mustpass.sh "$(ENV_FILE)"
-	@$(COMPOSE) $(COMPOSE_ARGS) up -d postgres
+	@bash scripts/compose-guard-mustpass.sh "$(ENV_FILE)" -- $(COMPOSE) $(COMPOSE_ARGS) up -d postgres
 
 db-down: ## Stop the PostgreSQL container for the current env's Compose project
-	@bash scripts/compose-guard-mustpass.sh "$(ENV_FILE)"
-	@$(COMPOSE) $(COMPOSE_ARGS) down
+	@bash scripts/compose-guard-mustpass.sh "$(ENV_FILE)" -- $(COMPOSE) $(COMPOSE_ARGS) down
 
 # Drop + recreate the current env's database, then run all migrations.
 # Use for a clean slate in local dev. Only affects the DB named in
@@ -250,9 +248,9 @@ db-reset: ## Drop and recreate the current env's database, then re-run all migra
 		""|*@localhost:*|*@localhost/*|*@127.0.0.1:*|*@127.0.0.1/*|*@\[::1\]:*|*@\[::1\]/*) ;; \
 		*) echo "Refusing to reset: DATABASE_URL points at a remote host."; exit 1 ;; \
 	esac
-	@bash scripts/compose-guard-mustpass.sh "$(ENV_FILE)" && bash scripts/ensure-postgres.sh "$(ENV_FILE)"
 	@echo "==> Dropping and recreating database '$(POSTGRES_DB)'..."
-	@$(COMPOSE) $(COMPOSE_ARGS) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -v ON_ERROR_STOP=1 \
+	@bash scripts/ensure-postgres.sh "$(ENV_FILE)" -- \
+		$(COMPOSE) $(COMPOSE_ARGS) exec -T postgres psql -U $(POSTGRES_USER) -d postgres -v ON_ERROR_STOP=1 \
 		-c "DROP DATABASE IF EXISTS \"$(POSTGRES_DB)\" WITH (FORCE);" \
 		-c "CREATE DATABASE \"$(POSTGRES_DB)\";"
 	@echo "==> Running migrations..."

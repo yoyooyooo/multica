@@ -1,127 +1,97 @@
 # Recovery and Rollback: Worktree Compose Isolation
 
-This document describes how to detect and recover from a Compose project
-ownership split (a worktree container replacing or relabeling live production
-resources), and how to roll back the isolation change.
+This runbook covers a worktree Compose ownership collision without changing
+production credentials, volumes, or unrelated containers. It is a recovery
+reference, not permission to operate the live deployment.
 
-## Detecting split ownership
+## Detect split ownership
 
-### Quick check
-
-```bash
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Labels "multica.owner"}}'
-```
-
-Expected output for correct state:
-
-| Container | multica.owner |
-|-----------|---------------|
-| `multica-postgres-1` | `deployment` (or unlabeled) |
-| `multica-backend-1`  | `deployment` (or unlabeled) |
-| `multica-frontend-1` | `deployment` (or unlabeled) |
-| `wt_*_*-postgres-1`  | `worktree` |
-
-Worktree containers start with `wt_` prefix. If any `multica-*` container
-shows `multica.owner=worktree`, ownership is split.
-
-### Detailed inspection
+List running and stopped resources with their ownership evidence:
 
 ```bash
-# List all running containers with ownership labels
-docker ps --format 'table {{.Names}}\t{{.ID}}\t{{.RunningFor}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}\t{{.Labels "com.docker.compose.project"}}'
-
-# List all stopped containers for a project
-docker ps -a --filter "label=com.docker.compose.project=multica" --format 'table {{.Names}}\t{{.Status}}\t{{.Labels "multica.owner"}}'
-
-# Check production volumes
-docker volume ls --filter "label=com.docker.compose.project=multica" --format 'table {{.Name}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}'
-
-# Verify production PostgreSQL credentials work
-docker compose exec -T postgres psql -U multica -d multica -c "SELECT 1"
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}\t{{.Labels "multica.worktree.project"}}\t{{.Labels "com.docker.compose.project"}}'
+docker volume ls --format 'table {{.Name}}\t{{.Labels "multica.owner"}}\t{{.Labels "multica.worktree.path"}}\t{{.Labels "multica.worktree.project"}}\t{{.Labels "com.docker.compose.project"}}'
 ```
 
-## Stopping isolated resources only
+Expected ownership:
 
-To stop worktree containers without touching production:
+| Resource | Required identity |
+| --- | --- |
+| Production `multica-*` resources | `multica.owner=deployment`; project `multica` |
+| Worktree `wt_*-postgres-1` and `wt_*_pgdata` | `multica.owner=worktree`, canonical physical worktree path, exact `wt_*` project |
+
+A missing, malformed, path-aliased, or foreign custom label is a collision.
+Do not relabel it in place. Preserve it as evidence and stop the attempted
+worktree operation.
+
+## Safe worktree stop
+
+Use the worktree env file and the canonical lock boundary. This stops only the
+already verified worktree project and retains its data volume for inspection:
 
 ```bash
-# Stop a specific worktree project
-docker compose --project-name wt_<slug>_<offset> down
-
-# Or by container name
-docker rm -f wt_<slug>_<offset>-postgres-1
-
-# Verify only worktree containers stopped
-docker ps --format '{{.Names}}' | grep -E '^multica-'
-# Only multica-* containers should still be running
+set -a
+. .env.worktree
+set +a
+bash scripts/compose-guard-mustpass.sh .env.worktree -- \
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" stop
 ```
 
-## Preserving production containers and volumes
+Never substitute `multica` for a `wt_*` project. Never use a broad wildcard,
+force deletion, or a production Compose command to clean up a worktree.
 
-If the ownership guard is absent or bypassed, production resources may have
-been recreated or relabeled. Recovery steps:
+## Lock recovery
 
-1. **Stop any worktree project that may have recreated production containers:**
+Every guarded Compose mutation writes owner PID, process-start evidence,
+project, and canonical worktree path beneath:
 
-   ```bash
-   docker compose --project-name multica down
-   ```
+```text
+${TMPDIR:-/tmp}/multica-compose-locks/multica-compose-lock-<project>
+```
 
-   ⚠️ This stops the `multica-*` project. If the production backend is
-   still the original deployment, this will cause an outage. Only do this
-   if you are certain the current `multica-*` containers are worktree-owned.
+A competing operation waits only for the configured bounded interval. If the
+owner process is gone, its start evidence no longer matches, or evidence never
+finishes initialization, the helper atomically renames the directory to a
+`.stale.*` quarantine before continuing. A normal release is likewise renamed
+to a `.released.*` record.
 
-2. **Verify production volume integrity:**
+Do not manually delete lock or test directories. Keep quarantined evidence in
+place; if host administration later requires disposal, use the platform's
+verified recycle/trash mechanism on one reviewed absolute path at a time.
 
-   ```bash
-   docker volume inspect multica_pgdata --format '{{.Driver}}'
-   # Should be "local"
-   docker volume ls | grep multica
-   ```
+## Production preservation
 
-3. **Restart production from the original deployment stack:**
+If a production resource appears worktree-owned, stop and escalate to the
+production owner. Before any production recovery action, capture the exact
+container IDs, start times, labels, and production volume identity. A worktree
+repair must not rotate PostgreSQL roles, mutate credentials, recreate
+production containers, or change the production volume.
 
-   ```bash
-   # From the original deployment directory
-   docker compose -f docker-compose.selfhost.yml up -d postgres backend frontend
-   ```
-
-4. **Verify production functionality:**
-
-   ```bash
-   curl -sf http://localhost:8080/health
-   docker compose exec -T postgres psql -U multica -d multica -c "SELECT 1"
-   ```
-
-## Reverting the source change
-
-To revert the isolation source change (e.g. to recover from an incorrect
-deployment or to stop using the Compose isolation pattern):
+The production owner may use the original deployment stack only after verifying
+that its target is the intended deployment directory and that no worktree
+resource is selected. Validate application and database readiness separately:
 
 ```bash
-# From the multica repo
-git diff origin/main -- docker-compose.yml scripts/init-worktree-env.sh \
-  scripts/ensure-postgres.sh scripts/compose-ownership-guard.sh \
-  scripts/compose-guard-mustpass.sh Makefile
-
-# Revert all changes
-git checkout origin/main -- docker-compose.yml scripts/init-worktree-env.sh \
-  scripts/ensure-postgres.sh scripts/compose-ownership-guard.sh \
-  scripts/compose-guard-mustpass.sh Makefile
+curl -sf http://localhost:8080/health
+docker compose -f docker-compose.selfhost.yml exec -T postgres \
+  psql -U multica -d multica -c 'SELECT 1'
 ```
 
-Then run `make setup` with `.env` (using the previous shared Compose project).
-Re-run the isolation tests if needed to verify the revert.
+## Source rollback
 
-## Rollback vs. new fix
+Do not rewrite the active PR branch. If this isolation implementation needs to
+be backed out, create a bounded corrective change from the current
+`fork/v0.4.8` generation and use a reviewed `git revert <accepted-commit>` or
+a replacement commit. Keep the original commit, PR, lock quarantine, and
+resource readback as incident evidence.
 
-If the isolation change itself is incorrect or insufficient, the preferred
-path is:
+Before requesting review, run the deterministic fake-Docker regression suite:
 
-1. Revert the change locally.
-2. Create a new bounded branch from the current `fork/v0.4.8`.
-3. Apply a corrected fix on the new branch.
-4. Push and request a fresh review.
+```bash
+bash scripts/test-compose-isolation.sh
+```
 
-Do not force-push or rebase the existing PR branch after review has started,
-unless explicitly requested.
+The suite proves guard-before-mutation behavior, stopped/foreign resource
+refusal, strict volume labels, canonical paths, bounded stale-lock quarantine,
+real two-contender serialization, configured first initialization, authenticated
+readiness, and production-identity preservation without contacting live Docker.

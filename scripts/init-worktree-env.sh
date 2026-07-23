@@ -8,13 +8,17 @@ if [ -f "$ENV_FILE" ] && [ "${FORCE:-0}" != "1" ]; then
   exit 1
 fi
 
-worktree_name="${WORKTREE_NAME:-$(basename "$PWD")}"
+# Canonicalize before deriving every worktree identity. A symlinked checkout
+# must generate the same project, port, database, labels, and lock key as its
+# physical path.
+worktree_path="$(pwd -P)"
+worktree_name="$(basename "$worktree_path")"
 slug="$(printf '%s' "$worktree_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
 if [ -z "$slug" ]; then
   slug="multica"
 fi
 
-hash_value="$(printf '%s' "$PWD" | cksum | awk '{print $1}')"
+hash_value="$(printf '%s' "$worktree_path" | cksum | awk '{print $1}')"
 offset=$((hash_value % 1000))
 
 # Deterministic unique identities per worktree: each worktree gets its own
@@ -27,8 +31,6 @@ backend_port=$((18080 + offset))
 frontend_port=$((13000 + offset))
 frontend_origin="http://localhost:${frontend_port}"
 multica_owner="worktree"
-worktree_path="$PWD"
-
 cat > "$ENV_FILE" <<EOF
 COMPOSE_PROJECT_NAME=${compose_project}
 MULTICA_OWNER=${multica_owner}
