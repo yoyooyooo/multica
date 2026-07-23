@@ -40,19 +40,28 @@ force deletion, or a production Compose command to clean up a worktree.
 ## Lock recovery
 
 Every guarded Compose mutation writes owner PID, process-start evidence,
-project, and canonical worktree path beneath:
+project, canonical worktree path, PostgreSQL host port, and lock key beneath
+one fixed host-local namespace:
 
 ```text
-${TMPDIR:-/tmp}/multica-compose-locks/multica-compose-lock-<project>
+/tmp/multica-compose-locks/multica-compose-lock-port-<port>
 ```
+
+The physical path for that root is canonicalized. `MULTICA_COMPOSE_LOCK_ROOT`,
+`TMPDIR`, env-file values, current-directory aliases, and Compose variables do
+not select another lock namespace. The lock key is `postgres-port-<port>`, so
+distinct projects that resolve to one PostgreSQL host port serialize the whole
+preflight-and-mutation boundary. After the first operation creates the binding,
+a different project fails its ownership/port preflight instead of reaching a
+second mutation.
 
 A competing operation waits only for the configured bounded interval. If the
 owner process is gone, its start evidence no longer matches, or evidence never
 finishes initialization, the helper atomically renames the directory to a
 `.stale.*` quarantine before continuing. A normal release is likewise renamed
 to a `.released.*` record only after the releasing process matches the recorded
-PID, process-start, project, owner, and canonical worktree path; a mismatch or
-rename failure remains fail-closed.
+PID, process-start, project, owner, canonical worktree path, port, and key; a
+mismatch or rename failure remains fail-closed.
 
 Do not manually delete lock or test directories. Keep quarantined evidence in
 place; if host administration later requires disposal, use the platform's

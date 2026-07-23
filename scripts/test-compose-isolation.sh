@@ -383,9 +383,12 @@ new_fixture() {
   local name="$1"
   CASE_ROOT="$TEST_ROOT/$name"
   FAKE_DOCKER_STATE="$CASE_ROOT/state"
-  MULTICA_COMPOSE_LOCK_ROOT="$CASE_ROOT/locks"
-  export CASE_ROOT FAKE_DOCKER_STATE MULTICA_COMPOSE_LOCK_ROOT
-  mkdir -p "$FAKE_DOCKER_STATE/containers" "$FAKE_DOCKER_STATE/volumes" "$MULTICA_COMPOSE_LOCK_ROOT"
+  # The production lock root is intentionally not configurable. Each fixture
+  # keeps fake-Docker state task-local, while lock behavior uses the same fixed
+  # namespace as a production entrypoint.
+  unset MULTICA_COMPOSE_LOCK_ROOT
+  export CASE_ROOT FAKE_DOCKER_STATE
+  mkdir -p "$FAKE_DOCKER_STATE/containers" "$FAKE_DOCKER_STATE/volumes"
 }
 
 derive_worktree_identity() {
@@ -448,6 +451,22 @@ run_ensure() {
   )
 }
 
+lock_path_for_env() {
+  local worktree="$1"
+  local env_file="$2"
+  (
+    cd "$worktree"
+    set -a
+    . "$env_file"
+    set +a
+    MULTICA_COMPOSE_ENV_FILE="$env_file"
+    export MULTICA_COMPOSE_ENV_FILE
+    . "$REPO_ROOT/scripts/compose-ownership-guard.sh"
+    compose_prepare_identity
+    compose_lock_expected_path
+  )
+}
+
 fixture_container() {
   local name="$1"
   local state="$2"
@@ -490,6 +509,19 @@ mutation_count() {
   else
     printf '0\n'
   fi
+}
+
+wait_for_file() {
+  local target="$1"
+  local attempts="${2:-10}"
+  local attempt=0
+
+  while [ "$attempt" -lt "$attempts" ]; do
+    [ -f "$target" ] && return 0
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 test_canonical_identity() {
@@ -700,6 +732,7 @@ test_deployment_identity_release() {
   new_fixture deployment-identity-release
   local checkout="$CASE_ROOT/main-checkout"
   local env_file="$CASE_ROOT/main.env"
+  local lock_path
   mkdir -p "$checkout"
   : > "$checkout/docker-compose.yml"
   cat > "$env_file" <<ENV
@@ -713,10 +746,11 @@ POSTGRES_PORT=5432
 DATABASE_URL=postgres://fixture_user:fixture-password-not-for-output@localhost:5432/multica?sslmode=disable
 ENV
 
+  lock_path="$(lock_path_for_env "$checkout" "$env_file")"
   if run_guard "$checkout" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/deployment.out" 2>&1 && \
     [ "$(mutation_count)" = 1 ] && \
-    find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name 'multica-compose-lock-multica.released.*' -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
     pass "deployment identity retains its verified lock release path"
   else
     fail "deployment identity did not complete a verified lock release"
@@ -931,6 +965,184 @@ test_concurrent_collision() {
   fi
 }
 
+test_lock_root_override_serialization() {
+  new_fixture lock-root-override-serialization
+  local worktree="$CASE_ROOT/worktree"
+  local env_file="$CASE_ROOT/worktree.env"
+  local env_a="$CASE_ROOT/caller-a.env"
+  local env_b="$CASE_ROOT/caller-b.env"
+  local root_a="$CASE_ROOT/caller-root-a"
+  local root_b="$CASE_ROOT/caller-root-b"
+  local tmp_a="$CASE_ROOT/caller-tmp-a"
+  local tmp_b="$CASE_ROOT/caller-tmp-b"
+  local first_pid
+  local first_status=0
+  local second_status=0
+  local caller_roots_unused=true
+  mkdir -p "$worktree" "$root_a" "$root_b" "$tmp_a" "$tmp_b"
+  write_env "$env_file" ignored "$worktree" ignored
+  cp "$env_file" "$env_a"
+  cp "$env_file" "$env_b"
+  cat >> "$env_a" <<ENV
+MULTICA_COMPOSE_LOCK_ROOT=$root_a
+TMPDIR=$tmp_a
+ENV
+  cat >> "$env_b" <<ENV
+MULTICA_COMPOSE_LOCK_ROOT=$root_b
+TMPDIR=$tmp_b
+ENV
+
+  (
+    export MULTICA_COMPOSE_LOCK_ROOT="$root_b"
+    export TMPDIR="$tmp_b"
+    export FAKE_DOCKER_ACTOR=first
+    export FAKE_DOCKER_BLOCK_UP=1
+    export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5
+    run_guard "$worktree" "$env_a" docker compose up -d postgres > "$CASE_ROOT/first.out" 2>&1
+  ) &
+  first_pid=$!
+
+  if ! wait_for_file "$FAKE_DOCKER_STATE/mutation.started"; then
+    fail "first caller-root contender did not reach the fake-Docker mutation seam"
+    : > "$FAKE_DOCKER_STATE/release-up"
+    wait "$first_pid" || true
+    return
+  fi
+
+  if (
+    export MULTICA_COMPOSE_LOCK_ROOT="$root_a"
+    export TMPDIR="$tmp_a"
+    export FAKE_DOCKER_ACTOR=second
+    export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=1
+    run_guard "$worktree" "$env_b" docker compose up -d postgres > "$CASE_ROOT/second.out" 2>&1
+  ); then
+    second_status=0
+  else
+    second_status=$?
+  fi
+
+  : > "$FAKE_DOCKER_STATE/release-up"
+  if wait "$first_pid"; then
+    first_status=0
+  else
+    first_status=$?
+  fi
+
+  if find "$root_a" -maxdepth 1 -name 'multica-compose-lock-*' -print -quit | grep -q . || \
+    find "$root_b" -maxdepth 1 -name 'multica-compose-lock-*' -print -quit | grep -q .; then
+    caller_roots_unused=false
+  fi
+
+  if [ "$first_status" = 0 ] && [ "$second_status" -ne 0 ] && \
+    [ "$(mutation_count)" = 1 ] && grep -qx first "$FAKE_DOCKER_STATE/mutation.log" && \
+    [ "$caller_roots_unused" = true ] && [ "$(command -v docker)" = "$FAKE_BIN/docker" ]; then
+    pass "caller lock-root and TMPDIR overrides cannot split the canonical fake-Docker lock"
+  else
+    fail "caller lock-root or TMPDIR override split the canonical lock namespace"
+  fi
+}
+
+test_same_port_distinct_projects_serialize() {
+  new_fixture same-port-distinct-projects-serialize
+  local candidates="$CASE_ROOT/candidates"
+  local seen_ports="$CASE_ROOT/seen-ports"
+  local attempt=0
+  local candidate
+  local port_record
+  local worktree_a=""
+  local worktree_b=""
+  local env_a="$CASE_ROOT/a.env"
+  local env_b="$CASE_ROOT/b.env"
+  local project_a
+  local project_b
+  local port_a
+  local port_b
+  local first_pid
+  local second_pid
+  local first_status=0
+  local second_status=0
+  mkdir -p "$candidates" "$seen_ports"
+
+  # A file keyed by the modulo-1000 port is portable on Bash 3 and guarantees
+  # a collision after at most 1001 distinct physical worktree paths.
+  while [ "$attempt" -le 1000 ]; do
+    candidate="$candidates/worktree-$attempt"
+    mkdir -p "$candidate"
+    derive_worktree_identity "$candidate"
+    port_record="$seen_ports/$FIXTURE_PORT"
+    if [ -f "$port_record" ]; then
+      worktree_a="$(awk 'NR == 1 { print; exit }' "$port_record")"
+      worktree_b="$candidate"
+      break
+    fi
+    printf '%s\n' "$candidate" > "$port_record"
+    attempt=$((attempt + 1))
+  done
+
+  if [ -z "$worktree_a" ] || [ -z "$worktree_b" ]; then
+    fail "could not find two physical worktrees with one modulo-1000 PostgreSQL port"
+    return
+  fi
+
+  write_env "$env_a" ignored "$worktree_a" ignored
+  write_env "$env_b" ignored "$worktree_b" ignored
+  project_a="$(env_value "$env_a" COMPOSE_PROJECT_NAME)"
+  project_b="$(env_value "$env_b" COMPOSE_PROJECT_NAME)"
+  port_a="$(env_value "$env_a" POSTGRES_PORT)"
+  port_b="$(env_value "$env_b" POSTGRES_PORT)"
+
+  if [ "$project_a" = "$project_b" ] || [ "$port_a" != "$port_b" ]; then
+    fail "same-port fixture did not produce distinct projects on one canonical PostgreSQL port"
+    return
+  fi
+
+  (
+    export FAKE_DOCKER_ACTOR=first
+    export FAKE_DOCKER_BLOCK_UP=1
+    export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5
+    run_guard "$worktree_a" "$env_a" docker compose up -d postgres > "$CASE_ROOT/first.out" 2>&1
+  ) &
+  first_pid=$!
+
+  if ! wait_for_file "$FAKE_DOCKER_STATE/mutation.started"; then
+    fail "first same-port contender did not reach the fake-Docker mutation seam"
+    : > "$FAKE_DOCKER_STATE/release-up"
+    wait "$first_pid" || true
+    return
+  fi
+
+  (
+    export FAKE_DOCKER_ACTOR=second
+    export MULTICA_COMPOSE_LOCK_TIMEOUT_SECONDS=5
+    run_guard "$worktree_b" "$env_b" docker compose up -d postgres > "$CASE_ROOT/second.out" 2>&1
+  ) &
+  second_pid=$!
+
+  # The first command creates the port binding before it releases the lock.
+  # A port-keyed contender must then fail the foreign ownership preflight.
+  sleep 1
+  : > "$FAKE_DOCKER_STATE/release-up"
+
+  if wait "$first_pid"; then
+    first_status=0
+  else
+    first_status=$?
+  fi
+  if wait "$second_pid"; then
+    second_status=0
+  else
+    second_status=$?
+  fi
+
+  if [ "$first_status" = 0 ] && [ "$second_status" -ne 0 ] && \
+    [ "$(mutation_count)" = 1 ] && grep -qx first "$FAKE_DOCKER_STATE/mutation.log" && \
+    grep -Fq 'belongs to a different owner, worktree, or project' "$CASE_ROOT/second.out"; then
+    pass "distinct projects sharing one canonical PostgreSQL port serialize and reject the second preflight"
+  else
+    fail "same-port distinct projects allowed more than one Compose mutation"
+  fi
+}
+
 test_post_mutation_boundary() {
   new_fixture post-mutation-boundary
   local project database
@@ -1026,11 +1238,14 @@ test_stale_lock_quarantine() {
   new_fixture stale-lock-quarantine
   local worktree="$CASE_ROOT/worktree"
   local env_file="$CASE_ROOT/worktree.env"
-  local project lock_path
+  local project
+  local port
+  local lock_path
   mkdir -p "$worktree"
   write_env "$env_file" ignored "$worktree" ignored
   project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
-  lock_path="$MULTICA_COMPOSE_LOCK_ROOT/multica-compose-lock-$project"
+  port="$(env_value "$env_file" POSTGRES_PORT)"
+  lock_path="$(lock_path_for_env "$worktree" "$env_file")"
   mkdir -p "$lock_path"
   printf '999999\n' > "$lock_path/owner.pid"
   cat > "$lock_path/owner.meta" <<META
@@ -1039,12 +1254,14 @@ project=$project
 owner=worktree
 worktree_path=$(env_value "$env_file" WORKTREE_PATH)
 pid_start=unavailable
+port=$port
+key=postgres-port-$port
 started_epoch=1
 META
 
   if run_guard "$worktree" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/stale.out" 2>&1 && \
-    find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name "multica-compose-lock-$project.stale.*" -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").stale.*" -print -quit | grep -q .; then
     pass "stale lock is quarantined by rename before a bounded recovery"
   else
     fail "stale lock was not safely quarantined and recovered"
@@ -1086,15 +1303,17 @@ test_readiness_timeout() {
   new_fixture readiness-timeout
   local worktree="$CASE_ROOT/worktree"
   local env_file="$CASE_ROOT/worktree.env"
+  local lock_path
   mkdir -p "$worktree"
   write_env "$env_file" ignored "$worktree" ignored
+  lock_path="$(lock_path_for_env "$worktree" "$env_file")"
 
   if FAKE_DOCKER_PG_ISREADY_FAIL=1 MULTICA_POSTGRES_READY_TIMEOUT_SECONDS=1 \
     run_ensure "$worktree" "$env_file" > "$CASE_ROOT/timeout.out" 2>&1; then
     fail "unready PostgreSQL was accepted indefinitely"
   elif [ "$(mutation_count)" = 1 ] && \
     grep -Fq 'did not become ready within 1 seconds' "$CASE_ROOT/timeout.out" && \
-    find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name 'multica-compose-lock-*.released.*' -print -quit | grep -q .; then
+    find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
     pass "PostgreSQL readiness has a bounded failure path that releases the lock"
   else
     fail "PostgreSQL readiness timeout did not preserve bounded lock cleanup"
@@ -1218,11 +1437,17 @@ test_nonowner_lock_release_refusal() {
   new_fixture nonowner-lock-release-refusal
   local worktree="$CASE_ROOT/worktree"
   local env_file="$CASE_ROOT/worktree.env"
-  local project lock_path
+  local project
+  local port
+  local lock_path
+  local key_mismatch_lock="$CASE_ROOT/key-mismatch-lock"
+  local nonowner_refused=false
+  local key_mismatch_refused=false
   mkdir -p "$worktree"
   write_env "$env_file" ignored "$worktree" ignored
   project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
-  lock_path="$MULTICA_COMPOSE_LOCK_ROOT/multica-compose-lock-$project"
+  port="$(env_value "$env_file" POSTGRES_PORT)"
+  lock_path="$(lock_path_for_env "$worktree" "$env_file")"
   mkdir -p "$lock_path"
   cat > "$lock_path/owner.meta" <<META
 pid=999999
@@ -1230,6 +1455,8 @@ pid_start=foreign-process-start
 project=foreign_project
 owner=deployment
 worktree_path=/foreign/worktree
+port=$port
+key=postgres-port-$port
 started_epoch=1
 META
 
@@ -1242,11 +1469,44 @@ META
     . "$REPO_ROOT/scripts/compose-ownership-guard.sh"
     compose_lock_release
   ) > "$CASE_ROOT/nonowner-release.out" 2>&1; then
-    fail "a non-owner released an active Compose lock"
-  elif [ -d "$lock_path" ] && ! find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name "*.released.*" -print -quit | grep -q .; then
-    pass "only the recorded lock owner can release its lock"
+    nonowner_refused=false
+  elif [ -d "$lock_path" ] && ! find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
+    nonowner_refused=true
+  fi
+
+  # Keep every owner fact exact except the port-derived key. The release matcher
+  # must refuse this record even though PID/process-start and identity match.
+  if (
+    cd "$worktree"
+    set -a
+    . "$env_file"
+    set +a
+    . "$REPO_ROOT/scripts/compose-ownership-guard.sh"
+    compose_prepare_identity
+    owner_pid="${BASHPID:-$$}"
+    owner_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+    mkdir -p "$key_mismatch_lock"
+    cat > "$key_mismatch_lock/owner.meta" <<META
+pid=$owner_pid
+pid_start=$owner_start
+project=$COMPOSE_PROJECT_NAME
+owner=$MULTICA_OWNER
+worktree_path=$WORKTREE_PATH
+port=$POSTGRES_PORT
+key=foreign-port-key
+started_epoch=1
+META
+    compose_lock_owner_matches_current_process "$key_mismatch_lock"
+  ) > "$CASE_ROOT/key-mismatch-release.out" 2>&1; then
+    key_mismatch_refused=false
   else
-    fail "non-owner release did not leave the lock fail-closed"
+    key_mismatch_refused=true
+  fi
+
+  if [ "$nonowner_refused" = true ] && [ "$key_mismatch_refused" = true ]; then
+    pass "only the recorded owner and its port-derived lock key can release a Compose lock"
+  else
+    fail "non-owner or mismatched lock-key release did not remain fail-closed"
   fi
 }
 
@@ -1254,17 +1514,16 @@ test_release_failure_propagation() {
   new_fixture release-failure-propagation
   local worktree="$CASE_ROOT/worktree"
   local env_file="$CASE_ROOT/worktree.env"
-  local project lock_path
+  local lock_path
   mkdir -p "$worktree"
   write_env "$env_file" ignored "$worktree" ignored
-  project="$(env_value "$env_file" COMPOSE_PROJECT_NAME)"
-  lock_path="$MULTICA_COMPOSE_LOCK_ROOT/multica-compose-lock-$project"
+  lock_path="$(lock_path_for_env "$worktree" "$env_file")"
 
   if FAKE_MV_FAIL_RELEASE=1 run_guard "$worktree" "$env_file" \
     docker compose up -d postgres > "$CASE_ROOT/release-failure.out" 2>&1; then
     fail "lock release failure was hidden after a Compose mutation"
   elif [ "$(mutation_count)" = 1 ] && [ -d "$lock_path" ] && \
-    ! find "$MULTICA_COMPOSE_LOCK_ROOT" -maxdepth 1 -type d -name "*.released.*" -print -quit | grep -q .; then
+    ! find "$(dirname "$lock_path")" -maxdepth 1 -type d -name "$(basename "$lock_path").released.*" -print -quit | grep -q .; then
     pass "lock release failure is returned and leaves the lock fail-closed"
   else
     fail "lock release failure did not preserve fail-closed evidence"
@@ -1272,6 +1531,15 @@ test_release_failure_propagation() {
 }
 
 test_static_safety_contract() {
+  if rg -n 'MULTICA_COMPOSE_LOCK_ROOT|TMPDIR' "$REPO_ROOT/scripts/compose-ownership-guard.sh" > "$TEST_ROOT/caller-lock-root.out"; then
+    fail "production Compose locking still accepts a caller-selected namespace"
+    return
+  fi
+  if rg -n '\$\{TMPDIR' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/stale-lock-root-doc.out" || \
+    ! grep -Fq '/tmp/multica-compose-locks/multica-compose-lock-port-<port>' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; then
+    fail "recovery runbook does not document the fixed port-keyed lock namespace"
+    return
+  fi
   if rg -n '\.Labels[[:space:]]+"' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md" > "$TEST_ROOT/invalid-runbook-formatter.out" || \
     ! grep -Fq '{{.Label "multica.owner"}}' "$REPO_ROOT/docs/recovery-worktree-compose-isolation.md"; then
     fail "recovery runbook does not use Docker's runnable single-label formatter"
@@ -1324,6 +1592,8 @@ run_case strict-volume-labels test_strict_volume_labels
 run_case path-alias-refusal test_path_alias_refusal
 run_case port-refusal test_port_refusal
 run_case concurrent-collision test_concurrent_collision
+run_case lock-root-override-serialization test_lock_root_override_serialization
+run_case same-port-distinct-projects-serialize test_same_port_distinct_projects_serialize
 run_case post-mutation-boundary test_post_mutation_boundary
 run_case post-mutation-scope-refusal test_post_mutation_scope_refusal
 run_case stale-lock-quarantine test_stale_lock_quarantine
