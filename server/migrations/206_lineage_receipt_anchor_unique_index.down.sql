@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_lineage_receipt_anchor_unique;
