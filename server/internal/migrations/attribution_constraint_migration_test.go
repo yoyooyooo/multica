@@ -3,11 +3,14 @@ package migrations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -121,6 +124,107 @@ func TestAttributionStrictConstraintMigrations(t *testing.T) {
 	`, originatorID); err != nil {
 		t.Fatalf("insert legacy row after rollback restored exemption: %v", err)
 	}
+}
+
+func TestWorkspaceWorkloadAuthorityMigrationClosesBackfillTriggerRace(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("integration test requires Postgres at DATABASE_URL")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect to Postgres: %v", err)
+	}
+	defer pool.Close()
+
+	schema := fmt.Sprintf("workload_authority_migration_test_%d", time.Now().UnixNano())
+	schemaIdent := pgx.Identifier{schema}.Sanitize()
+	if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", schemaIdent)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schemaIdent)); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+	})
+
+	if _, err := pool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.workspace (id UUID PRIMARY KEY)", schemaIdent)); err != nil {
+		t.Fatalf("create workspace table: %v", err)
+	}
+
+	writer, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire writer connection: %v", err)
+	}
+	defer writer.Release()
+	migrator, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire migrator connection: %v", err)
+	}
+	defer migrator.Release()
+	for _, conn := range []*pgxpool.Conn{writer, migrator} {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s", schemaIdent)); err != nil {
+			t.Fatalf("set search path: %v", err)
+		}
+	}
+
+	writerTx, err := writer.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin writer transaction: %v", err)
+	}
+	defer writerTx.Rollback(context.Background())
+	const beforeLockWorkspaceID = "00000000-0000-4000-8000-000000000001"
+	if _, err := writerTx.Exec(ctx, "INSERT INTO workspace (id) VALUES ($1)", beforeLockWorkspaceID); err != nil {
+		t.Fatalf("insert workspace before migration lock: %v", err)
+	}
+
+	migrationSQL := readMigrationFile(t, "216_workspace_workload_authority.up.sql")
+	migrationDone := make(chan error, 1)
+	go func() {
+		_, err := migrator.Exec(ctx, migrationSQL)
+		migrationDone <- err
+	}()
+
+	select {
+	case err := <-migrationDone:
+		t.Fatalf("migration completed while an uncommitted workspace writer held ROW EXCLUSIVE: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// The migration is blocked on its explicit table lock.
+	}
+
+	if err := writerTx.Commit(ctx); err != nil {
+		t.Fatalf("commit workspace writer: %v", err)
+	}
+	select {
+	case err := <-migrationDone:
+		if err != nil {
+			t.Fatalf("apply authority migration: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("authority migration did not finish after the writer committed")
+	}
+
+	assertAuthority := func(id string) {
+		t.Helper()
+		var count int
+		if err := migrator.QueryRow(ctx, "SELECT COUNT(*) FROM workspace_workload_authority WHERE workspace_id = $1", id).Scan(&count); err != nil {
+			t.Fatalf("count authority for workspace %s: %v", id, err)
+		}
+		if count != 1 {
+			t.Fatalf("authority rows for workspace %s = %d, want 1", id, count)
+		}
+	}
+	assertAuthority(beforeLockWorkspaceID)
+
+	const afterMigrationWorkspaceID = "00000000-0000-4000-8000-000000000002"
+	if _, err := migrator.Exec(ctx, "INSERT INTO workspace (id) VALUES ($1)", afterMigrationWorkspaceID); err != nil {
+		t.Fatalf("insert workspace after authority migration: %v", err)
+	}
+	assertAuthority(afterMigrationWorkspaceID)
 }
 
 func applyMigrationFile(t *testing.T, ctx context.Context, conn interface {
