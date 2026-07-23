@@ -187,6 +187,13 @@ docker compose --project-name "$COMPOSE_PROJECT_NAME" exec -T postgres \
 
 This reads only the selected project's PostgreSQL instance.
 
+### PostgreSQL 就绪检查
+
+本地和远程数据库共用 `MULTICA_POSTGRES_READY_TIMEOUT_SECONDS`：必须是
+`1` 到 `300` 的整数，默认值为 `60`。远程 `DATABASE_URL` 只经 libpq 环境
+传入有界探测和已认证的 `SELECT 1`，不会输出或作为命令行参数传递。缺少
+`pg_isready` 或 `psql` 时检查会失败，不会声明数据库已就绪。
+
 ### Database Reset
 
 Stop the current checkout's PostgreSQL container while retaining the local
