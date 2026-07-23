@@ -359,6 +359,7 @@ printf '%s\n' "$@" >> "$state_root/remote-pg-isready-argv"
   [ -n "${POSTGRES_DB+x}" ] && echo 'POSTGRES_DB=set' || echo 'POSTGRES_DB=unset'
   [ -n "${POSTGRES_USER+x}" ] && echo 'POSTGRES_USER=set' || echo 'POSTGRES_USER=unset'
   [ -n "${POSTGRES_PASSWORD+x}" ] && echo 'POSTGRES_PASSWORD=set' || echo 'POSTGRES_PASSWORD=unset'
+  [ -n "${POSTGRES_PORT+x}" ] && echo 'POSTGRES_PORT=set' || echo 'POSTGRES_PORT=unset'
 } > "$state_root/remote-pg-isready-libpq-env"
 printf 'call\n' >> "$state_root/remote-pg-isready-calls"
 if [ "${FAKE_REMOTE_PG_ISREADY_FAIL:-0}" = 1 ] || [ -f "$state_root/remote-pg-isready-fail" ]; then
@@ -383,6 +384,7 @@ printf '%s\n' "$@" > "$state_root/remote-psql-argv"
   [ -n "${POSTGRES_DB+x}" ] && echo 'POSTGRES_DB=set' || echo 'POSTGRES_DB=unset'
   [ -n "${POSTGRES_USER+x}" ] && echo 'POSTGRES_USER=set' || echo 'POSTGRES_USER=unset'
   [ -n "${POSTGRES_PASSWORD+x}" ] && echo 'POSTGRES_PASSWORD=set' || echo 'POSTGRES_PASSWORD=unset'
+  [ -n "${POSTGRES_PORT+x}" ] && echo 'POSTGRES_PORT=set' || echo 'POSTGRES_PORT=unset'
 } > "$state_root/remote-psql-libpq-env"
 FAKE_PSQL
 chmod +x "$FAKE_BIN/psql"
@@ -1519,10 +1521,12 @@ test_first_initialization_and_readiness() {
 write_remote_env() {
   local env_file="$1"
   cat > "$env_file" <<'ENV'
-POSTGRES_DB=env_db
-POSTGRES_USER=env_user
-POSTGRES_PASSWORD=env_password
-POSTGRES_PORT=5432
+# These deliberately invalid/unrelated local-Compose values must not affect a
+# selected remote URL, including its status text or client environment.
+POSTGRES_DB=invalid-db
+POSTGRES_USER=invalid-user
+POSTGRES_PASSWORD=unrelated-postgres-password
+POSTGRES_PORT=not-a-port
 DATABASE_URL=postgres://url_user:url_password@db.example.test:6543/url_db?sslmode=require
 ENV
 }
@@ -1558,15 +1562,25 @@ test_remote_database_url_authority() {
     grep -Fx -- 'PGPORT=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
     grep -Fx -- 'PGUSER=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
     grep -Fx -- 'PGSSLMODE=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_DB=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_USER=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_PASSWORD=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_PORT=unset' "$FAKE_DOCKER_STATE/remote-pg-isready-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_DB=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_USER=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
     grep -Fx -- 'POSTGRES_PASSWORD=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
+    grep -Fx -- 'POSTGRES_PORT=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
     grep -Fx -- 'PGCONNECT_TIMEOUT=set' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
     grep -Fx -- 'PGDATABASE=set' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
     grep -Fx -- 'PGPASSWORD=unset' "$FAKE_DOCKER_STATE/remote-psql-libpq-env" > /dev/null && \
-    ! grep -Ex -- '-d|-h|-p|-U|env_user|env_db|foreign_user' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
+    ! grep -Ex -- '-d|-h|-p|-U|invalid-user|invalid-db|foreign_user' "$FAKE_DOCKER_STATE/remote-psql-argv" > /dev/null && \
+    grep -Fq 'remote: db.example.test:6543' "$CASE_ROOT/ensure.out" && \
+    grep -Fq 'Database: url_db' "$CASE_ROOT/ensure.out" && \
+    ! grep -Eq 'invalid-db|invalid-user|not-a-port|unrelated-postgres-password' "$CASE_ROOT/ensure.out" && \
     assert_secret_free_remote_client_evidence; then
-    pass "remote readiness keeps DATABASE_URL out of argv and ignores ambient libpq authority"
+    pass "remote URL authority ignores invalid POSTGRES_* and ambient libpq values"
   else
-    fail "remote readiness leaked DATABASE_URL or mixed it with ambient PostgreSQL authority"
+    fail "remote readiness leaked DATABASE_URL or mixed it with independent PostgreSQL authority"
   fi
 }
 
