@@ -162,25 +162,35 @@ Look for `COMPOSE_PROJECT_NAME`, `WORKTREE_PATH`, `POSTGRES_DB`, `POSTGRES_PORT`
 
 ### List Databases in the Current Checkout's PostgreSQL Container
 
+Choose the env file deliberately. This read-only command refuses a missing
+project or user and never falls back to the deployment `multica` project:
+
 ```bash
+ENV_FILE=.env.worktree  # use .env only in the main checkout
+test -f "$ENV_FILE" || { echo "Missing env file: $ENV_FILE" >&2; exit 1; }
 set -a
-. .env.worktree  # use .env in the main checkout
+. "$ENV_FILE"
 set +a
-docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" exec -T postgres \
-  psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
+test -n "${COMPOSE_PROJECT_NAME:-}" && test -n "${POSTGRES_USER:-}" || {
+  echo "Env file must set COMPOSE_PROJECT_NAME and POSTGRES_USER" >&2
+  exit 1
+}
+docker compose --project-name "$COMPOSE_PROJECT_NAME" exec -T postgres \
+  psql -U "$POSTGRES_USER" -d postgres -At -c "select datname from pg_database order by datname;"
 ```
 
 This reads only the selected project's PostgreSQL instance.
 
-### Destructive Reset
+### Database Reset
 
-Stop PostgreSQL and keep local databases:
+Stop the current checkout's PostgreSQL container while retaining the local
+volume and database:
 
 ```bash
 make db-down
 ```
 
-Reset only the current checkout's database (drops `POSTGRES_DB`, recreates it, re-runs all migrations). Other worktree containers, volumes, and databases are untouched.
+Reset only the current checkout's canonical database, then re-run migrations:
 
 ```bash
 make stop
@@ -188,15 +198,10 @@ make db-reset
 make start
 ```
 
-> `make db-reset` refuses to run if `DATABASE_URL` points at a remote host.
+- `make db-reset` constructs its service, user, and database target only after canonical identity validation
+- it refuses remote databases, copied/retargeted worktree identity, and caller-controlled Compose selectors
+- other worktree containers, volumes, and databases are untouched
 
-Wipe PostgreSQL data for one explicitly selected checkout:
-
-```bash
-set -a
-. .env.worktree  # use .env in the main checkout
-set +a
-docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" down -v
-```
-
-> **Warning:** This deletes only the selected project's Docker volume and database data. After that you must run `make setup-main` or `make setup-worktree` again.
+This guide intentionally provides no volume-deletion command. `make db-down`
+retains the volume; if local disposal is required, stop and use an
+owner-approved maintenance procedure rather than a direct Compose command.

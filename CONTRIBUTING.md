@@ -10,7 +10,7 @@ It covers:
 - the isolated PostgreSQL Compose model
 - testing and verification
 - full-stack isolated testing (backend + frontend + daemon from source)
-- troubleshooting and destructive reset options
+- troubleshooting and production-preserving database reset
 
 ## Development Model
 
@@ -521,7 +521,7 @@ Nothing in this flow touches the system-installed `multica` or the default
 | Daemon PID | `~/.multica/daemon.pid` | `~/.multica/profiles/dev-<slug>-<hash>/daemon.pid` |
 | Health port | `19514` | `19514 + 1 + (name_hash % 1000)` |
 | Workspaces dir | `~/multica_workspaces/` | `~/multica_workspaces_dev-<slug>-<hash>/` |
-| Database | remote / production | local Docker: `multica_<slug>_<hash>` |
+| Database | remote / production | local Docker: generated `wt_<slug>_<offset>` |
 | Desktop profile | `desktop-api.multica.ai` | `desktop-localhost-<port>` |
 
 Multiple worktrees can run simultaneously without conflict.
@@ -574,14 +574,21 @@ Look for:
 
 ### List Databases in the Current Checkout's PostgreSQL Container
 
-Load the current checkout's env file, then use its explicit Compose project:
+Choose the env file deliberately. This read-only command refuses a missing
+project or user and never falls back to the deployment `multica` project:
 
 ```bash
+ENV_FILE=.env.worktree  # use .env only in the main checkout
+test -f "$ENV_FILE" || { echo "Missing env file: $ENV_FILE" >&2; exit 1; }
 set -a
-. .env.worktree  # use .env in the main checkout
+. "$ENV_FILE"
 set +a
-docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" exec -T postgres \
-  psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
+test -n "${COMPOSE_PROJECT_NAME:-}" && test -n "${POSTGRES_USER:-}" || {
+  echo "Env file must set COMPOSE_PROJECT_NAME and POSTGRES_USER" >&2
+  exit 1
+}
+docker compose --project-name "$COMPOSE_PROJECT_NAME" exec -T postgres \
+  psql -U "$POSTGRES_USER" -d postgres -At -c "select datname from pg_database order by datname;"
 ```
 
 This lists only that project's PostgreSQL instance; it does not enumerate other worktree containers.
@@ -616,42 +623,33 @@ To stop the PostgreSQL container for the current checkout only:
 make db-down
 ```
 
-## Destructive Reset
+## Database Reset
 
-If you want to stop the current checkout's PostgreSQL container and keep its local database:
+To stop the current checkout's PostgreSQL container while retaining its local
+volume and database, use the guarded command:
 
 ```bash
 make db-down
 ```
 
-If you want a fresh database for the current checkout only (drops the
-database named in `POSTGRES_DB`, recreates it, and runs all migrations):
+For a fresh database in the current checkout only, stop app processes, reset
+the canonical database, then start again:
 
 ```bash
-make stop        # stop backend/frontend first
+make stop
 make db-reset
 make start
 ```
 
-- only affects the current env's database; other worktree containers, volumes, and databases are untouched
-- refuses to run if `DATABASE_URL` points at a remote host
-- pass `ENV_FILE=.env.worktree` to target a specific worktree
+- `make db-reset` builds its service, user, and database target from the selected env file after canonical identity validation
+- it refuses a remote `DATABASE_URL`, copied/retargeted worktree identity, and caller-controlled Compose selectors
+- other worktree containers, volumes, and databases are not targeted
+- `ENV_FILE=.env.worktree` is valid only when that generated file belongs to the current physical checkout
 
-If you want to wipe PostgreSQL data for one explicitly selected checkout, load its env file and name its project:
-
-```bash
-set -a
-. .env.worktree  # use .env in the main checkout
-set +a
-docker compose --project-name "${COMPOSE_PROJECT_NAME:-multica}" down -v
-```
-
-Warning:
-
-- this deletes the selected project's Docker volume and its database data
-- it does not delete other worktree projects, volumes, or databases
-- use the generated `wt_*` project only when you intend to reset that worktree
-- after that you must run `make setup-main` or `make setup-worktree` again
+This guide intentionally provides no volume-deletion command. `make db-down`
+retains the volume as evidence and preserves data; if local volume disposal is
+required, stop and use an owner-approved maintenance procedure rather than a
+direct Compose command.
 
 ## Typical Flows
 
