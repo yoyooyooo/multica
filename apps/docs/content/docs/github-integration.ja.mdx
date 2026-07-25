@@ -16,7 +16,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **設定 → GitHub** | ワークスペースの admin には、マスタートグル、**Connect GitHub** ボタン、機能スイッチ（PR サイドバー、Co-authored-by、自動紐づけ）を備えた GitHub タブが表示されます。インストール後は GitHub タブに戻ります。 |
 | **イシューサイドバー → Pull requests** | このイシューに自動で紐づいたすべての PR が、タイトル、リポジトリ、状態（`Open` / `Draft` / `Merged` / `Closed`）、作成者とともに表示されます。行をクリックすると GitHub の該当 PR に移動します。 |
 | **Webhook（バックグラウンド）** | すべての `pull_request` イベントで、Multica は PR 行を upsert し、PR からイシュー識別子をスキャンして、紐づけ行を（再）構築します。冪等性があり、同じ delivery を再送しても変化はありません。 |
-| **マージ時のステータス自動変更** | PR が `merged` に遷移すると、まだ `Done` でも `Cancelled` でもない、紐づいたすべてのイシューが `Done` に移動します。ステータス変更は source `github_pr_merged` でタイムラインに記録されます。 |
+| **マージ時のステータス自動変更** | close intent を持つ PR が `merged` に遷移すると、まだ `Done` でも `Cancelled` でもない、紐づいたすべてのイシューが `Done` に移動します。ただし metadata が `external_pr_completion_policy=record_only` の場合を除きます。ステータス変更は source `github_pr_merged` でタイムラインに記録されます。 |
 | **PR カード → CI とマージ可否** | 紐づいた各 PR について、Multica は認証済みの GitHub API スナップショットを取得し、その **CI ステータス**と**マージ可否**をカードにミラーリングします（下記の **PR カードに表示される内容** を参照）。 |
 
 PR 自体の状態に加えて、この連携は紐づいた各 PR について、その **CI ステータス**（すべて成功、x 件が失敗（名前付き）、または x 件が実行中）と**マージ可否**（マージ可能、コンフリクトあり、blocked、behind）を、認証済みの GitHub API スナップショットから取得してミラーリングします。コミットやオープンな PR のないブランチ ref は引き続きモデル化されません。
@@ -51,6 +51,7 @@ PR の `merged` フィールドが `true` に切り替わると、紐づいた�
 |---|---|
 | `done` | 変化なし（すでに終了状態）。 |
 | `cancelled` | **変化なし** — cancelled はユーザーが作業を明示的に放棄したことを意味するため、連携はこのシグナルを上書きしません。 |
+| 任意の非終了状態で `external_pr_completion_policy=record_only` | マージ済み PR とイシューのリンクは引き続きミラーリングされますが、イシューの状態は変わりません。追加の完了ゲートを持つ workflow が、受け入れ後に明示的に終了状態へ移動する必要があります。 |
 | それ以外すべて（`todo`、`in_progress`、`in_review`、`blocked`、`backlog`） | `done` に移動。 |
 
 PR をマージ**せずに**クローズした場合は、PR カードの状態が `Closed` に更新されるだけです。紐づいたイシューはそのまま維持されます — マージせずにクローズすることが何を意味するかはユーザーが決めるからです。

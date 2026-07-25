@@ -16,7 +16,7 @@ There is no per-issue setup. The whole flow is identifier-driven.
 | **Settings → GitHub** | Workspace admins see the GitHub tab with a master toggle, **Connect GitHub** button, and feature switches (PR sidebar, Co-authored-by, auto-link). After install you bounce back to the GitHub tab. |
 | **Issue sidebar → Pull requests** | Every PR auto-linked to this issue, with title, repo, state (`Open` / `Draft` / `Merged` / `Closed`), and author. Click a row to jump to the PR on GitHub. |
 | **Webhook (background)** | On every `pull_request` event, Multica upserts the PR row, scans the PR for issue identifiers, and (re)builds the link rows. Idempotent — replaying a delivery is a no-op. |
-| **Auto-status on merge** | When a PR transitions to `merged`, every linked issue not already `Done` or `Cancelled` is moved to `Done`. The status change is timeline-logged with source `github_pr_merged`. |
+| **Auto-status on merge** | When a PR with close intent transitions to `merged`, every linked issue not already `Done` or `Cancelled` is moved to `Done`, unless its metadata sets `external_pr_completion_policy=record_only`. The status change is timeline-logged with source `github_pr_merged`. |
 | **PR card → CI & mergeability** | For each linked PR, Multica fetches an authenticated GitHub API snapshot and mirrors its **CI status** and **mergeability** onto the card (see **What the PR card shows** below). |
 
 Alongside the PR's own state, the integration mirrors — for each linked PR — its **CI status** (all checks passed, N failed with the failing check names, or N running) and its **mergeability** (ready to merge, has conflicts, blocked, or behind), fetched from an authenticated GitHub API snapshot. Commits and branch refs without an open PR are still not modeled.
@@ -64,6 +64,7 @@ When a PR's `merged` field flips to `true`, every linked issue is evaluated:
 |---|---|
 | `done` | No change (already terminal). |
 | `cancelled` | **No change** — cancelled means the user explicitly abandoned the work; the integration does not override that signal. |
+| Any non-terminal status with `external_pr_completion_policy=record_only` | The merged PR and issue link remain mirrored, but the issue status does not change. A workflow with an additional completion gate must move it explicitly later. |
 | Anything else (`todo`, `in_progress`, `in_review`, `blocked`, `backlog`) | Moved to `done`. |
 
 Closing a PR **without** merging it only updates the PR card's state to `Closed`. The linked issues stay where they were — the user is the one who decides what closing-without-merge means.

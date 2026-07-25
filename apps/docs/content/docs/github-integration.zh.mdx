@@ -16,7 +16,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Settings → GitHub** | 工作区 owner / admin 看到 GitHub 这个 tab，里面有主开关、**Connect GitHub** 按钮，以及功能开关（PR 侧栏、Co-authored-by、auto-link）。点 Connect 会打开 GitHub 的 App 安装页；装好后跳回 GitHub tab。 |
 | **Issue 详情侧栏 → Pull requests** | 列出所有自动关联到该 issue 的 PR，含标题、仓库、状态（`Open` / `Draft` / `Merged` / `Closed`）和作者。点一行跳到 GitHub。 |
 | **Webhook（后台）** | 每次 `pull_request` 事件触发：upsert PR 行 → 扫描里面的 issue 编号 →（重新）建立 link。幂等——重投 delivery 不会产生重复记录。 |
-| **Merge 自动改 status** | PR 转 `merged` 时，所有已关联且状态不是 `Done` / `Cancelled` 的 issue 会被推到 `Done`。时间线里以 source 为 `github_pr_merged` 记录。 |
+| **Merge 自动改 status** | 带 close intent 的 PR 转 `merged` 时，所有已关联且状态不是 `Done` / `Cancelled` 的 issue 会被推到 `Done`；但 metadata 为 `external_pr_completion_policy=record_only` 时除外。时间线里以 source 为 `github_pr_merged` 记录。 |
 | **PR 卡片 → CI 与可合并性** | 对每个关联的 PR，Multica 从 GitHub API 拉取一份经鉴权的快照，把它的 **CI 状态**和**可合并性**镜像到卡片上（见下方 **PR 卡片展示什么**）。 |
 
 除了 PR 自身的状态，集成还会为每个关联的 PR 镜像它的 **CI 状态**（全部通过、x 个失败并点名、或 x 个进行中）和**可合并性**（可合并、有冲突、blocked、behind），数据来自一份经鉴权的 GitHub API 快照。Commit、没开 PR 的分支仍然不入库。
@@ -64,6 +64,7 @@ PR 的 `merged` 字段翻成 `true` 时，逐个评估关联的 issue：
 |---|---|
 | `done` | 不变（已经是终态）|
 | `cancelled` | **不变**——cancelled 是用户明确放弃工作的信号，集成不覆盖 |
+| 任意非终态，且 `external_pr_completion_policy=record_only` | PR merge 与 issue 关联事实继续镜像，但 issue status 不变；存在附加完成门的 workflow 必须在验收后显式推进终态 |
 | 其他（`todo` / `in_progress` / `in_review` / `blocked` / `backlog`）| 转成 `done` |
 
 PR **关闭但没合并**——只更新 PR 卡片的状态为 `Closed`，issue 状态不变。"关闭但不合并"语义因团队而异，Multica 不替用户做决定。

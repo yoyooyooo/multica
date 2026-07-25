@@ -145,6 +145,70 @@ func TestVCSWebhook_ForgejoMirrorsAndCloses(t *testing.T) {
 	}
 }
 
+func TestVCSWebhook_RecordOnlyChildStaysActiveWithoutStageWake(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo.test")
+	parent, child := createRecordOnlyPRTestIssuePair(t, "vcs")
+	t.Cleanup(func() {
+		cleanupVCS(ctx, child.ID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = '{"backup_requirement":"required","external_pr_completion_policy":"record_only"}'::jsonb
+WHERE id = $1`, child.ID); err != nil {
+		t.Fatalf("set record-only metadata: %v", err)
+	}
+
+	raw, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 8, "html_url": "https://forgejo.test/acme/widget/pulls/8",
+			"title": "Fix " + child.Identifier, "body": "Closes " + child.Identifier,
+			"state": "closed", "merged": true,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/record-only", "sha": "recordonlysha"},
+			"user": map[string]any{"username": "octo"},
+		},
+		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+	})
+	w := httptest.NewRecorder()
+	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+	}, raw))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue: %v", err)
+	}
+	if len(rows) != 1 || rows[0].State != "merged" || rows[0].Provider != "forgejo" {
+		t.Fatalf("provider merge was not recorded: %+v", rows)
+	}
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("GetIssue child: %v", err)
+	}
+	if updated.Status != "in_progress" {
+		t.Fatalf("record-only child status = %q, want in_progress", updated.Status)
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent.ID).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("record-only provider merge emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
 // A bare body mention ("Related MUL-X", no closing keyword, not in title or
 // branch) must link reference_only: excluded from the issue PR list and from
 // the close gate, so it neither shows as a working PR nor blocks a genuine

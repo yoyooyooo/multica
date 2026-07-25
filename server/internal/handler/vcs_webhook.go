@@ -263,6 +263,11 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 			if issue.Status == "done" || issue.Status == "cancelled" {
 				continue
 			}
+			// Keep provider and link facts, but leave lifecycle completion to the
+			// workflow that owns the record_only policy's additional evidence gate.
+			if issueRecordsExternalPRCompletionOnly(issue) {
+				continue
+			}
 			counts, err := h.Queries.GetIssueCombinedPullRequestCloseAggregate(ctx, issue.ID)
 			if err != nil {
 				slog.Warn("vcs: count linked pr states failed", "err", err, "issue_id", uuidToString(issue.ID))

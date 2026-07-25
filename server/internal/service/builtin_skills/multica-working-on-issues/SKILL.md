@@ -48,7 +48,16 @@ Fix login MUL-2759                                 # links only — keyword not 
 Consequence: a bare title prefix or a branch reference links the PR but does not
 close the issue on merge. A closing keyword immediately adjacent to the issue key
 records close intent; on merge, that close intent can move the linked issue to
-`done`.
+`done` unless the issue explicitly uses the record-only completion policy below.
+
+**Record-only completion.** If the linked issue metadata contains
+`external_pr_completion_policy=record_only`, GitHub, Forgejo, Gitea, and GitLab
+webhooks still update the provider PR mirror and link row, but they never
+auto-advance the issue to `done`. A child therefore cannot close its Stage
+barrier or wake its parent from the provider merge alone. The workflow that owns
+the additional completion gate must perform an explicit terminal transition
+after its independent evidence is accepted. Missing policy (or any other value)
+retains the normal close-intent behavior.
 
 **Reference-only links (hidden from the PR list).** A key that appears **only**
 as a bare mention in the body — no closing keyword, and not in the title or
@@ -144,6 +153,11 @@ High-signal keys (reuse these names so queries stay consistent):
 - `blocked_reason`
 - `decision`
 
+`external_pr_completion_policy=record_only` is a special lifecycle policy, not
+an ordinary status note: set it before PR linkage when the workflow requires
+provider merge facts without provider-driven terminal completion. Removing or
+changing it restores normal close-intent auto-completion for future events.
+
 Not metadata: logs, summaries, files touched, timestamps, attempt counts,
 investigation notes. Those belong in the result comment.
 
@@ -199,8 +213,11 @@ on it. These are the contracts, not advice:
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
-  carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
-  itself on merge — you do not also need to flip it manually.
+  carries close intent (`Closes MUL-XXXX`), it normally advances the issue to
+  `done` itself on merge — you do not also need to flip it manually. The
+  exception is `external_pr_completion_policy=record_only`: the provider merge
+  is recorded, but the issue and Stage remain active until an explicit terminal
+  transition.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going (MUL-4465). To stop a running task,

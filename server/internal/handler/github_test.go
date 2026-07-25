@@ -2104,6 +2104,152 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 	}
 }
 
+// TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake guards the
+// completion-policy boundary. A provider merge must still be mirrored and
+// linked, but external_pr_completion_policy=record_only forbids the automatic
+// issue transition that would close the stage barrier and notify the parent.
+func TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "record-only-stage-wake-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	parent, child := createRecordOnlyPRTestIssuePair(t, "github")
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = '{"backup_requirement":"required","external_pr_completion_policy":"record_only"}'::jsonb
+WHERE id = $1`, child.ID); err != nil {
+		t.Fatalf("set record-only metadata: %v", err)
+	}
+
+	const installationID int64 = 88990012
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "record-only-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	firePRWebhook(t, secret, installationID, 4343, "Fix "+child.Identifier, "Closes "+child.Identifier, "fix/record-only-child", "merged")
+
+	updatedChild, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("GetIssue child: %v", err)
+	}
+	if updatedChild.Status != "in_progress" {
+		t.Fatalf("record-only child status = %q, want in_progress", updatedChild.Status)
+	}
+
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue: %v", err)
+	}
+	if len(linked) != 1 || linked[0].State != "merged" {
+		t.Fatalf("provider merge was not recorded: %+v", linked)
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent.ID).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("record-only provider merge emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
+func TestAdvanceIssueToDoneRechecksRecordOnlyPolicyInUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	parent, child := createRecordOnlyPRTestIssuePair(t, "atomic")
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	staleIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("load child before policy write: %v", err)
+	}
+	if issueRecordsExternalPRCompletionOnly(staleIssue) {
+		t.Fatal("precondition failed: stale issue already has record-only policy")
+	}
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = jsonb_set(metadata, '{external_pr_completion_policy}', '"record_only"'::jsonb)
+WHERE id=$1`, child.ID); err != nil {
+		t.Fatalf("set record-only policy after stale read: %v", err)
+	}
+
+	testHandler.advanceIssueToDone(ctx, staleIssue, testWorkspaceID)
+	updatedChild, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("GetIssue child: %v", err)
+	}
+	if updatedChild.Status != "in_progress" {
+		t.Fatalf("record-only child status = %q, want in_progress", updatedChild.Status)
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent.ID).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("atomic record-only guard emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
+func createRecordOnlyPRTestIssuePair(t *testing.T, prefix string) (IssueResponse, IssueResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  prefix + " record-only parent " + time.Now().Format(time.RFC3339Nano),
+		"status": "in_progress",
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue parent: %d %s", w.Code, w.Body.String())
+	}
+	var parent IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
+		t.Fatalf("decode parent: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           prefix + " record-only child " + time.Now().Format(time.RFC3339Nano),
+		"status":          "in_progress",
+		"parent_issue_id": parent.ID,
+		"stage":           int32(2),
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue child: %d %s", w.Code, w.Body.String())
+	}
+	var child IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
+		t.Fatalf("decode child: %v", err)
+	}
+	return parent, child
+}
+
 // generateTestRSAKeyPEM mints an RSA-2048 key, returns its PKCS#1 PEM
 // encoding (the format GitHub hands operators when they create the App)
 // and the parsed *rsa.PrivateKey for verification.

@@ -16,7 +16,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **설정 → GitHub** | 워크스페이스 admin에게는 마스터 토글, **Connect GitHub** 버튼, 기능 스위치(PR 사이드바, Co-authored-by, 자동 연결)가 있는 GitHub 탭이 보입니다. 설치 후에는 GitHub 탭으로 다시 돌아옵니다. |
 | **이슈 사이드바 → Pull requests** | 이 이슈에 자동 연결된 모든 PR이 제목, 저장소, 상태(`Open` / `Draft` / `Merged` / `Closed`), 작성자와 함께 표시됩니다. 행을 클릭하면 GitHub의 해당 PR로 이동합니다. |
 | **Webhook(백그라운드)** | 모든 `pull_request` 이벤트에서 Multica는 PR 행을 upsert하고, PR에서 이슈 식별자를 스캔한 뒤, 연결 행을 (다시) 구성합니다. 멱등성이 있어 동일 delivery를 재전송해도 변화가 없습니다. |
-| **머지 시 상태 자동 변경** | PR이 `merged`로 전환되면, 아직 `Done`이나 `Cancelled`가 아닌 모든 연결된 이슈가 `Done`으로 이동합니다. 상태 변경은 source `github_pr_merged`로 타임라인에 기록됩니다. |
+| **머지 시 상태 자동 변경** | close intent가 있는 PR이 `merged`로 전환되면, 아직 `Done`이나 `Cancelled`가 아닌 모든 연결된 이슈가 `Done`으로 이동합니다. 단, metadata가 `external_pr_completion_policy=record_only`인 경우는 제외됩니다. 상태 변경은 source `github_pr_merged`로 타임라인에 기록됩니다. |
 | **PR 카드 → CI와 머지 가능 여부** | 연결된 각 PR에 대해 Multica는 인증된 GitHub API 스냅샷을 가져와, 그 **CI 상태**와 **머지 가능 여부**를 카드에 미러링합니다(아래 **PR 카드에 표시되는 것** 참조). |
 
 PR 자체의 상태 외에도, 이 연동은 연결된 각 PR에 대해 그 **CI 상태**(모두 통과, x개 실패(이름 표시), 또는 x개 실행 중)와 **머지 가능 여부**(머지 가능, 충돌 있음, blocked, behind)를 인증된 GitHub API 스냅샷에서 가져와 미러링합니다. 커밋과 열린 PR이 없는 브랜치 ref는 여전히 모델링되지 않습니다.
@@ -51,6 +51,7 @@ PR의 `merged` 필드가 `true`로 바뀌면, 연결된 모든 이슈가 평가�
 |---|---|
 | `done` | 변화 없음(이미 종료 상태). |
 | `cancelled` | **변화 없음** — 취소됨은 사용자가 작업을 명시적으로 포기했다는 의미이므로, 연동이 이 신호를 덮어쓰지 않습니다. |
+| 비종료 상태이며 `external_pr_completion_policy=record_only` | 머지된 PR과 이슈 연결은 계속 미러링되지만 이슈 상태는 바뀌지 않습니다. 추가 완료 게이트가 있는 workflow가 승인 후 명시적으로 종료 상태로 이동해야 합니다. |
 | 그 외 모두(`todo`, `in_progress`, `in_review`, `blocked`, `backlog`) | `done`으로 이동. |
 
 PR을 머지하지 **않고** 닫으면 PR 카드의 상태만 `Closed`로 업데이트됩니다. 연결된 이슈는 그대로 유지됩니다 — 머지 없이 닫는 것이 무엇을 의미하는지는 사용자가 결정합니다.

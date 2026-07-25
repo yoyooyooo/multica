@@ -1244,6 +1244,12 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				if issue.Status == "done" || issue.Status == "cancelled" {
 					continue
 				}
+				// record_only preserves the mirrored PR and link facts but forbids
+				// provider-driven lifecycle completion. The SQL status write repeats
+				// this gate to close the stale-read race.
+				if issueRecordsExternalPRCompletionOnly(issue) {
+					continue
+				}
 				// Combined across providers: an issue may also carry a still-open
 				// self-hosted VCS PR, which must block auto-advance here just as
 				// an open GitHub PR blocks it on the VCS webhook path.
@@ -1440,11 +1446,13 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 }
 
 func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+	updated, err := h.Queries.CompleteIssueFromPullRequest(ctx, db.CompleteIssueFromPullRequestParams{
 		ID:          issue.ID,
-		Status:      "done",
 		WorkspaceID: issue.WorkspaceID,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
 	if err != nil {
 		slog.Warn("github: advance issue to done failed", "err", err)
 		return

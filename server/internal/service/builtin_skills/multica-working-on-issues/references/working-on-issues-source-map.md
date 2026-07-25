@@ -119,6 +119,40 @@ the PR list); `Closes MUL-2759` links **and** records close intent; a bare body
 mention with no title/branch ref and no closing keyword links as `reference_only`
 and is hidden from the PR list.
 
+### Record-only completion boundary
+
+- The shared policy reader accepts only the exact metadata value
+  `external_pr_completion_policy=record_only`:
+  `server/internal/handler/issue_metadata.go:90-93`.
+- GitHub PR facts are persisted before lifecycle evaluation:
+  `UpsertGitHubPullRequest` at `server/internal/handler/github.go:1117` and
+  `LinkIssueToPullRequest` at `server/internal/handler/github.go:1212`. The
+  terminal-event loop checks the shared policy at `github.go:1247-1253`.
+- Self-hosted Forgejo/Gitea/GitLab PR facts follow the same order:
+  `UpsertVCSPullRequest` at `server/internal/handler/vcs_webhook.go:163` and
+  `LinkIssueToVCSPullRequest` at `vcs_webhook.go:245`. Its terminal-event loop
+  checks the shared policy at `vcs_webhook.go:266-271`.
+- Both provider paths share `advanceIssueToDone` at
+  `server/internal/handler/github.go:1448`. Its status write uses
+  `CompleteIssueFromPullRequest`, whose SQL predicate atomically rechecks the
+  policy at `server/pkg/db/queries/github.sql:250-262`. A policy written after
+  either webhook's in-memory read therefore still blocks `done` and the
+  subsequent parent Stage notification.
+- Regression proofs are
+  `TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake` at
+  `server/internal/handler/github_test.go:2111`,
+  `TestVCSWebhook_RecordOnlyChildStaysActiveWithoutStageWake` at
+  `server/internal/handler/vcs_webhook_test.go:148`, and the stale-read guard
+  `TestAdvanceIssueToDoneRechecksRecordOnlyPolicyInUpdate` at
+  `server/internal/handler/github_test.go:2174`. They verify that merged PR
+  facts remain visible while the child stays active and the parent receives no
+  Stage wake comment.
+
+Therefore `record_only` changes only provider-driven lifecycle completion. It
+does not hide, discard, or rewrite the provider PR fact. Missing policy or a
+value other than the exact string `record_only` follows the ordinary completion
+path.
+
 ## Status side effects (enqueue contracts)
 
 | Behavior | File:line | Drifted from |
@@ -195,6 +229,7 @@ grep -n 'ListPullRequestsForIssue'           cmd/server/router.go internal/handl
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'extractIdentifiers(\|extractClosingIdentifiers(\|derivePRState(' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
+grep -n 'issueRecordsExternalPRCompletionOnly\|CompleteIssueFromPullRequest' internal/handler/{issue_metadata.go,github.go,vcs_webhook.go} pkg/db/queries/github.sql
 grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
 grep -n 'func notifyParentOfChildDone'       internal/handler/issue_child_done.go
 ```

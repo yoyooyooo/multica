@@ -81,7 +81,7 @@ Multica authenticates every delivery against the stored secret, so a webhook wit
 ## What gets mirrored
 
 - **Pull / merge requests** — open, closed, merged, and draft state, author, branch, and (where the provider supplies them) diff stats.
-- **Issue links** — identifiers in the title, body, or branch link the PR to the issue. A closing keyword (`Closes`/`Fixes`/`Resolves MUL-123`) on a merged PR moves the issue to **Done** once no linked PR is still open.
+- **Issue links** — identifiers in the title, body, or branch link the PR to the issue. A closing keyword (`Closes`/`Fixes`/`Resolves MUL-123`) on a merged PR moves the issue to **Done** once no linked PR is still open. If the issue metadata sets `external_pr_completion_policy=record_only`, the provider PR and link remain mirrored but the issue status and parent Stage stay active until an explicit terminal transition.
 - **CI** — Forgejo/Gitea commit statuses and GitLab pipelines aggregate into a passed/failed/pending checks bar for the head commit.
 
 ## Agents opening pull requests
