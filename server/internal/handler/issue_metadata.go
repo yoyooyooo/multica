@@ -87,6 +87,11 @@ func parseIssueMetadata(raw []byte) map[string]any {
 	return out
 }
 
+func issueRecordsExternalPRCompletionOnly(issue db.Issue) bool {
+	policy, ok := parseIssueMetadata(issue.Metadata)["external_pr_completion_policy"].(string)
+	return ok && policy == "record_only"
+}
+
 // parseMetadataFilterParam reads the `metadata` query parameter (a JSON
 // object) and returns it as the JSONB filter blob passed to ListIssues /
 // CountIssues / ListOpenIssues. Empty input means "no filter" and returns

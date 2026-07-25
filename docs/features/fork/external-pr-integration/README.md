@@ -11,7 +11,7 @@ External PR Integration 让外部代码协作系统把一个 PR/MR/change 与 Mu
 1. **能通用化就通用化**：外部 PR 表和回调保持 `external_pr` / `external-pr` 语义；跨系统任务证明统一使用 purpose-bound Workload Assertion。
 2. **能配置就配置**：具体 provider（例如 AGS）、允许列表、service token、签名 secret 通过配置或环境变量注入。
 3. **不靠猜测完成 Issue**：PR 标题、分支名、正文里的 issue-like 文本都不是自动完成的权威来源。
-4. **Multica 拥有最终状态转换**：外部系统只提交事实和请求，leaf-child-only 等安全规则由 Multica 原子判断。
+4. **Multica 拥有最终状态转换**：外部系统只提交事实和请求，leaf-child-only 与 Issue 的 `external_pr_completion_policy` 由 Multica 原子判断。
 
 ## 当前实现
 
@@ -139,7 +139,7 @@ Authorization: Bearer <service token>
 Content-Type: application/json
 ```
 
-该接口会先 upsert 外部 PR 链接为 `merged`，然后由 Multica 做 leaf-child-only 原子判断。
+该接口会先 upsert 外部 PR 链接为 `merged` 并记录 link/merge activity，然后由 Multica 做 completion policy 与 leaf-child-only 原子判断。若 Issue metadata 为 `external_pr_completion_policy=record_only`，响应为 `skipped/record_only`：merge 事实保留，但 Issue status 不变，也不会关闭 Stage barrier 或唤醒 parent。
 
 ### 查询 Issue 关联的 External PR
 
@@ -193,20 +193,22 @@ External PR link、merge、auto-complete 记录为 `activity_log` system event�
 
 1. 链接是 `authoritative`。
 2. `completion_intent = true`。
-3. Issue 当前不是 `done` / `cancelled`。
-4. `parent_issue_id` 非空，也就是它是一个子 Issue。
-5. 它没有任何 child Issue，也就是它是 leaf child。
-6. 同一 Issue 没有其他仍处于 `open` / `draft` 的 authoritative completion-intent 外部 PR。
+3. Issue metadata 的 `external_pr_completion_policy` 不是精确值 `record_only`。
+4. Issue 当前不是 `done` / `cancelled`。
+5. `parent_issue_id` 非空，也就是它是一个子 Issue。
+6. 它没有任何 child Issue，也就是它是 leaf child。
+7. 同一 Issue 没有其他仍处于 `open` / `draft` 的 authoritative completion-intent 外部 PR。
 
 因此不会自动完成：
 
+- `external_pr_completion_policy=record_only` 的 Issue；
 - parent Issue；
 - 没有 parent 的孤立 Issue；
 - 自己还有 children 的中间节点 Issue；
 - 只有 inferred/marker 链接的 Issue；
 - 同一 Issue 仍有其他打开 PR 的情况。
 
-成功完成后，Multica 复用 `notifyParentOfChildDone` 路径，让父 Issue 的阶段推进和唤醒逻辑继续由 Multica 内部规则负责。
+成功完成后，Multica 复用 `notifyParentOfChildDone` 路径，让父 Issue 的阶段推进和唤醒逻辑继续由 Multica 内部规则负责。`record_only` 会在 status update 前返回，因此不会进入该通知路径；附加完成门通过后必须由授权 workflow actor 显式执行终态转换。
 
 ## 环境变量
 

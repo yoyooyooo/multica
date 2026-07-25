@@ -110,6 +110,78 @@ func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T)
 	}
 }
 
+func TestCompleteIssueFromExternalPRRecordOnlyRecordsMergeWithoutStageWake(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "test-external-pr-token")
+	parent := createExternalPRTestIssue(t, "external-pr record-only parent", "in_progress", "", nil)
+	child := createExternalPRTestIssue(t, "external-pr record-only child", "in_progress", parent, int32Ptr(2))
+
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = '{"backup_requirement":"required","external_pr_completion_policy":"record_only"}'::jsonb
+WHERE id = $1`, child); err != nil {
+		t.Fatalf("set record-only metadata: %v", err)
+	}
+
+	reqBody := externalPRCompletionReq(testWorkspaceID, child, 1226)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_link WHERE issue_id=$1`, child)
+		_, _ = testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1,$2)`, child, parent)
+		_, _ = testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1,$2)`, child, parent)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, child)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, parent)
+	})
+
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", reqBody)
+	req.Header.Set("Authorization", "Bearer test-external-pr-token")
+	rr := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var result externalCompleteFromPRResponse
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Outcome != "skipped" || result.Reason != "record_only" {
+		t.Fatalf("completion outcome = %#v, want skipped/record_only", result)
+	}
+	assertIssueStatus(t, child, "in_progress")
+
+	links, err := testHandler.listExternalPullRequestLinks(ctx, db.Issue{
+		ID:          parseUUID(child),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	})
+	if err != nil {
+		t.Fatalf("list external PR links: %v", err)
+	}
+	if len(links) != 1 || links[0].State != "merged" || links[0].MergedSHA == nil || *links[0].MergedSHA != reqBody.MergedSHA {
+		t.Fatalf("provider merge was not recorded: %#v", links)
+	}
+
+	for action, want := range map[string]int{
+		"external_pr_linked":             1,
+		"external_pr_merged":             1,
+		"issue_completed_by_external_pr": 0,
+	} {
+		var count int
+		if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action=$2`, child, action).Scan(&count); err != nil {
+			t.Fatalf("count activity %s: %v", action, err)
+		}
+		if count != want {
+			t.Fatalf("activity %s count = %d, want %d", action, count, want)
+		}
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("record-only provider merge emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
 func TestListExternalPullRequestsForIssue(t *testing.T) {
 	ctx := context.Background()
 	parent := createExternalPRTestIssue(t, "external-pr list parent", "todo", "", nil)

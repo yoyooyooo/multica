@@ -355,6 +355,9 @@ func (h *Handler) completeLeafChildIssueFromExternalPR(r *http.Request, req exte
 	if strings.EqualFold(req.LinkConfidence, "inferred") || req.CompletionIntent == nil || !*req.CompletionIntent {
 		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "unverified_link", IssueID: req.IssueID}
 	}
+	if issueRecordsExternalPRCompletionOnly(issue) {
+		return externalCompleteFromPRResponse{Outcome: "skipped", Reason: "record_only", IssueID: req.IssueID}
+	}
 	if issue.Status == "done" {
 		return externalCompleteFromPRResponse{Outcome: "already_done", IssueID: req.IssueID}
 	}
@@ -384,6 +387,7 @@ UPDATE issue SET status='done', updated_at=now()
 WHERE id=$1 AND workspace_id=$2
   AND status NOT IN ('done','cancelled')
   AND parent_issue_id IS NOT NULL
+  AND COALESCE(metadata->>'external_pr_completion_policy', '') <> 'record_only'
   AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)
   AND NOT EXISTS (SELECT 1 FROM external_pull_request_link pr WHERE pr.workspace_id=issue.workspace_id AND pr.issue_id=issue.id AND pr.link_confidence='authoritative' AND pr.completion_intent AND pr.state IN ('open','draft'))
 RETURNING id`, issueID, workspaceID).Scan(&updatedID); err != nil {

@@ -976,6 +976,14 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				if issue.Status == "done" || issue.Status == "cancelled" {
 					continue
 				}
+				// record_only is an explicit completion boundary: provider PR
+				// events remain mirrored and linked, but they cannot mutate the
+				// issue lifecycle. In particular, skipping the done transition
+				// also prevents a child from closing its stage barrier before
+				// independent backup acceptance.
+				if issueRecordsExternalPRCompletionOnly(issue) {
+					continue
+				}
 				counts, err := h.Queries.GetIssuePullRequestCloseAggregate(ctx, issue.ID)
 				if err != nil {
 					slog.Warn("github: count linked pr states failed", "err", err, "issue_id", uuidToString(issue.ID))

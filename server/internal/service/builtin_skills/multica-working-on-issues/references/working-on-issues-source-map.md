@@ -111,6 +111,38 @@ the PR list); `Closes MUL-2759` links **and** records close intent; a bare body
 mention with no title/branch ref and no closing keyword links as `reference_only`
 and is hidden from the PR list.
 
+### Record-only completion boundary
+
+- The shared policy reader accepts only the exact metadata value
+  `external_pr_completion_policy=record_only`:
+  `server/internal/handler/issue_metadata.go:90-93`.
+- GitHub PR facts are persisted before lifecycle evaluation:
+  `UpsertGitHubPullRequest` at `server/internal/handler/github.go:842` and
+  `LinkIssueToPullRequest` at `server/internal/handler/github.go:944`. The
+  terminal-event loop checks the shared policy before reading the close
+  aggregate or calling `advanceIssueToDone`:
+  `server/internal/handler/github.go:979-986`.
+- The authenticated external-provider completion endpoint also persists the
+  merged link and `external_pr_linked` / `external_pr_merged` activities before
+  lifecycle evaluation: `server/internal/handler/external_pr_integration.go:112-118`.
+  Its leaf completion guard returns `skipped/record_only` at `:358-360`, and the
+  atomic `UPDATE` repeats the metadata predicate at `:390` so a concurrent
+  policy write cannot be bypassed between read and transition.
+- The ordinary GitHub terminal path and its parent notification remain in
+  `advanceIssueToDone`: `server/internal/handler/github.go:1371`.
+- Regression proofs:
+  `TestCompleteIssueFromExternalPRRecordOnlyRecordsMergeWithoutStageWake` at
+  `server/internal/handler/external_pr_integration_test.go:113` and
+  `TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake` at
+  `server/internal/handler/github_test.go:2395`. They verify merged PR facts
+  remain listed while the Stage child remains active and the parent receives
+  zero system wake comments.
+
+Therefore `record_only` changes only provider-driven lifecycle completion. It
+does not hide, discard, or rewrite the provider PR fact. Missing policy or a
+value other than the exact string `record_only` follows the ordinary completion
+path.
+
 ## Status side effects (enqueue contracts)
 
 | Behavior | File:line | Drifted from |
