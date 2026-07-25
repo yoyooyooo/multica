@@ -11,6 +11,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const completeIssueFromGitHubPullRequest = `-- name: CompleteIssueFromGitHubPullRequest :one
+UPDATE issue
+SET status = 'done', updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+  AND status NOT IN ('done', 'cancelled')
+  AND COALESCE(metadata->>'external_pr_completion_policy', '') <> 'record_only'
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties
+`
+
+type CompleteIssueFromGitHubPullRequestParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The metadata predicate belongs in the same statement as the status write:
+// a record_only policy set after the webhook's in-memory read but before this
+// update must still prevent provider-driven completion and its parent wake.
+func (q *Queries) CompleteIssueFromGitHubPullRequest(ctx context.Context, arg CompleteIssueFromGitHubPullRequestParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, completeIssueFromGitHubPullRequest, arg.ID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+	)
+	return i, err
+}
+
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
     workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id

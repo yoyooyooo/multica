@@ -121,7 +121,9 @@ and is hidden from the PR list.
   `LinkIssueToPullRequest` at `server/internal/handler/github.go:944`. The
   terminal-event loop checks the shared policy before reading the close
   aggregate or calling `advanceIssueToDone`:
-  `server/internal/handler/github.go:979-986`.
+  `server/internal/handler/github.go:979-986`. The status write repeats the
+  predicate atomically in `CompleteIssueFromGitHubPullRequest` at
+  `server/pkg/db/queries/github.sql:234-245`.
 - The authenticated external-provider completion endpoint also persists the
   merged link and `external_pr_linked` / `external_pr_merged` activities before
   lifecycle evaluation: `server/internal/handler/external_pr_integration.go:112-118`.
@@ -132,9 +134,11 @@ and is hidden from the PR list.
   `advanceIssueToDone`: `server/internal/handler/github.go:1371`.
 - Regression proofs:
   `TestCompleteIssueFromExternalPRRecordOnlyRecordsMergeWithoutStageWake` at
-  `server/internal/handler/external_pr_integration_test.go:113` and
+  `server/internal/handler/external_pr_integration_test.go:113`,
   `TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake` at
-  `server/internal/handler/github_test.go:2395`. They verify merged PR facts
+  `server/internal/handler/github_test.go:2395`, and the stale-read race guard
+  `TestAdvanceIssueToDoneRechecksRecordOnlyPolicyInUpdate` at
+  `server/internal/handler/github_test.go:2497`. They verify merged PR facts
   remain listed while the Stage child remains active and the parent receives
   zero system wake comments.
 

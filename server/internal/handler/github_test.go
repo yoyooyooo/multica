@@ -2494,6 +2494,46 @@ func TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake(t *testing.
 	}
 }
 
+func TestAdvanceIssueToDoneRechecksRecordOnlyPolicyInUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	parent := createExternalPRTestIssue(t, "atomic record-only parent", "in_progress", "", nil)
+	child := createExternalPRTestIssue(t, "atomic record-only child", "in_progress", parent, int32Ptr(2))
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1,$2)`, child, parent)
+		_, _ = testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1,$2)`, child, parent)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, child)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, parent)
+	})
+
+	staleIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(child))
+	if err != nil {
+		t.Fatalf("load child before policy write: %v", err)
+	}
+	if issueRecordsExternalPRCompletionOnly(staleIssue) {
+		t.Fatal("precondition failed: stale issue already has record-only policy")
+	}
+	if _, err := testPool.Exec(ctx, `
+UPDATE issue
+SET metadata = jsonb_set(metadata, '{external_pr_completion_policy}', '"record_only"'::jsonb)
+WHERE id=$1`, child); err != nil {
+		t.Fatalf("set record-only policy after stale read: %v", err)
+	}
+
+	testHandler.advanceIssueToDone(ctx, staleIssue, testWorkspaceID)
+	assertIssueStatus(t, child, "in_progress")
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("atomic record-only guard emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
 // generateTestRSAKeyPEM mints an RSA-2048 key, returns its PKCS#1 PEM
 // encoding (the format GitHub hands operators when they create the App)
 // and the parsed *rsa.PrivateKey for verification.

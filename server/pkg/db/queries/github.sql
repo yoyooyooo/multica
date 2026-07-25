@@ -231,6 +231,18 @@ FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1 AND NOT ipr.reference_only;
 
+-- name: CompleteIssueFromGitHubPullRequest :one
+-- The metadata predicate belongs in the same statement as the status write:
+-- a record_only policy set after the webhook's in-memory read but before this
+-- update must still prevent provider-driven completion and its parent wake.
+UPDATE issue
+SET status = 'done', updated_at = now()
+WHERE id = $1
+  AND workspace_id = $2
+  AND status NOT IN ('done', 'cancelled')
+  AND COALESCE(metadata->>'external_pr_completion_policy', '') <> 'record_only'
+RETURNING *;
+
 -- =====================
 -- GitHub PR check suite
 -- =====================
