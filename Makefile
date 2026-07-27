@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost selfhost-build selfhost-stop
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost-env selfhost selfhost-build selfhost-stop
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -76,8 +76,7 @@ makehelp: help ## Alias for `make help`
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
 
-selfhost: ## Create .env if needed, then pull and start the official self-hosted images
-	$(REQUIRE_COMPOSE)
+selfhost-env: ## Create or upgrade .env with secrets and a deployment-unique issuer
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
 		cp .env.example .env; \
@@ -97,6 +96,11 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		fi; \
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
+	@bash scripts/ensure-workload-issuer.sh .env deployment
+	@bash scripts/validate-workload-issuer.sh .env
+
+selfhost: selfhost-env ## Create .env if needed, then pull and start the official self-hosted images
+	$(REQUIRE_COMPOSE)
 	@echo "==> Pulling official Multica images..."
 	@if ! $(COMPOSE) -f docker-compose.selfhost.yml pull; then \
 		echo ""; \
@@ -135,27 +139,8 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		echo "  $(COMPOSE) -f docker-compose.selfhost.yml logs"; \
 	fi
 
-selfhost-build: ## Build backend/web from the current checkout and start the self-hosted stack
+selfhost-build: selfhost-env ## Build backend/web from the current checkout and start the self-hosted stack
 	$(REQUIRE_COMPOSE)
-	@if [ ! -f .env ]; then \
-		echo "==> Creating .env from .env.example..."; \
-		cp .env.example .env; \
-		JWT=$$(openssl rand -hex 32); \
-		PGPASS=$$(openssl rand -hex 24); \
-		VCSKEY=$$(openssl rand -base64 32); \
-		if [ "$$(uname)" = "Darwin" ]; then \
-			sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=$$JWT/" .env; \
-			sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$$PGPASS/" .env; \
-			sed -i '' -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$$PGPASS\2#" .env; \
-			sed -i '' "s#^MULTICA_VCS_SECRET_KEY=.*#MULTICA_VCS_SECRET_KEY=$$VCSKEY#" .env; \
-		else \
-			sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$$JWT/" .env; \
-			sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$$PGPASS/" .env; \
-			sed -i -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$$PGPASS\2#" .env; \
-			sed -i "s#^MULTICA_VCS_SECRET_KEY=.*#MULTICA_VCS_SECRET_KEY=$$VCSKEY#" .env; \
-		fi; \
-		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
-	fi
 	@echo "==> Building Multica from the current checkout..."
 	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build
 	@echo "==> Waiting for backend to be ready..."

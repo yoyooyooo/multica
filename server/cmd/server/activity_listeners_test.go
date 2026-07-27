@@ -123,6 +123,38 @@ func TestActivityIssueUpdated_StatusChanged(t *testing.T) {
 	}
 }
 
+func TestActivityIssueUpdated_StatusActivityAlreadyRecorded(t *testing.T) {
+	queries := db.New(testPool)
+	bus := events.New()
+	registerActivityListeners(bus, queries)
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupActivities(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	if _, err := queries.CreateActivity(context.Background(), db.CreateActivityParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID),
+		IssueID:     util.MustParseUUID(issueID),
+		ActorType:   util.StrToText("system"),
+		Action:      "status_changed",
+		Details:     []byte(`{"from":"todo","to":"done","source":"provider"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bus.Publish(events.Event{
+		Type: protocol.EventIssueUpdated, WorkspaceID: testWorkspaceID, ActorType: "system",
+		Payload: map[string]any{
+			"issue":          handler.IssueResponse{ID: issueID, WorkspaceID: testWorkspaceID, Status: "done"},
+			"status_changed": true, "status_activity_recorded": true, "prev_status": "todo",
+		},
+	})
+	activities := listActivitiesForIssue(t, queries, issueID)
+	if len(activities) != 1 || activities[0].Action != "status_changed" {
+		t.Fatalf("already-durable status activity duplicated: %#v", activities)
+	}
+}
+
 func TestActivityIssueUpdated_AssigneeChanged(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()

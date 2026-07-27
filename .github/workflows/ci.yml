@@ -50,12 +50,26 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/generate-reserved-slugs.mjs'
               - 'server/internal/handler/reserved_slugs.json'
+              - 'Makefile'
+              - 'deploy/helm/**'
+              # These public Helm commands are executed by the self-host
+              # contract test even though the docs app is excluded from turbo.
+              - 'apps/docs/content/docs/self-host-quickstart.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.zh.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ja.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ko.mdx'
               - 'scripts/selfhost-config.test.sh'
+              - 'scripts/ensure-workload-issuer.sh'
+              - 'scripts/validate-workload-issuer.sh'
+              - 'scripts/install.sh'
+              - 'scripts/install.ps1'
+              - 'scripts/init-worktree-env.sh'
               - 'scripts/check.sh'
               - 'scripts/dev.sh'
               - 'scripts/local-env.sh'
               - '.env.example'
               - 'docker-compose.selfhost.yml'
+              - 'docker-compose.selfhost.build.yml'
 
       - name: Decide
         id: decide
@@ -98,7 +112,11 @@ jobs:
         if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: pnpm install
 
-      - name: Test self-host env derivation
+      - name: Setup Helm
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
+        uses: azure/setup-helm@v4
+
+      - name: Test self-host Compose and Helm config
         if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: bash scripts/selfhost-config.test.sh
 

@@ -156,6 +156,12 @@ cleared_installations AS (
 cleared_issue_properties AS (
     DELETE FROM issue_property WHERE workspace_id = $1
 ),
+cleared_external_pr_receipts AS (
+    DELETE FROM external_pull_request_receipt WHERE workspace_id = $1
+),
+cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link WHERE workspace_id = $1
+),
 deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),
@@ -197,3 +203,9 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
+
+-- name: DeleteWorkspaceWorkloadAuthority :exec
+-- The authority table intentionally has no FK. Delete it in the same
+-- application transaction after the workspace delete, when member lifecycle
+-- triggers can no longer recreate the row.
+DELETE FROM workspace_workload_authority WHERE workspace_id = $1;

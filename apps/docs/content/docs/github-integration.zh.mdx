@@ -1,11 +1,11 @@
 ---
 title: GitHub 集成
-description: 一次性连接 GitHub App，之后 PR 的分支名、标题或正文里写了 issue 编号（例如 MUL-123），就会自动挂到那个 issue 上——PR 合并时 issue 自动转 Done。
+description: 一次性连接 GitHub App 后镜像关联 PR；只有带关闭意图、无 open/draft 关联且符合规则的 leaf child issue 才会在合并后转 Done。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-在 **Settings → GitHub** 里一次性连一个 GitHub 账号或组织。之后任何 PR 只要分支名、标题或正文里出现 issue 编号（例如 `MUL-123`），就会**自动关联**到那个 [issue](/issues)，出现在 issue 详情页右侧的 **Pull requests** 区块里——PR 合并时，issue 自动转 **Done**。
+在 **Settings → GitHub** 里一次性连一个 GitHub 账号或组织。PR 分支名或标题里出现 issue 编号（例如 `MUL-123`）时会**自动关联**并显示在 **Pull requests**；只有正文里的裸编号会保留为审计事实，但不显示。PR 合并后，也只有满足下方 leaf child 完成规则的 issue 才会转 **Done**。
 
 没有 per-issue 的配置，整个流程是「编号驱动」的。
 
@@ -14,9 +14,9 @@ import { Callout } from "fumadocs-ui/components/callout";
 | 出现位置 | 行为 |
 |---|---|
 | **Settings → GitHub** | 工作区 owner / admin 看到 GitHub 这个 tab，里面有主开关、**Connect GitHub** 按钮，以及功能开关（PR 侧栏、Co-authored-by、auto-link）。点 Connect 会打开 GitHub 的 App 安装页；装好后跳回 GitHub tab。 |
-| **Issue 详情侧栏 → Pull requests** | 列出所有自动关联到该 issue 的 PR，含标题、仓库、状态（`Open` / `Draft` / `Merged` / `Closed`）和作者。点一行跳到 GitHub。 |
+| **Issue 详情侧栏 → Pull requests** | 列出所有可见 PR 关联（标题、分支或关闭关键字具备 authority；只有正文裸编号的引用保持隐藏），含标题、仓库、状态（`Open` / `Draft` / `Merged` / `Closed`）和作者。点一行跳到 GitHub。 |
 | **Webhook（后台）** | 每次 `pull_request` 事件触发：upsert PR 行 → 扫描里面的 issue 编号 →（重新）建立 link。幂等——重投 delivery 不会产生重复记录。 |
-| **Merge 自动改 status** | PR 转 `merged` 时，所有已关联且状态不是 `Done` / `Cancelled` 的 issue 会被推到 `Done`。时间线里以 source 为 `github_pr_merged` 记录。 |
+| **Merge 自动改 status** | 带相邻 `Closes` / `Fixes` / `Resolves` 意图的 PR 合并后，只可能完成符合条件的 leaf child；GitHub、native VCS 与 external provider 中任一具备 authority 的关联仍为 `open` / `draft` 都不会完成。`record_only` 只记录事实。 |
 | **PR 卡片 → CI 与可合并性** | 对每个关联的 PR，Multica 从 GitHub API 拉取一份经鉴权的快照，把它的 **CI 状态**和**可合并性**镜像到卡片上（见下方 **PR 卡片展示什么**）。 |
 
 除了 PR 自身的状态，集成还会为每个关联的 PR 镜像它的 **CI 状态**（全部通过、x 个失败并点名、或 x 个进行中）和**可合并性**（可合并、有冲突、blocked、behind），数据来自一份经鉴权的 GitHub API 快照。Commit、没开 PR 的分支仍然不入库。
@@ -54,19 +54,21 @@ Webhook 从三个字段抽取编号，顺序是：**PR head 分支** → **PR �
 - 限定到本工作区——只匹配本工作区的 [issue prefix](/workspaces)。前缀是 `MUL` 的工作区里，PR 出现 `FOO-1` 不会匹配，即使数字撞另一个 issue 也不会
 - 自动去重——`Closes MUL-1, MUL-1` 只关联一次
 
-一个 PR 里**可以同时引用多个 issue**。比如 `Closes MUL-1, MUL-2`：PR 同时关联两个 issue，合并时两个 issue 都会转 `Done`。
+一个 PR 里**可以同时引用多个 issue**。比如 `Closes MUL-1, MUL-2` 会同时关联两个 issue；每个 issue 都独立按 leaf child、policy 和无 open/draft 关联规则求值。
 
 ## Merge 自动转 Done 的规则
 
-PR 的 `merged` 字段翻成 `true` 时，逐个评估关联的 issue：
+具备 authority 的 PR merge 或关闭时，都会按三类 provider 的聚合事实逐个重新评估关联 issue。merge 可以提供所需的 close intent，关闭则可以移除最后一个 blocker：
 
 | Issue 当前状态 | 结果 |
 |---|---|
 | `done` | 不变（已经是终态）|
 | `cancelled` | **不变**——cancelled 是用户明确放弃工作的信号，集成不覆盖 |
-| 其他（`todo` / `in_progress` / `in_review` / `blocked` / `backlog`）| 转成 `done` |
+| 任意非终态，且 `external_pr_completion_policy=record_only` | PR merge 与 issue 关联事实继续镜像，但 issue status 不变；存在附加完成门的 workflow 必须在验收后显式推进终态 |
+| 符合 leaf child 条件、没有 child issue、至少一个具备 authority 的 provider 关联已提供 merged close intent、三类 provider 都没有具备 authority 的 `open` / `draft` 关联，且 policy 为缺失、精确空字符串或精确 `leaf_child_only` | 转成 `done` |
+| parent、root issue、有 child issue、policy 不受支持，或仍有具备 authority 的 `open` / `draft` 关联 | **不变**；inferred 正文裸引用不具备阻塞 authority |
 
-PR **关闭但没合并**——只更新 PR 卡片的状态为 `Closed`，issue 状态不变。"关闭但不合并"语义因团队而异，Multica 不替用户做决定。
+PR **关闭但没合并**时会更新该 PR 卡片，并重新按聚合事实求值。如果另一个具备 authority 的关联已经提供 merged close intent，而本次关闭移除了最后一个具备 authority 的 `open` / `draft` blocker，其他条件也满足的 issue 可以转成 `done`；没有 merged enabler 时，issue 状态不变。
 
 <Callout type="info">
 状态变更的 actor 是 `system`。订阅了该 issue 的成员会收到 inbox 通知，和成员手动改状态时一致。
@@ -74,7 +76,7 @@ PR **关闭但没合并**——只更新 PR 卡片的状态为 `Closed`，issue 
 
 ## 哪些情况不会自动关联
 
-- **Commit message 里的编号**——只扫 PR 的分支 / 标题 / 正文。一个 commit message 写 `MUL-123: fix login` 不会触发关联，除非同样的字符串也出现在 PR 标题或正文里
+- **Commit message 里的编号**——只扫 PR 的分支 / 标题 / 正文。一个 commit message 写 `MUL-123: fix login` 不会触发关联；编号需出现在 PR 分支或标题中，或与正文关闭关键字相邻，才建立具备 authority 的关联
 - **PR 评论里的编号**——只扫 PR 自己的元数据，后续的 GitHub comment 不读
 - **App 没安装的仓库里的 PR**——没 App，Multica 收不到 webhook
 - **手动把 PR 关联到 issue**——暂时没有这个 UI。如果你们的约定把编号放到 Multica 不扫的地方，请改放到 PR 标题或正文里
@@ -161,7 +163,7 @@ GITHUB_APP_PRIVATE_KEY=<完整 PEM 块，包含 BEGIN/END 行>
 - Settings 里 `Connect GitHub` 按钮会被 **disable**，并显示「not configured」提示
 - `/api/webhooks/github` 直接返回 **`503 github webhooks not configured`**——Multica 在 secret 没配置时拒绝处理事件，不会出现「没 secret 也接受 webhook」的安全坑
 
-`GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 现在是 **PR 卡片 CI 状态与可合并性的必填项**——它们让 Multica 以 App 身份鉴权（App JWT → installation token）并拉取每张卡片所依赖的 GitHub API 快照。私钥从 App 设置页 **Private keys → Generate a private key** 生成，把整段 PEM（含 `-----BEGIN/END RSA PRIVATE KEY-----` 两行）粘到 env 里，保留换行。不配这两个时集成**干净降级**：PR 照常镜像、issue 照常自动关联并在 merge 时转 Done、关联账号名也仍由 `installation.created` webhook 解析——只是 PR 卡片不显示任何 CI 或 merge 状态。
+`GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 现在是 **PR 卡片 CI 状态与可合并性的必填项**——它们让 Multica 以 App 身份鉴权（App JWT → installation token）并拉取每张卡片所依赖的 GitHub API 快照。私钥从 App 设置页 **Private keys → Generate a private key** 生成，把整段 PEM（含 `-----BEGIN/END RSA PRIVATE KEY-----` 两行）粘到 env 里，保留换行。不配这两个时集成**干净降级**：PR 照常镜像，具备 authority 的关联仍按 leaf child、policy、merged close intent 和无 authoritative open/draft 关联规则求值——只是 PR 卡片不显示任何 CI 或 merge 状态。
 
 `FRONTEND_ORIGIN` 也必须设置（任何生产 self-host 都已经设了）——setup 回调结束后用它把用户跳回 `<FRONTEND_ORIGIN>/settings?tab=github`。
 
@@ -186,7 +188,7 @@ make migrate-up
 3. 选择要授权的仓库，点 **Install**
 4. GitHub 跳回 `<api-host>/api/github/setup`，落库后再跳到 `<FRONTEND_ORIGIN>/settings?tab=github&github_connected=1`
 
-之后在任意一个仓库开一个分支 / 标题 / 正文带本工作区 issue 编号的 PR——几秒内对应 issue 的详情页上就能看到 Pull requests 区块。
+之后在任意仓库打开一个分支或标题带 issue 编号的 PR，或在正文中把编号紧邻 `Closes` / `Fixes` / `Resolves`——几秒内对应 issue 的详情页上就能看到 Pull requests 区块。只有正文裸编号时仅保留 inferred 隐藏审计引用。
 
 ### 5. 用 curl 自检
 
@@ -229,10 +231,10 @@ curl -s https://api.github.com/apps/<slug>
 
 目前还没做的几个边界：
 
-- **手动 link UI 暂未提供**——关联 PR 的唯一方法是把 issue 编号写到 PR 分支 / 标题 / 正文
+- **手动 link UI 暂未提供**——具备 authority 的关联来自 PR 分支、标题或正文中相邻的关闭关键字；只有正文裸编号时为 inferred 隐藏引用
 - **不接 review 讨论和 reviewer 列表**——CI 状态与可合并性现在会展示在 PR 卡片上（见 **PR 卡片展示什么**），但 review 评论、具体 reviewer 及其审批状态没接进 Multica
-- **没有工作区级别的 merge → status 映射配置**——默认固定是 `merged → done`（cancelled 除外）。可配置映射是后续迭代
-- **同 issue 多 PR 时，merge 行为偏激进**——两个 PR 都引用 `MUL-123` 时，第一个 merge 就把 issue 转 Done。"等所有关联 PR 都解决再推进 issue 状态"的优化已经在做了
+- **完成 policy 由 metadata 控制**——仅缺失、精确空字符串或精确 `leaf_child_only` 允许 provider 完成；精确 `record_only` 只记录事实，其他值 fail closed
+- **同 issue 多 PR 会等待**——只要 GitHub、native VCS 或 external provider 中仍有任何具备 authority 的 `open` / `draft` 关联，符合其他条件的 leaf child 也不会完成
 
 ## 下一步
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/migrations"
 )
 
@@ -30,12 +32,13 @@ type readinessDB interface {
 }
 
 type serverHealth struct {
-	db                 readinessDB
-	requiredMigrations []string
-	initErr            error
-	cacheTTL           time.Duration
-	refreshMu          sync.Mutex
-	cache              atomic.Pointer[cachedReadiness]
+	db                         readinessDB
+	requiredMigrations         []string
+	initErr                    error
+	workloadAssertionConfigErr error
+	cacheTTL                   time.Duration
+	refreshMu                  sync.Mutex
+	cache                      atomic.Pointer[cachedReadiness]
 }
 
 type cachedReadiness struct {
@@ -54,8 +57,9 @@ type readinessResponse struct {
 }
 
 type readinessChecks struct {
-	DB         string `json:"db"`
-	Migrations string `json:"migrations"`
+	DB                        string `json:"db"`
+	Migrations                string `json:"migrations"`
+	WorkloadAssertionIdentity string `json:"workload_assertion_identity"`
 }
 
 func newServerHealth(pool *pgxpool.Pool) *serverHealth {
@@ -64,7 +68,11 @@ func newServerHealth(pool *pgxpool.Pool) *serverHealth {
 		db:                 pool,
 		requiredMigrations: requiredMigrations,
 		initErr:            err,
-		cacheTTL:           readinessCacheTTL,
+		workloadAssertionConfigErr: handler.ValidateWorkloadAssertionConfiguration(
+			os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER"),
+			os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID"),
+		),
+		cacheTTL: readinessCacheTTL,
 	}
 }
 
@@ -116,9 +124,18 @@ func (h *serverHealth) computeReadiness(parent context.Context) (readinessRespon
 	resp := readinessResponse{
 		Status: "ok",
 		Checks: readinessChecks{
-			DB:         "ok",
-			Migrations: "ok",
+			DB:                        "ok",
+			Migrations:                "ok",
+			WorkloadAssertionIdentity: "ok",
 		},
+	}
+
+	if h.workloadAssertionConfigErr != nil {
+		resp.Status = "not_ready"
+		resp.Checks.DB = "unknown"
+		resp.Checks.Migrations = "unknown"
+		resp.Checks.WorkloadAssertionIdentity = "error"
+		return resp, http.StatusServiceUnavailable
 	}
 
 	if h.db == nil {

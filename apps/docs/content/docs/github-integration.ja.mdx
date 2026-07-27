@@ -1,11 +1,11 @@
 ---
 title: GitHub 連携
-description: GitHub App を一度連携すれば、ブランチ・タイトル・本文にイシュー識別子を含む PR が該当イシューに自動で紐づきます。そして PR をマージするとイシューが Done に移動します。
+description: GitHub App を一度連携して PR をミラーリングします。close intent があり、open/draft の紐づきが残らない適格な leaf child のみ、マージ後に Done へ移動します。
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-**設定 → GitHub** で GitHub アカウントまたは組織を一度だけ連携してください。その後は、ブランチ名・タイトル・本文にイシュー識別子（例: `MUL-123`）を含むあらゆる pull request が該当する[イシュー](/issues)に**自動で紐づき**、イシューサイドバーの **Pull requests** に表示され、PR がマージされるとイシューが **Done** に移動します。
+**設定 → GitHub** で GitHub アカウントまたは組織を一度だけ連携してください。ブランチ名またはタイトルにイシュー識別子（例: `MUL-123`）を含む PR は自動で紐づき、**Pull requests** に表示されます。本文だけの裸の識別子は監査参照として保持されますが表示されません。マージ後に **Done** へ移動するのは、下記の leaf child 完了条件を満たす場合だけです。
 
 イシューごとの設定はありません。フロー全体が識別子で駆動されます。
 
@@ -14,9 +14,9 @@ import { Callout } from "fumadocs-ui/components/callout";
 | 場所 | 動作 |
 |---|---|
 | **設定 → GitHub** | ワークスペースの admin には、マスタートグル、**Connect GitHub** ボタン、機能スイッチ（PR サイドバー、Co-authored-by、自動紐づけ）を備えた GitHub タブが表示されます。インストール後は GitHub タブに戻ります。 |
-| **イシューサイドバー → Pull requests** | このイシューに自動で紐づいたすべての PR が、タイトル、リポジトリ、状態（`Open` / `Draft` / `Merged` / `Closed`）、作成者とともに表示されます。行をクリックすると GitHub の該当 PR に移動します。 |
+| **イシューサイドバー → Pull requests** | 表示対象の PR 紐づき（タイトル・ブランチ・closing keyword に authority があるもの。本文だけの裸の参照は非表示）が、タイトル、リポジトリ、状態（`Open` / `Draft` / `Merged` / `Closed`）、作成者とともに表示されます。行をクリックすると GitHub の該当 PR に移動します。 |
 | **Webhook（バックグラウンド）** | すべての `pull_request` イベントで、Multica は PR 行を upsert し、PR からイシュー識別子をスキャンして、紐づけ行を（再）構築します。冪等性があり、同じ delivery を再送しても変化はありません。 |
-| **マージ時のステータス自動変更** | PR が `merged` に遷移すると、まだ `Done` でも `Cancelled` でもない、紐づいたすべてのイシューが `Done` に移動します。ステータス変更は source `github_pr_merged` でタイムラインに記録されます。 |
+| **マージ時のステータス自動変更** | `Closes` / `Fixes` / `Resolves` の close intent を持つ PR のマージは、適格な leaf child だけを完了候補にします。GitHub・native VCS・external provider の authority のあるリンクに `open` / `draft` が残る場合は完了しません。`record_only` は事実のみ記録します。 |
 | **PR カード → CI とマージ可否** | 紐づいた各 PR について、Multica は認証済みの GitHub API スナップショットを取得し、その **CI ステータス**と**マージ可否**をカードにミラーリングします（下記の **PR カードに表示される内容** を参照）。 |
 
 PR 自体の状態に加えて、この連携は紐づいた各 PR について、その **CI ステータス**（すべて成功、x 件が失敗（名前付き）、または x 件が実行中）と**マージ可否**（マージ可能、コンフリクトあり、blocked、behind）を、認証済みの GitHub API スナップショットから取得してミラーリングします。コミットやオープンな PR のないブランチ ref は引き続きモデル化されません。
@@ -41,19 +41,21 @@ Webhook は次の順序で 3 つのフィールドから識別子を抽出しま
 - ワークスペーススコープに限定されます — そのワークスペース固有の[イシュー prefix](/workspaces)にのみマッチします。prefix が `MUL` のワークスペースでは、整数が別のイシューと一致しても `FOO-1` は無視されます。
 - 重複が除去されます — 本文に `MUL-1, MUL-1` と並べても、イシューは一度だけ紐づきます。
 
-1 つの PR で**複数のイシュー**を参照できます。`Closes MUL-1, MUL-2` は PR を両方のイシューに紐づけ、マージすると両方が `Done` に進みます。
+1 つの PR で**複数のイシュー**を参照できます。`Closes MUL-1, MUL-2` は両方に紐づきますが、各イシューは leaf child、policy、open/draft が残らないことを個別に評価します。
 
 ## マージ時の Done 自動変更ルール
 
-PR の `merged` フィールドが `true` に切り替わると、紐づいたすべてのイシューが評価されます。
+authority のある PR がマージまたはクローズされると、紐づいたすべてのイシューが provider の集約された事実で再評価されます。マージは必要な close intent を提供でき、クローズは最後の blocker を取り除けます。
 
 | イシューの現在のステータス | 結果 |
 |---|---|
 | `done` | 変化なし（すでに終了状態）。 |
 | `cancelled` | **変化なし** — cancelled はユーザーが作業を明示的に放棄したことを意味するため、連携はこのシグナルを上書きしません。 |
-| それ以外すべて（`todo`、`in_progress`、`in_review`、`blocked`、`backlog`） | `done` に移動。 |
+| 任意の非終了状態で `external_pr_completion_policy=record_only` | マージ済み PR とイシューのリンクは引き続きミラーリングされますが、イシューの状態は変わりません。追加の完了ゲートを持つ workflow が、受け入れ後に明示的に終了状態へ移動する必要があります。 |
+| leaf child で child がなく、authority のある provider リンクの少なくとも 1 つに merged close intent があり、3 種の provider の authority のあるリンクに `open` / `draft` がなく、policy が未設定・完全な空文字・完全な `leaf_child_only` | `done` に移動。 |
+| parent、root、child を持つイシュー、未対応 policy、または authority のあるリンクに `open` / `draft` が残る場合 | **変化なし。** inferred な本文だけの参照はブロックしません。 |
 
-PR をマージ**せずに**クローズした場合は、PR カードの状態が `Closed` に更新されるだけです。紐づいたイシューはそのまま維持されます — マージせずにクローズすることが何を意味するかはユーザーが決めるからです。
+PR をマージ**せずに**クローズすると、その PR カードを更新して集約された事実を再評価します。別の authority のあるリンクがすでに merged close intent を提供し、このクローズで最後の authority のある `open` / `draft` blocker がなくなる場合、ほかの条件を満たすイシューは `done` に移動できます。merged enabler がなければ、イシューはそのままです。
 
 <Callout type="info">
 この動作はタイムライン上で `system` アクターに帰属します。イシューの購読者は、人がステータスを移動したときと同じように、ステータス変更に関するインボックス通知を受け取ります。
@@ -61,7 +63,7 @@ PR をマージ**せずに**クローズした場合は、PR カードの状態�
 
 ## 自動で紐づかないもの
 
-- **コミットメッセージ内の識別子** — ブランチ / タイトル / 本文のみがスキャンされます。`MUL-123: fix login` というタイトルのコミットは、同じ文字列が PR タイトルや本文にも現れない限り自動では紐づきません。
+- **コミットメッセージ内の識別子** — PR のブランチ / タイトル / 本文のみがスキャンされます。authority のあるリンクには、PR ブランチかタイトル、または本文の closing keyword に隣接した ID が必要です。
 - **PR コメント内の識別子** — PR 自体のメタデータのみがスキャンされ、後から付いた GitHub コメントは無視されます。
 - **App がインストールされていないリポジトリの PR** — App がなければ、Multica は webhook をまったく受け取りません。
 - **PR をイシューに手動で紐づける** — まだこのための UI はありません。チームの慣習で識別子を Multica が読まない場所に置いている場合は、PR タイトルや本文に追加してください。
@@ -149,7 +151,7 @@ GITHUB_APP_PRIVATE_KEY=<BEGIN/END 行を含む完全な PEM ブロック>
 - Settings の `Connect GitHub` が**無効**になり、「not configured」のヒントが表示されます。
 - `/api/webhooks/github` エンドポイントが **`503 github webhooks not configured`** を返します — Multica は secret なしでイベントを処理することを拒否し、すべての署名を黙って有効として扱うことはありません。
 
-`GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` は現在、**PR カードの CI ステータスとマージ可否に必須**です — これらにより Multica は App として認証し（App JWT → installation token）、各カードの基になる GitHub API スナップショットを取得します。秘密鍵は App 設定ページの **Private keys → Generate a private key** で生成し、PEM ブロック全体（`-----BEGIN/END RSA PRIVATE KEY-----` の行を含む）を改行を保ったまま env 変数に貼り付けてください。これらがない場合、連携は**きれいに縮退**します: PR は引き続きミラーリングされ、イシューは引き続き自動で紐づき、マージ時に Done へ移動し、接続済みアカウント名も引き続き `installation.created` webhook から解決されます — ただし PR カードには CI やマージ状態が表示されません。
+`GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` は現在、**PR カードの CI ステータスとマージ可否に必須**です — これらにより Multica は App として認証し（App JWT → installation token）、各カードの基になる GitHub API スナップショットを取得します。秘密鍵は App 設定ページの **Private keys → Generate a private key** で生成し、PEM ブロック全体（`-----BEGIN/END RSA PRIVATE KEY-----` の行を含む）を改行を保ったまま env 変数に貼り付けてください。これらがない場合も PR はミラーリングされ、authority のあるリンクは leaf child、policy、merged close intent、authoritative open/draft 不在の条件で評価されます。ただし PR カードには CI やマージ状態が表示されません。
 
 `FRONTEND_ORIGIN` も設定されている必要があります（どのプロダクションのセルフホストでもすでに設定されています）。インストール後、setup コールバックがユーザーを `<FRONTEND_ORIGIN>/settings?tab=github` に戻します。
 
@@ -174,7 +176,7 @@ Multica で:
 3. アクセスを付与するリポジトリを選び、**Install** します。
 4. GitHub が `<api-host>/api/github/setup` にリダイレクトしてインストールを記録し、`<FRONTEND_ORIGIN>/settings?tab=github&github_connected=1` に戻します。
 
-その後、ブランチ / タイトル / 本文にイシュー識別子を含む PR を開いてみてください — 数秒以内に、そのイシューの詳細ページに Pull requests ブロックが表示されます。
+その後、ブランチかタイトルにイシュー ID を含む PR、または本文で ID を `Closes` / `Fixes` / `Resolves` に隣接させた PR を開いてください。本文だけの裸の ID は inferred な非表示監査参照です。
 
 ### 5. curl プローブで検証する
 
@@ -217,10 +219,10 @@ curl -s https://api.github.com/apps/<slug>
 
 現時点で知っておくべき、いくつかの粗い部分があります。
 
-- **まだ手動の紐づけ UI はありません** — PR を紐づける唯一の方法は、ブランチ、タイトル、本文に識別子を置くことです。
+- **まだ手動の紐づけ UI はありません** — authority のあるリンクは PR のブランチ、タイトル、または本文の closing keyword に隣接した ID から作られます。本文だけの裸の ID は inferred で非表示です。
 - **レビュースレッドやレビュアー一覧はありません** — CI ステータスとマージ可否は PR カードに表示されるようになりました（**PR カードに表示される内容** を参照）が、レビューコメント、個々のレビュアー、その承認状態は表示されません。
-- マージ → Done ルールに対する**ワークスペースレベルの設定はありません** — 固定のデフォルトです（`cancelled` でない限り `merged → done`）。ワークスペースでカスタマイズできるマッピングは将来の追加予定です。
-- **1 つのイシューに複数の PR が紐づく場合、マージは保守的です** — 2 つの PR がどちらも `MUL-123` を参照していて最初の 1 つがマージされると、イシューはただちに `Done` に移動します。進める前に紐づいたすべての PR が解決されるのを待つ後続の変更が進行中です。
+- **完了 policy は metadata で制御されます** — 未設定、完全な空文字、または完全な `leaf_child_only` のみ provider 完了を許可します。完全な `record_only` は事実のみ記録し、その他は fail closed です。
+- **1 つのイシューに複数の PR がある場合は待機します** — GitHub・native VCS・external provider のauthority のあるリンクに `open` / `draft` が残る限り、leaf child は完了しません。
 
 ## 次に
 

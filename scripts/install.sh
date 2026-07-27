@@ -370,7 +370,9 @@ setup_server() {
     cd "$INSTALL_DIR"
   fi
 
-  checkout_server_ref "$server_ref"
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" != "1" ]; then
+    checkout_server_ref "$server_ref"
+  fi
 
   ok "Repository ready at $INSTALL_DIR ($server_ref)"
 
@@ -378,21 +380,35 @@ setup_server() {
   if [ ! -f .env ]; then
     info "Creating .env with random secrets..."
     cp .env.example .env
-    local jwt pgpass
+    local jwt pgpass issuer issuer_instance_id
     jwt=$(openssl rand -hex 32)
     pgpass=$(openssl rand -hex 24)
+    issuer="urn:multica:deployment:$(openssl rand -hex 16)"
+    issuer_instance_id="multica-$(openssl rand -hex 16)"
     if [ "$(uname -s)" = "Darwin" ]; then
       sed -i '' "s/^JWT_SECRET=.*/JWT_SECRET=$jwt/" .env
       sed -i '' "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pgpass/" .env
+      sed -i '' "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER=$issuer#" .env
+      sed -i '' "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=$issuer_instance_id#" .env
       sed -i '' -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$pgpass\2#" .env
     else
       sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$jwt/" .env
       sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pgpass/" .env
+      sed -i "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER=$issuer#" .env
+      sed -i "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=$issuer_instance_id#" .env
       sed -i -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$pgpass\2#" .env
     fi
-    ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
+    ok "Generated .env with random secrets, a deployment-unique JWT issuer, and a stable secret-free issuer instance ID"
   else
     ok "Using existing .env"
+  fi
+
+  # Upgrade missing, blank (including whitespace-only), and legacy placeholder
+  # issuer identity values exactly once without rotating accepted values.
+  bash scripts/ensure-workload-issuer.sh .env deployment
+  bash scripts/validate-workload-issuer.sh .env
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" = "1" ]; then
+    return
   fi
 
   # Start Docker Compose
@@ -463,6 +479,9 @@ run_with_server() {
   detect_os
   check_docker
   setup_server
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" = "1" ]; then
+    return
+  fi
   install_cli
 
   printf "\n"

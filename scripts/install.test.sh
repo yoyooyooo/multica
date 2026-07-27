@@ -236,8 +236,54 @@ STUB
   fi
 }
 
+test_with_server_repairs_existing_workload_issuer_once() {
+  local root case_name tmp install_dir issuer_before issuer_after issuer_id_before issuer_id_after
+  root="$(mktemp -d)"
+  trap 'rm -rf "$root"' RETURN
+  for case_name in missing empty whitespace multica valid; do
+    tmp="$root/$case_name"
+    install_dir="$tmp/server"
+    mkdir -p "$install_dir/scripts" "$tmp/stub-bin"
+    git -C "$install_dir" init -q
+    cp "$ROOT_DIR/.env.example" "$install_dir/.env.example"
+    cp "$ROOT_DIR/scripts/ensure-workload-issuer.sh" "$ROOT_DIR/scripts/validate-workload-issuer.sh" "$install_dir/scripts/"
+    case "$case_name" in
+      missing) printf 'JWT_SECRET=test\n' >"$install_dir/.env" ;;
+      empty) printf 'MULTICA_WORKLOAD_ASSERTION_ISSUER=\n' >"$install_dir/.env" ;;
+      whitespace) printf 'MULTICA_WORKLOAD_ASSERTION_ISSUER=   \n' >"$install_dir/.env" ;;
+      multica) printf 'MULTICA_WORKLOAD_ASSERTION_ISSUER=multica\n' >"$install_dir/.env" ;;
+      valid) printf 'MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:keep-me\nMULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=multica-keep-me\n' >"$install_dir/.env" ;;
+    esac
+    cat >"$tmp/stub-bin/docker" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = info ] && exit 0
+exit 0
+STUB
+    chmod +x "$tmp/stub-bin/docker"
+    PATH="$tmp/stub-bin:/usr/bin:/bin" \
+      MULTICA_INSTALL_DIR="$install_dir" MULTICA_SELFHOST_REF=main MULTICA_SELFHOST_ENV_ONLY=1 \
+      bash "$ROOT_DIR/scripts/install.sh" --with-server >/dev/null
+    issuer_before="$(sed -n 's/^MULTICA_WORKLOAD_ASSERTION_ISSUER=//p' "$install_dir/.env")"
+    issuer_id_before="$(sed -n 's/^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=//p' "$install_dir/.env")"
+    [[ "$issuer_before" == urn:multica:deployment:* ]] || { echo "with-server did not repair $case_name issuer"; return 1; }
+    [[ "$issuer_id_before" == multica-* ]] || { echo "with-server did not repair $case_name issuer instance ID"; return 1; }
+    if [ "$case_name" = valid ] && { [ "$issuer_before" != 'urn:multica:deployment:keep-me' ] || [ "$issuer_id_before" != 'multica-keep-me' ]; }; then
+      echo "with-server rotated accepted workload assertion identity"
+      return 1
+    fi
+    PATH="$tmp/stub-bin:/usr/bin:/bin" \
+      MULTICA_INSTALL_DIR="$install_dir" MULTICA_SELFHOST_REF=main MULTICA_SELFHOST_ENV_ONLY=1 \
+      bash "$ROOT_DIR/scripts/install.sh" --with-server >/dev/null
+    issuer_after="$(sed -n 's/^MULTICA_WORKLOAD_ASSERTION_ISSUER=//p' "$install_dir/.env")"
+    issuer_id_after="$(sed -n 's/^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=//p' "$install_dir/.env")"
+    [[ "$issuer_after" = "$issuer_before" ]] || { echo "with-server rotated valid issuer"; return 1; }
+    [[ "$issuer_id_after" = "$issuer_id_before" ]] || { echo "with-server rotated valid issuer instance ID"; return 1; }
+  done
+}
+
 test_brew_install_failure_falls_back_to_release_binary
 test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
+test_with_server_repairs_existing_workload_issuer_once
 echo "install.sh tests passed"

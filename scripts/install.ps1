@@ -428,14 +428,59 @@ function Install-Server {
         Copy-Item ".env.example" ".env"
         $jwt = New-RandomHex 32
         $pgpass = New-RandomHex 24
+        $issuer = "urn:multica:deployment:$(New-RandomHex 16)"
+        $issuerInstanceId = "multica-$(New-RandomHex 16)"
         $content = Get-Content ".env"
         $content = $content -replace '^JWT_SECRET=.*', "JWT_SECRET=$jwt"
         $content = $content -replace '^POSTGRES_PASSWORD=.*', "POSTGRES_PASSWORD=$pgpass"
+        $content = $content -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*', "MULTICA_WORKLOAD_ASSERTION_ISSUER=$issuer"
+        $content = $content -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=.*', "MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=$issuerInstanceId"
         $content = $content -replace '^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)', "`${1}$pgpass`${2}"
         $content | Set-Content ".env"
-        Write-Ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
+        Write-Ok "Generated .env with random secrets, a deployment-unique JWT issuer, and a stable secret-free issuer instance ID"
     } else {
         Write-Ok "Using existing .env"
+    }
+
+    # Upgrade pre-issuer installations once without rotating accepted values.
+    $envContent = Get-Content ".env"
+    $issuerLine = $envContent | Where-Object { $_ -match '^MULTICA_WORKLOAD_ASSERTION_ISSUER=' } | Select-Object -Last 1
+    $currentIssuer = if ($issuerLine) { $issuerLine -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER=', '' } else { '' }
+    if ([string]::IsNullOrWhiteSpace($currentIssuer) -or $currentIssuer.Trim() -eq 'multica') {
+        $upgradeIssuer = "urn:multica:deployment:$(New-RandomHex 16)"
+        if ($issuerLine) {
+            $envContent = $envContent -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*', "MULTICA_WORKLOAD_ASSERTION_ISSUER=$upgradeIssuer"
+        } else {
+            $envContent += "MULTICA_WORKLOAD_ASSERTION_ISSUER=$upgradeIssuer"
+        }
+        $envContent | Set-Content ".env"
+        Write-Ok "Added a stable deployment-unique workload assertion JWT issuer"
+    }
+
+    $envContent = Get-Content ".env"
+    $issuerIdLine = $envContent | Where-Object { $_ -match '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=' } | Select-Object -Last 1
+    $currentIssuerId = if ($issuerIdLine) { $issuerIdLine -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=', '' } else { '' }
+    if ([string]::IsNullOrWhiteSpace($currentIssuerId) -or $currentIssuerId.Trim() -match '^(?i:multica|placeholder|example|change-me|changeme|replace-me|issuer-instance-id)$') {
+        $upgradeIssuerId = "multica-$(New-RandomHex 16)"
+        if ($issuerIdLine) {
+            $envContent = $envContent -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=.*', "MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=$upgradeIssuerId"
+        } else {
+            $envContent += "MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=$upgradeIssuerId"
+        }
+        $envContent | Set-Content ".env"
+        Write-Ok "Added a stable secret-free workload assertion issuer instance ID; configure this exact ID as AGS trusted_issuers[].id"
+    }
+
+    $finalEnv = Get-Content ".env"
+    $finalIssuerLine = $finalEnv | Where-Object { $_ -match '^MULTICA_WORKLOAD_ASSERTION_ISSUER=' } | Select-Object -Last 1
+    $finalIssuer = if ($finalIssuerLine) { ($finalIssuerLine -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER=', '').Trim() } else { '' }
+    $finalIssuerIdLine = $finalEnv | Where-Object { $_ -match '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=' } | Select-Object -Last 1
+    $finalIssuerId = if ($finalIssuerIdLine) { $finalIssuerIdLine -replace '^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=', '' } else { '' }
+    if ([string]::IsNullOrWhiteSpace($finalIssuer) -or $finalIssuer -eq 'multica') {
+        throw "MULTICA_WORKLOAD_ASSERTION_ISSUER must be deployment-unique"
+    }
+    if ($finalIssuerId -ne $finalIssuerId.Trim() -or $finalIssuerId -notmatch '^[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,254}$' -or $finalIssuerId -match '^(?i:multica|placeholder|example|change-me|changeme|replace-me|issuer-instance-id|mat_.*|ags_sess_.*|eyJ.*)$' -or $finalIssuerId -eq $finalIssuer) {
+        throw "MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID must be a distinct canonical secret-free AGS trusted issuer ID"
     }
 
     Write-Info "Pulling official Multica images..."

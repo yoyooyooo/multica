@@ -632,6 +632,59 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	}
 }
 
+func TestRunIssueExternalPRsListsProviderNeutralFactsAsJSON(t *testing.T) {
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/issues/MINI-800":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "issue-uuid", "identifier": "MINI-800", "title": "External PR lookup",
+			})
+		case "/api/issues/issue-uuid/external-prs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"external_pull_requests": []map[string]any{{
+					"provider": "ags", "external_repo": "jackie/agent-kit",
+					"external_number": float64(49), "state": "merged",
+					"link_confidence": "authoritative",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := &cobra.Command{Use: "external-prs"}
+	cmd.Flags().String("output", "table", "")
+	_ = cmd.Flags().Set("output", "json")
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runIssueExternalPRs(cmd, []string{"MINI-800"})
+	_ = w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("runIssueExternalPRs: %v", err)
+	}
+	if want := []string{"/api/issues/MINI-800", "/api/issues/issue-uuid/external-prs"}; fmt.Sprint(gotPaths) != fmt.Sprint(want) {
+		t.Fatalf("paths = %v, want %v", gotPaths, want)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	prs, _ := payload["external_pull_requests"].([]any)
+	if len(prs) != 1 {
+		t.Fatalf("external_pull_requests length = %d, want 1", len(prs))
+	}
+}
+
 func newIssueUsageTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "usage"}
 	cmd.Flags().String("output", "table", "")

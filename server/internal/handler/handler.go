@@ -50,6 +50,9 @@ type txStarter interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
+type completionActivityWriter func(context.Context, *db.Queries, db.CreateActivityParams) (db.ActivityLog, error)
+type externalPRActivityWriter func(context.Context, dbExecutor, string, externalPullRequestLinkRequest, string) error
+
 type dbExecutor interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -253,8 +256,17 @@ type Handler struct {
 	// trigger is a no-op) when GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY are unset,
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
-	PRRefresh *ghsnapshot.Manager
-	cfg       Config
+	PRRefresh                *ghsnapshot.Manager
+	CompletionActivityWriter completionActivityWriter
+	ExternalPRActivityWriter externalPRActivityWriter
+	PullRequestFactHook      func(provider, stage string)
+	PullRequestFactErrorHook func(provider, stage string) error
+	TopologyFactHook         func(stage string)
+	WorkloadAssertionHook    func(stage string)
+	workloadAssertionNow     func() time.Time
+	workloadAssertionID      func() string
+	IssueDeleteHook          func(stage string)
+	cfg                      Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
@@ -314,6 +326,10 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		WebhookRateLimiter:           NewMemoryWebhookRateLimiter(DefaultWebhookRateLimit()),
 		WebhookIPRateLimiter:         NewMemoryWebhookIPRateLimiter(DefaultWebhookIPRateLimit()),
 		WebhookAbsoluteIPRateLimiter: NewMemoryWebhookAbsoluteIPRateLimiter(DefaultWebhookAbsoluteIPRateLimit()),
+		CompletionActivityWriter: func(ctx context.Context, queries *db.Queries, params db.CreateActivityParams) (db.ActivityLog, error) {
+			return queries.CreateActivity(ctx, params)
+		},
+		ExternalPRActivityWriter: recordExternalPRActivity,
 		CloudRuntime: cloudruntime.NewClient(cloudruntime.Config{
 			BaseURL: cfg.CloudRuntimeFleetURL,
 			Timeout: cfg.CloudRuntimeFleetTimeout,

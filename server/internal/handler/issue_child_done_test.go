@@ -24,7 +24,7 @@ func newChildDoneFixture(t *testing.T, parentStatus string) childDoneFixture {
 	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "child-done parent " + time.Now().Format(time.RFC3339Nano),
-		"status": parentStatus,
+		"status": "in_progress",
 	})
 	testHandler.CreateIssue(w, req)
 	if w.Code != http.StatusCreated {
@@ -48,6 +48,21 @@ func newChildDoneFixture(t *testing.T, parentStatus string) childDoneFixture {
 	var child IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
 		t.Fatalf("decode child: %v", err)
+	}
+
+	// Topology authority forbids a child arriving after a terminal parent.
+	// Tests that exercise an already-terminal parent therefore create the child
+	// first, then use the public status boundary to establish the fixture state.
+	if parentStatus != "in_progress" {
+		w = httptest.NewRecorder()
+		req = withURLParam(newRequest("PUT", "/api/issues/"+parent.ID, map[string]any{"status": parentStatus}), "id", parent.ID)
+		testHandler.UpdateIssue(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("set parent status %q: expected 200, got %d: %s", parentStatus, w.Code, w.Body.String())
+		}
+		if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
+			t.Fatalf("decode updated parent: %v", err)
+		}
 	}
 
 	t.Cleanup(func() {

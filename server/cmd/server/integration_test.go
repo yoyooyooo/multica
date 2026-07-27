@@ -44,18 +44,19 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+		fmt.Println("DATABASE_URL is required for cmd/server integration tests")
+		os.Exit(1)
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping integration tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		fmt.Printf("cmd/server integration database configuration failed: %v\n", err)
+		os.Exit(1)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping integration tests: database not reachable: %v\n", err)
+		fmt.Printf("cmd/server integration database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	testPool = pool
