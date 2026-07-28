@@ -230,6 +230,13 @@ make selfhost
 ```bash
 cd multica
 git pull
+# 旧部署需在 .env 中一次性补齐两个稳定且互不相同的身份值。
+# deployment-unique JWT iss：
+# MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
+# secret-free authority linkage（精确等于 AGS trusted_issuers[].id，不得从 target 猜测）：
+# MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
+bash scripts/validate-workload-issuer.sh .env
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
@@ -282,10 +289,10 @@ docker compose -f docker-compose.selfhost.yml logs -f backend
 
 ```bash
 curl -s localhost:8080/readyz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
 ```
 
-只要不是 HTTP 200 且两项都是 `ok`，就说明新版本没把 migration 跑完，先去看 backend 日志，别急着放流量进来。
+只要不是 HTTP 200 且三项都是 `ok`，就说明新版本没把 migration 跑完，先去看 backend 日志，别急着放流量进来。
 
 ### Kubernetes
 
@@ -316,7 +323,9 @@ kubectl -n multica create secret generic multica-secrets \
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-helm install multica deploy/helm/multica -n multica
+helm install multica deploy/helm/multica -n multica \
+  --set-string 'backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id>' \
+  --set-string 'backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>'
 ```
 
 默认主机名是 `multica.dev.lan`（web）和 `api.multica.dev.lan`（backend）。把它们加进 `/etc/hosts`（或者本地 DNS），指向任意一个 Ingress 可达的节点 IP 就行。要换主机名，就把 `deploy/helm/multica/values.yaml` 复制一份，改掉 `ingress.frontend.host` / `ingress.backend.host`，再把 `backend.config.appUrl` / `frontendOrigin` / `localUploadBaseUrl` / `googleRedirectUri` 改成相应的地址，然后 `helm install ... -f my-values.yaml`。
@@ -325,7 +334,7 @@ helm install multica deploy/helm/multica -n multica
 
 ```bash
 curl -H "Host: api.multica.dev.lan" http://<ingress-ip>/healthz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
 ```
 
 然后浏览器打开 `http://multica.dev.lan`，回到上面的 [第 4 步——首次登录](#4-首次登录--创建工作区) 继续。命令行连到你的 Ingress 主机：

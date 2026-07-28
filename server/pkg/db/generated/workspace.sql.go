@@ -113,6 +113,12 @@ cleared_installations AS (
 cleared_issue_properties AS (
     DELETE FROM issue_property WHERE workspace_id = $1
 ),
+cleared_external_pr_receipts AS (
+    DELETE FROM external_pull_request_receipt WHERE workspace_id = $1
+),
+cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link WHERE workspace_id = $1
+),
 deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),
@@ -163,6 +169,18 @@ DELETE FROM workspace WHERE workspace.id = $1
 // none either, so reach it through the workspace's connections.
 func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspace, id)
+	return err
+}
+
+const deleteWorkspaceWorkloadAuthority = `-- name: DeleteWorkspaceWorkloadAuthority :exec
+DELETE FROM workspace_workload_authority WHERE workspace_id = $1
+`
+
+// The authority table intentionally has no FK. Delete it in the same
+// application transaction after the workspace delete, when member lifecycle
+// triggers can no longer recreate the row.
+func (q *Queries) DeleteWorkspaceWorkloadAuthority(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceWorkloadAuthority, workspaceID)
 	return err
 }
 

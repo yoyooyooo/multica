@@ -230,6 +230,13 @@ make selfhost
 ```bash
 cd multica
 git pull
+# 既存環境では、安定した異なる2つの identity 値を .env に一度追加します。
+# deployment-unique JWT iss:
+# MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
+# secret-free authority linkage（AGS trusted_issuers[].id と完全一致。target から推測しない）:
+# MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
+bash scripts/validate-workload-issuer.sh .env
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
@@ -282,10 +289,10 @@ docker compose -f docker-compose.selfhost.yml logs -f backend
 
 ```bash
 curl -s localhost:8080/readyz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
 ```
 
-HTTP 200 かつ両方のチェックが `ok` でない場合、新しいバージョンは migration を完了していません。トラフィックを流す前にバックエンドのログを確認してください。
+HTTP 200 かつ3つのチェックがすべて `ok` でない場合、新しいバージョンは migration を完了していません。トラフィックを流す前にバックエンドのログを確認してください。
 
 ### Kubernetes
 
@@ -316,7 +323,9 @@ kubectl -n multica create secret generic multica-secrets \
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-helm install multica deploy/helm/multica -n multica
+helm install multica deploy/helm/multica -n multica \
+  --set-string 'backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id>' \
+  --set-string 'backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>'
 ```
 
 デフォルト値はホスト名 `multica.dev.lan`（web）と `api.multica.dev.lan`（バックエンド）を想定しています。これらを `/etc/hosts`（またはローカル DNS）に追加し、Ingress に到達可能な任意のノード IP を指すようにしてください。別のホスト名を使うには、`deploy/helm/multica/values.yaml` をコピーして `ingress.frontend.host` / `ingress.backend.host` と、それに対応する `backend.config.appUrl` / `frontendOrigin` / `localUploadBaseUrl` / `googleRedirectUri` を編集し、`-f my-values.yaml` でインストールしてください。
@@ -325,7 +334,7 @@ helm install multica deploy/helm/multica -n multica
 
 ```bash
 curl -H "Host: api.multica.dev.lan" http://<ingress-ip>/healthz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
 ```
 
 その後 `http://multica.dev.lan` を開き、上記の [ステップ4 — 初回ログイン](#4-first-login--create-a-workspace)から続けてください。CLI を Ingress のホスト名に向けます。

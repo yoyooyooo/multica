@@ -63,7 +63,7 @@ Once ready:
 - **Backend API:** http://localhost:8080
 
 <Callout>
-If you prefer running the Docker Compose steps manually: `cp .env.example .env`, edit `JWT_SECRET`, `POSTGRES_PASSWORD`, and the password segment in `DATABASE_URL`, then `docker compose -f docker-compose.selfhost.yml pull && docker compose -f docker-compose.selfhost.yml up -d`.
+If you prefer running the Docker Compose steps manually: `cp .env.example .env`, edit `JWT_SECRET`, `POSTGRES_PASSWORD`, the password segment in `DATABASE_URL`, and set two stable distinct values: deployment-unique JWT `MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>` plus secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>` that exactly matches AGS `trusted_issuers[].id` and is not inferred from the target. Run `bash scripts/validate-workload-issuer.sh .env` and `docker compose -f docker-compose.selfhost.yml config >/dev/null` before `pull` and `up -d`.
 </Callout>
 
 ### Step 2 — Log In
@@ -217,6 +217,11 @@ Your local Docker services are unaffected. Stop them separately if you no longer
 ## Upgrading
 
 ```bash
+# 旧部署需在 .env 中补齐两个稳定且互不相同的值：
+# MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
+# MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
+bash scripts/validate-workload-issuer.sh .env
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```

@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ENV_FILE="${1:-.env.worktree}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ -f "$ENV_FILE" ] && [ "${FORCE:-0}" != "1" ]; then
-  echo "Refusing to overwrite existing $ENV_FILE. Re-run with FORCE=1 if you want to regenerate it."
-  exit 1
+  bash "$SCRIPT_DIR/ensure-workload-issuer.sh" "$ENV_FILE" worktree
+  echo "Preserved existing $ENV_FILE and reconciled its workload assertion issuer."
+  exit 0
 fi
 
 worktree_name="${WORKTREE_NAME:-$(basename "$PWD")}"
@@ -22,6 +24,8 @@ postgres_port=5432
 backend_port=$((18080 + offset))
 frontend_port=$((13000 + offset))
 frontend_origin="http://localhost:${frontend_port}"
+workload_assertion_issuer="urn:multica:worktree:${slug}:${hash_value}"
+workload_assertion_issuer_instance_id="multica-worktree-${slug}-${hash_value}"
 
 cat > "$ENV_FILE" <<EOF
 POSTGRES_DB=${postgres_db}
@@ -35,6 +39,9 @@ JWT_SECRET=change-me-in-production
 MULTICA_DEV_VERIFICATION_CODE=888888
 MULTICA_SERVER_URL=ws://localhost:${backend_port}/ws
 MULTICA_APP_URL=${frontend_origin}
+MULTICA_WORKLOAD_ASSERTION_ISSUER=${workload_assertion_issuer}
+MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=${workload_assertion_issuer_instance_id}
+MULTICA_WORKLOAD_ASSERTION_KEY_ID=multica-workload-assertion-v1
 
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=

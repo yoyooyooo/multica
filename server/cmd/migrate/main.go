@@ -51,6 +51,31 @@ type preMigrationHook func(ctx context.Context, pool *pgxpool.Pool) error
 var preMigrationHooks = map[string]preMigrationHook{
 	"103_drop_legacy_daily_rollups":                         runTaskUsageHourlyHook,
 	"198_agent_task_attribution_strict_constraint_validate": runAttributionStrictHook,
+	// These non-authority cleanup indexes use ordinary pre-hooks rather than
+	// historical reconciliation: if CREATE INDEX CONCURRENTLY leaves an invalid
+	// artifact before ledger commit, the next run removes/rebuilds it; once
+	// ledgered, later migrations remain free to evolve the definition.
+	"242_external_pr_link_issue_updated_index":    reconcileMigrationIndex(externalPRCleanupIndexSpecs[0]),
+	"243_external_pr_receipt_issue_cleanup_index": reconcileMigrationIndex(externalPRCleanupIndexSpecs[1]),
+}
+
+const externalPRIndexReconciliationFenceVersion = "241_external_pr_index_reconciliation_fence"
+
+// reconciliationMigrationHooks run before the ledger skip check only until
+// migration 241 records the final catalog fence. Concurrent index creation can
+// leave an invalid same-name catalog entry, and older runners using IF NOT
+// EXISTS may already have ledgered that invalid artifact. The fence prevents
+// these historical definitions from becoming permanent schema authority after
+// a future migration intentionally evolves an index.
+var reconciliationMigrationHooks = map[string]preMigrationHook{
+	"232_external_pr_link_id_unique_index":                reconcileMigrationIndex(externalPRIndexSpecs[0]),
+	"233_external_pr_link_identity_index":                 reconcileMigrationIndex(externalPRIndexSpecs[1]),
+	"234_external_pr_link_issue_state_index":              reconcileMigrationIndex(externalPRIndexSpecs[2]),
+	"235_external_pr_link_idempotency_index":              reconcileMigrationIndex(externalPRIndexSpecs[3]),
+	"237_workspace_workload_authority_workspace_id_index": reconcileMigrationIndex(externalPRIndexSpecs[4]),
+	"239_external_pr_link_workspace_idempotency_index":    reconcileMigrationIndex(externalPRIndexSpecs[5]),
+	"240_external_pr_legacy_idempotency_index_remove":     verifyExternalPRIndexAuthorities,
+	externalPRIndexReconciliationFenceVersion:             reconcileAndVerifyExternalPRIndexAuthorities,
 }
 
 func runTaskUsageHourlyHook(ctx context.Context, pool *pgxpool.Pool) error {
@@ -88,6 +113,157 @@ func runAttributionStrictHook(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+type migrationIndexSpec struct {
+	Name                string
+	Table               string
+	Unique              bool
+	Columns             []string
+	PredicateNormalized string
+}
+
+var externalPRCleanupIndexSpecs = []migrationIndexSpec{
+	{Name: "idx_external_pr_link_workspace_issue_updated", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "updated_at"}},
+	{Name: "idx_external_pr_receipt_workspace_issue", Table: "external_pull_request_receipt", Columns: []string{"workspace_id", "issue_id"}},
+}
+
+var externalPRIndexSpecs = []migrationIndexSpec{
+	{Name: "idx_external_pr_link_id", Table: "external_pull_request_link", Unique: true, Columns: []string{"id"}},
+	{Name: "idx_external_pr_link_identity", Table: "external_pull_request_link", Unique: true, Columns: []string{"workspace_id", "provider", "external_repo", "external_number"}},
+	{Name: "idx_external_pr_link_issue_state", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "state"}, PredicateNormalized: "state=anyarray[open,draft]andlink_confidence=authoritative"},
+	{Name: "idx_external_pr_receipt_idempotency", Table: "external_pull_request_receipt", Unique: true, Columns: []string{"workspace_id", "idempotency_key"}},
+	{Name: "workspace_workload_authority_workspace_id_uidx", Table: "workspace_workload_authority", Unique: true, Columns: []string{"workspace_id"}},
+	{Name: "idx_external_pr_link_workspace_idempotency", Table: "external_pull_request_link", Unique: true, Columns: []string{"workspace_id", "idempotency_key"}, PredicateNormalized: "idempotency_keyisnotnull"},
+}
+
+func reconcileMigrationIndex(spec migrationIndexSpec) preMigrationHook {
+	return func(ctx context.Context, pool *pgxpool.Pool) error {
+		schema, exact, exists, err := inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if exact {
+			return nil
+		}
+		if exists {
+			indexName := pgx.Identifier{schema, spec.Name}.Sanitize()
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+indexName); err != nil {
+				return fmt.Errorf("remove invalid or wrong-definition index %s: %w", spec.Name, err)
+			}
+		}
+		if _, err := pool.Exec(ctx, createMigrationIndexSQL(schema, spec)); err != nil {
+			return fmt.Errorf("rebuild index %s: %w", spec.Name, err)
+		}
+		_, exact, _, err = inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if !exact {
+			return fmt.Errorf("index %s did not converge to its exact ready/valid definition", spec.Name)
+		}
+		return nil
+	}
+}
+
+func verifyExternalPRIndexAuthorities(ctx context.Context, pool *pgxpool.Pool) error {
+	for _, spec := range externalPRIndexSpecs {
+		_, exact, _, err := inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if !exact {
+			return fmt.Errorf("refuse legacy idempotency index removal: required index %s is not exact, ready, and valid", spec.Name)
+		}
+	}
+	return nil
+}
+
+func reconcileAndVerifyExternalPRIndexAuthorities(ctx context.Context, pool *pgxpool.Pool) error {
+	for _, spec := range externalPRIndexSpecs {
+		if err := reconcileMigrationIndex(spec)(ctx, pool); err != nil {
+			return err
+		}
+	}
+	return verifyExternalPRIndexAuthorities(ctx, pool)
+}
+
+func inspectMigrationIndex(ctx context.Context, pool *pgxpool.Pool, spec migrationIndexSpec) (schema string, exact, exists bool, err error) {
+	if err = pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		return "", false, false, fmt.Errorf("resolve current schema: %w", err)
+	}
+	var table string
+	var unique, ready, valid bool
+	var keyAttributeCount, totalAttributeCount int16
+	var columns []string
+	var predicate string
+	err = pool.QueryRow(ctx, `
+SELECT tbl.relname, i.indisunique, i.indisready, i.indisvalid,
+       i.indnkeyatts, i.indnatts,
+       ARRAY(
+         SELECT a.attname
+         FROM unnest(i.indkey::smallint[]) WITH ORDINALITY AS key(attnum, position)
+         JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=key.attnum
+         ORDER BY key.position
+       ),
+       COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
+FROM pg_class idx
+JOIN pg_namespace n ON n.oid=idx.relnamespace
+JOIN pg_index i ON i.indexrelid=idx.oid
+JOIN pg_class tbl ON tbl.oid=i.indrelid
+WHERE n.nspname=$1 AND idx.relname=$2`, schema, spec.Name).Scan(&table, &unique, &ready, &valid, &keyAttributeCount, &totalAttributeCount, &columns, &predicate)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			var relationExists bool
+			if scanErr := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, schema+"."+spec.Name).Scan(&relationExists); scanErr != nil {
+				return schema, false, false, fmt.Errorf("inspect index relation %s: %w", spec.Name, scanErr)
+			}
+			if relationExists {
+				return schema, false, true, fmt.Errorf("relation %s exists but is not an index", spec.Name)
+			}
+			return schema, false, false, nil
+		}
+		return schema, false, false, fmt.Errorf("inspect index %s: %w", spec.Name, err)
+	}
+	normalizedPredicate := strings.ToLower(strings.NewReplacer(" ", "", "\n", "", "\t", "", "(", "", ")", "", "::text", "", "'", "").Replace(predicate))
+	predicateExact := normalizedPredicate == spec.PredicateNormalized
+	exact = table == spec.Table && unique == spec.Unique && ready && valid &&
+		int(keyAttributeCount) == len(spec.Columns) && totalAttributeCount == keyAttributeCount &&
+		equalMigrationIndexColumns(columns, spec.Columns) && predicateExact
+	return schema, exact, true, nil
+}
+
+func createMigrationIndexSQL(schema string, spec migrationIndexSpec) string {
+	verb := "CREATE INDEX CONCURRENTLY "
+	if spec.Unique {
+		verb = "CREATE UNIQUE INDEX CONCURRENTLY "
+	}
+	columns := make([]string, len(spec.Columns))
+	for i, column := range spec.Columns {
+		columns[i] = pgx.Identifier{column}.Sanitize()
+	}
+	// PostgreSQL places the index in the table's schema and does not accept a
+	// schema-qualified index name in CREATE INDEX. The table remains qualified.
+	sql := verb + pgx.Identifier{spec.Name}.Sanitize() + " ON " + pgx.Identifier{schema, spec.Table}.Sanitize() + "(" + strings.Join(columns, ", ") + ")"
+	if spec.Name == "idx_external_pr_link_issue_state" {
+		sql += " WHERE state IN ('open', 'draft') AND link_confidence = 'authoritative'"
+	}
+	if spec.Name == "idx_external_pr_link_workspace_idempotency" {
+		sql += " WHERE idempotency_key IS NOT NULL"
+	}
+	return sql
+}
+
+func equalMigrationIndexColumns(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // migrationAdvisoryLockKey is the int64 identifier used with Postgres
 // pg_advisory_lock to serialize the migration loop across concurrent
 // runners (multi-replica backend Deployment, scale-up, or a manual
@@ -123,12 +299,15 @@ type runOptions struct {
 	// concurrent test workers do not block on the production migration
 	// runner if it happens to share the database.
 	AdvisoryLockKey int64
-	// Hooks maps migration version → pre-migration hook. The hook
-	// receives the pool (not the loop's pinned conn) so it can take
-	// its own session-level locks. nil or missing entries mean "no
-	// hook" and the migration runs straight through. Production main()
-	// passes preMigrationHooks; tests leave this nil.
+	// Hooks run only for migrations that are not yet ledgered.
 	Hooks map[string]preMigrationHook
+	// ReconcileHooks run before the ledger check, including for already-applied
+	// migrations. They are reserved for retry-safe catalog authorities whose
+	// validity must be re-established after a failed concurrent build.
+	ReconcileHooks map[string]preMigrationHook
+	// ReconcileFenceVersion disables the historical reconciliation hooks once
+	// its ledger row exists, allowing later migrations to evolve those indexes.
+	ReconcileFenceVersion string
 }
 
 func main() {
@@ -170,9 +349,11 @@ func main() {
 	}
 
 	if err := runMigrations(ctx, pool, runOptions{
-		Direction: direction,
-		Files:     files,
-		Hooks:     preMigrationHooks,
+		Direction:             direction,
+		Files:                 files,
+		Hooks:                 preMigrationHooks,
+		ReconcileHooks:        reconciliationMigrationHooks,
+		ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
 	}); err != nil {
 		slog.Error("migration run failed", "error", err)
 		os.Exit(1)
@@ -258,9 +439,24 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	existsSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent)
 	insertSQL := fmt.Sprintf("INSERT INTO %s (version) VALUES ($1)", tableIdent)
 	deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE version = $1", tableIdent)
+	var reconciliationFenced bool
+	if opts.Direction == "up" && opts.ReconcileFenceVersion != "" {
+		if err := conn.QueryRow(ctx, existsSQL, opts.ReconcileFenceVersion).Scan(&reconciliationFenced); err != nil {
+			return fmt.Errorf("check reconciliation fence %q: %w", opts.ReconcileFenceVersion, err)
+		}
+	}
 
 	for _, file := range opts.Files {
 		version := migrations.ExtractVersion(file)
+
+		if opts.Direction == "up" && !reconciliationFenced {
+			if hook, ok := opts.ReconcileHooks[version]; ok && hook != nil {
+				slog.Info("running migration reconciliation hook", "version", version)
+				if err := hook(ctx, pool); err != nil {
+					return fmt.Errorf("migration reconciliation hook for %q: %w", version, err)
+				}
+			}
+		}
 
 		var exists bool
 		if err := conn.QueryRow(ctx, existsSQL, version).Scan(&exists); err != nil {
@@ -276,6 +472,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			if !exists {
 				fmt.Printf("  skip  %s (not applied)\n", version)
 				continue
+			}
+			if opts.ReconcileFenceVersion != "" && version == opts.ReconcileFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only reconciliation fence %q", version)
 			}
 		}
 
@@ -310,6 +509,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 		if err != nil {
 			return fmt.Errorf("record migration %q: %w", version, err)
+		}
+		if opts.Direction == "up" && opts.ReconcileFenceVersion != "" && version == opts.ReconcileFenceVersion {
+			reconciliationFenced = true
 		}
 
 		fmt.Printf("  %s  %s\n", opts.Direction, version)

@@ -35,27 +35,41 @@ var (
 // the JWT_SECRET env var (set in .env) and stays in sync with the server.
 
 const (
-	integrationTestEmail         = "integration-test@multica.ai"
-	integrationTestName          = "Integration Tester"
-	integrationTestWorkspaceSlug = "integration-tests"
+	integrationTestEmail                             = "integration-test@multica.ai"
+	integrationTestName                              = "Integration Tester"
+	integrationTestWorkspaceSlug                     = "integration-tests"
+	integrationTestWorkloadAssertionIssuer           = "urn:multica:deployment:cmd-server-integration-test"
+	integrationTestWorkloadAssertionIssuerInstanceID = "multica-cmd-server-integration-test"
 )
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+		fmt.Println("DATABASE_URL is required for cmd/server integration tests")
+		os.Exit(1)
+	}
+
+	originalIssuer, issuerWasSet := os.LookupEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER")
+	originalIssuerInstanceID, issuerInstanceIDWasSet := os.LookupEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID")
+	if err := os.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", integrationTestWorkloadAssertionIssuer); err != nil {
+		fmt.Printf("Failed to configure integration test workload assertion issuer: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", integrationTestWorkloadAssertionIssuerInstanceID); err != nil {
+		fmt.Printf("Failed to configure integration test workload assertion issuer instance ID: %v\n", err)
+		os.Exit(1)
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping integration tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		fmt.Printf("cmd/server integration database configuration failed: %v\n", err)
+		os.Exit(1)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping integration tests: database not reachable: %v\n", err)
+		fmt.Printf("cmd/server integration database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	testPool = pool
@@ -85,6 +99,15 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	if err := restoreIntegrationTestEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER", originalIssuer, issuerWasSet); err != nil {
+		fmt.Printf("Failed to restore integration test workload assertion issuer: %v\n", err)
+		code = 1
+	}
+	if err := restoreIntegrationTestEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", originalIssuerInstanceID, issuerInstanceIDWasSet); err != nil {
+		fmt.Printf("Failed to restore integration test workload assertion issuer instance ID: %v\n", err)
+		code = 1
+	}
+
 	if err := cleanupIntegrationTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up integration test fixture: %v\n", err)
 		if code == 0 {
@@ -94,6 +117,13 @@ func TestMain(m *testing.M) {
 	testServer.Close()
 	pool.Close()
 	os.Exit(code)
+}
+
+func restoreIntegrationTestEnv(name, value string, wasSet bool) error {
+	if wasSet {
+		return os.Setenv(name, value)
+	}
+	return os.Unsetenv(name)
 }
 
 func setupIntegrationTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
@@ -236,8 +266,12 @@ func TestReadinessEndpoints(t *testing.T) {
 			}
 
 			var result struct {
-				Status string            `json:"status"`
-				Checks map[string]string `json:"checks"`
+				Status string `json:"status"`
+				Checks struct {
+					DB                        string `json:"db"`
+					Migrations                string `json:"migrations"`
+					WorkloadAssertionIdentity string `json:"workload_assertion_identity"`
+				} `json:"checks"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				t.Fatalf("decode response: %v", err)
@@ -245,11 +279,14 @@ func TestReadinessEndpoints(t *testing.T) {
 			if result.Status != "ok" {
 				t.Fatalf("expected status ok, got %s", result.Status)
 			}
-			if result.Checks["db"] != "ok" {
-				t.Fatalf("expected db check ok, got %s", result.Checks["db"])
+			if result.Checks.DB != "ok" {
+				t.Fatalf("expected db check ok, got %s", result.Checks.DB)
 			}
-			if result.Checks["migrations"] != "ok" {
-				t.Fatalf("expected migrations check ok, got %s", result.Checks["migrations"])
+			if result.Checks.Migrations != "ok" {
+				t.Fatalf("expected migrations check ok, got %s", result.Checks.Migrations)
+			}
+			if result.Checks.WorkloadAssertionIdentity != "ok" {
+				t.Fatalf("expected workload assertion identity check ok, got %s", result.Checks.WorkloadAssertionIdentity)
 			}
 		})
 	}

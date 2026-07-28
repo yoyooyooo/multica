@@ -68,12 +68,55 @@ func (q *Queries) DeleteTaskTokensByTask(ctx context.Context, taskID pgtype.UUID
 }
 
 const getTaskTokenByHash = `-- name: GetTaskTokenByHash :one
-SELECT id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at FROM task_token
-WHERE token_hash = $1 AND expires_at > now()
+SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at FROM task_token tt
+JOIN agent_task_queue atq ON atq.id = tt.task_id
+WHERE tt.token_hash = $1
+  AND tt.expires_at > now()
+  AND atq.status = 'running'
 `
 
+// A task token is executable authority only while both the token and its task
+// are live. Terminal task-token rows may survive best-effort cleanup, but they
+// must not authenticate any new request.
 func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (TaskToken, error) {
 	row := q.db.QueryRow(ctx, getTaskTokenByHash, tokenHash)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const lockRunningTaskTokenForAssertion = `-- name: LockRunningTaskTokenForAssertion :one
+SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at FROM task_token tt
+JOIN agent_task_queue atq ON atq.id = tt.task_id
+WHERE tt.token_hash = $1
+  AND tt.task_id = $2
+  AND tt.workspace_id = $3
+  AND tt.expires_at > now()
+  AND atq.status = 'running'
+FOR UPDATE OF tt, atq
+`
+
+type LockRunningTaskTokenForAssertionParams struct {
+	TokenHash   string      `json:"token_hash"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Linearization point for assertion issuance versus task terminalization.
+// Complete/fail/cancel updates the same agent_task_queue row and therefore
+// waits if assertion issuance locked it first; if terminalization commits first,
+// this query returns no row and no assertion is minted.
+func (q *Queries) LockRunningTaskTokenForAssertion(ctx context.Context, arg LockRunningTaskTokenForAssertionParams) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, lockRunningTaskTokenForAssertion, arg.TokenHash, arg.TaskID, arg.WorkspaceID)
 	var i TaskToken
 	err := row.Scan(
 		&i.ID,

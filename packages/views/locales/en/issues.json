@@ -248,7 +248,7 @@
     "section_details": "Details",
     "section_token_usage": "Token usage",
     "pull_requests_loading": "Loading…",
-    "pull_requests_empty": "No linked pull requests yet. Reference this issue's identifier in a PR's branch name, title, or body to auto-link it.",
+    "pull_requests_empty": "No authoritative pull request links yet. Put this issue's identifier in a PR branch or title, or use an adjacent closing keyword; a body-only bare identifier is only an inferred audit reference.",
     "pull_request_state_open": "Open",
     "pull_request_state_draft": "Draft",
     "pull_request_state_merged": "Merged",

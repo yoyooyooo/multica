@@ -19,6 +19,10 @@ ORDER BY created_at ASC, id ASC;
 SELECT * FROM github_installation
 WHERE id = $1;
 
+-- name: GetGitHubInstallationBinding :one
+SELECT * FROM github_installation
+WHERE workspace_id = $1 AND installation_id = $2;
+
 -- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
     workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
@@ -103,26 +107,27 @@ INSERT INTO github_pull_request (
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
-    installation_id = EXCLUDED.installation_id,
-    title = EXCLUDED.title,
-    state = EXCLUDED.state,
-    html_url = EXCLUDED.html_url,
-    branch = EXCLUDED.branch,
-    author_login = EXCLUDED.author_login,
-    author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = EXCLUDED.merged_at,
-    closed_at = EXCLUDED.closed_at,
-    pr_updated_at = EXCLUDED.pr_updated_at,
-    head_sha = EXCLUDED.head_sha,
+    installation_id = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.installation_id ELSE github_pull_request.installation_id END,
+    title = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.title ELSE github_pull_request.title END,
+    state = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.state ELSE github_pull_request.state END,
+    html_url = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.html_url ELSE github_pull_request.html_url END,
+    branch = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.branch ELSE github_pull_request.branch END,
+    author_login = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_login ELSE github_pull_request.author_login END,
+    author_avatar_url = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_avatar_url ELSE github_pull_request.author_avatar_url END,
+    merged_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.merged_at ELSE github_pull_request.merged_at END,
+    closed_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.closed_at ELSE github_pull_request.closed_at END,
+    pr_updated_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.pr_updated_at ELSE github_pull_request.pr_updated_at END,
+    head_sha = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.head_sha ELSE github_pull_request.head_sha END,
     mergeable_state = CASE
+        WHEN NOT (EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged')) THEN github_pull_request.mergeable_state
         WHEN COALESCE(sqlc.narg('clear_mergeable_state')::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
-    additions     = EXCLUDED.additions,
-    deletions     = EXCLUDED.deletions,
-    changed_files = EXCLUDED.changed_files,
-    updated_at = now()
+    additions = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.additions ELSE github_pull_request.additions END,
+    deletions = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.deletions ELSE github_pull_request.deletions END,
+    changed_files = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.changed_files ELSE github_pull_request.changed_files END,
+    updated_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN now() ELSE github_pull_request.updated_at END
 RETURNING *;
 
 -- name: GetGitHubPullRequest :one

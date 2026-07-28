@@ -344,6 +344,14 @@ WITH target AS (
 ),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_receipts AS (
+    DELETE FROM external_pull_request_receipt
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target)
 `
@@ -911,6 +919,30 @@ func (q *Queries) ListIssueGCStatuses(ctx context.Context, arg ListIssueGCStatus
 	return items, nil
 }
 
+const listIssueIDsByWorkspaceForCompletionLock = `-- name: ListIssueIDsByWorkspaceForCompletionLock :many
+SELECT id FROM issue WHERE workspace_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListIssueIDsByWorkspaceForCompletionLock(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueIDsByWorkspaceForCompletionLock, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssues = `-- name: ListIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
@@ -1224,12 +1256,36 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 	return items, nil
 }
 
+const lockIssueCompletionTransition = `-- name: LockIssueCompletionTransition :exec
+SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 88492131))
+`
+
+// All provider fact writers and explicit issue status writers share this
+// transaction-scoped lock. Call it in its own statement before reading the PR
+// aggregate so READ COMMITTED takes a fresh snapshot after any prior writer.
+func (q *Queries) LockIssueCompletionTransition(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssueCompletionTransition, issueID)
+	return err
+}
+
 const lockIssueDuplicateKey = `-- name: LockIssueDuplicateKey :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
 
 func (q *Queries) LockIssueDuplicateKey(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockIssueDuplicateKey, dollar_1)
+	return err
+}
+
+const lockWorkspaceIssueTopology = `-- name: LockWorkspaceIssueTopology :exec
+SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 88492132))
+`
+
+// All child create/reparent writers in one workspace serialize before reading
+// topology. This closes write-skew cycles whose moved issue/parent lock sets do
+// not overlap; unrelated workspaces retain independent concurrency.
+func (q *Queries) LockWorkspaceIssueTopology(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceIssueTopology, workspaceID)
 	return err
 }
 

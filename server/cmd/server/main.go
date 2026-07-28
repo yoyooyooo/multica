@@ -175,6 +175,14 @@ func envBool(name string, def bool) bool {
 func main() {
 	logger.Init()
 
+	if err := handler.ValidateWorkloadAssertionConfiguration(
+		os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER"),
+		os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID"),
+	); err != nil {
+		slog.Error("workload assertion configuration is invalid", "error", err)
+		os.Exit(1)
+	}
+
 	// Warn about missing configuration
 	if os.Getenv("JWT_SECRET") == "" {
 		slog.Warn("JWT_SECRET is not set — using insecure default. Set JWT_SECRET for production use.")

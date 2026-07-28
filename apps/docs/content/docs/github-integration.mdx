@@ -1,22 +1,22 @@
 ---
 title: GitHub integration
-description: Connect a GitHub App once, then PRs whose branch, title, or body reference an issue identifier auto-attach to that issue — and merging the PR moves the issue to Done.
+description: Connect a GitHub App once to mirror issue-linked PRs; eligible leaf child issues move to Done only after close intent is merged and no linked PR remains open or draft.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Connect a GitHub account or organization once in **Settings → GitHub**. After that, any pull request whose branch name, title, or body contains an issue identifier (for example `MUL-123`) is **auto-linked** to that [issue](/issues), appears under **Pull requests** in the issue sidebar, and — when the PR is merged — moves the issue to **Done**.
+Connect a GitHub account or organization once in **Settings → GitHub**. A PR whose branch or title contains an issue identifier (for example `MUL-123`) is **auto-linked** and displayed under **Pull requests**. A bare identifier found only in the body is retained as an audit reference but is hidden from that list. Merging a PR changes an issue to **Done** only under the leaf-child completion rules below.
 
-There is no per-issue setup. The whole flow is identifier-driven.
+There is no per-issue setup. Branch/title matches and body references with an adjacent closing keyword create authoritative links. A body-only bare identifier creates an inferred audit reference: it is hidden and never blocks completion.
 
 ## What the integration does
 
 | Surface | Behavior |
 |---|---|
 | **Settings → GitHub** | Workspace admins see the GitHub tab with a master toggle, **Connect GitHub** button, and feature switches (PR sidebar, Co-authored-by, auto-link). After install you bounce back to the GitHub tab. |
-| **Issue sidebar → Pull requests** | Every PR auto-linked to this issue, with title, repo, state (`Open` / `Draft` / `Merged` / `Closed`), and author. Click a row to jump to the PR on GitHub. |
+| **Issue sidebar → Pull requests** | Every visible PR link (title, branch, or closing-keyword authority; body-only bare references stay hidden), with title, repo, state (`Open` / `Draft` / `Merged` / `Closed`), and author. Click a row to jump to the PR on GitHub. |
 | **Webhook (background)** | On every `pull_request` event, Multica upserts the PR row, scans the PR for issue identifiers, and (re)builds the link rows. Idempotent — replaying a delivery is a no-op. |
-| **Auto-status on merge** | When a PR transitions to `merged`, every linked issue not already `Done` or `Cancelled` is moved to `Done`. The status change is timeline-logged with source `github_pr_merged`. |
+| **Auto-status on merge** | A merged PR with adjacent `Closes` / `Fixes` / `Resolves` intent can complete an eligible leaf child only when no GitHub, native VCS, or external-provider link remains `open` or `draft`. `record_only` records the fact without changing status. |
 | **PR card → CI & mergeability** | For each linked PR, Multica fetches an authenticated GitHub API snapshot and mirrors its **CI status** and **mergeability** onto the card (see **What the PR card shows** below). |
 
 Alongside the PR's own state, the integration mirrors — for each linked PR — its **CI status** (all checks passed, N failed with the failing check names, or N running) and its **mergeability** (ready to merge, has conflicts, blocked, or behind), fetched from an authenticated GitHub API snapshot. Commits and branch refs without an open PR are still not modeled.
@@ -54,19 +54,21 @@ The webhook extracts identifiers from three fields, in this order: **PR head bra
 - Workspace-scoped — only matches the workspace's own [issue prefix](/workspaces). `FOO-1` in a workspace whose prefix is `MUL` is ignored, even if the integer matches another issue.
 - Deduplicated — listing `MUL-1, MUL-1` in the body links the issue once.
 
-You can reference **multiple issues** in one PR. `Closes MUL-1, MUL-2` links the PR to both, and merging it advances both to `Done`.
+You can reference **multiple issues** in one PR. `Closes MUL-1, MUL-2` links both; each issue is evaluated independently against the leaf-child, policy, and no-open-or-draft-sibling rules.
 
 ## The auto-merge-to-Done rule
 
-When a PR's `merged` field flips to `true`, every linked issue is evaluated:
+When an authoritative PR is merged or closed, every linked issue is re-evaluated against the aggregate provider facts. A merge can supply the required close intent; a close can remove the final blocker:
 
 | Issue current status | Result |
 |---|---|
 | `done` | No change (already terminal). |
 | `cancelled` | **No change** — cancelled means the user explicitly abandoned the work; the integration does not override that signal. |
-| Anything else (`todo`, `in_progress`, `in_review`, `blocked`, `backlog`) | Moved to `done`. |
+| Any non-terminal status with `external_pr_completion_policy=record_only` | The merged PR and issue link remain mirrored, but the issue status does not change. A workflow with an additional completion gate must move it explicitly later. |
+| Eligible leaf child; no child issues; at least one authoritative provider link has a merged close intent; no authoritative GitHub, native VCS, or external-provider link remains `open` or `draft`; policy is absent, exact empty, or exact `leaf_child_only` | Moved to `done`. |
+| Parent, root issue, issue with children, unsupported policy value, or any authoritative link still `open` / `draft` | **No change.** Inferred body-only references have no blocking authority. |
 
-Closing a PR **without** merging it only updates the PR card's state to `Closed`. The linked issues stay where they were — the user is the one who decides what closing-without-merge means.
+Closing a PR **without** merging it updates that PR card and re-evaluates the aggregate. If another authoritative link already supplies merged close intent and this close removes the last authoritative `open` / `draft` blocker, an otherwise eligible issue can move to `done`; without that merged enabler, the issue stays where it was.
 
 <Callout type="info">
 The action is attributed to the `system` actor on the timeline. Subscribers of the issue receive an inbox notification for the status change, the same way they would if a human had moved it.
@@ -74,10 +76,10 @@ The action is attributed to the `system` actor on the timeline. Subscribers of t
 
 ## What's not auto-linked
 
-- **Identifiers in commit messages** — only branch / title / body are scanned. A commit titled `MUL-123: fix login` does not auto-link unless the same string also appears in the PR title or body.
+- **Identifiers in commit messages** — only branch / title / body are scanned. A commit titled `MUL-123: fix login` does not auto-link unless the same string also appears in the PR branch or title, or beside a closing keyword in the body.
 - **Identifiers in PR comments** — only the PR's own metadata is scanned; later GitHub comments are ignored.
 - **PRs in repos the App isn't installed on** — without the App, Multica never receives the webhook.
-- **Manually linking a PR to an issue** — there is no UI for this yet. If your team's convention puts identifiers in a place Multica isn't reading, add them to the PR title or body.
+- **Manually linking a PR to an issue** — there is no UI for this yet. Put the identifier in the PR branch or title, or beside `Closes` / `Fixes` / `Resolves` in the body, to create an authoritative link.
 
 ## Disconnecting
 
@@ -162,7 +164,7 @@ GITHUB_APP_PRIVATE_KEY=<full PEM block, including BEGIN/END lines>
 - `Connect GitHub` in Settings is **disabled** and shows a "not configured" hint.
 - The `/api/webhooks/github` endpoint returns **`503 github webhooks not configured`** — Multica refuses to process events with no secret, rather than silently treating every signature as valid.
 
-`GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are now **required for the PR card's CI status and mergeability** — they let Multica authenticate as the App (App JWT → installation token) and pull the GitHub API snapshot each card is built from. Generate the key under **Private keys → Generate a private key** on the App's settings page; paste the full PEM block (including the `-----BEGIN/END RSA PRIVATE KEY-----` lines) into the env var, preserving newlines. Without them the integration **degrades cleanly**: PRs still mirror, issues still auto-link and move to Done on merge, and the connected account name still resolves from the `installation.created` webhook — but the PR card shows no CI or merge status.
+`GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are now **required for the PR card's CI status and mergeability** — they let Multica authenticate as the App (App JWT → installation token) and pull the GitHub API snapshot each card is built from. Generate the key under **Private keys → Generate a private key** on the App's settings page; paste the full PEM block (including the `-----BEGIN/END RSA PRIVATE KEY-----` lines) into the env var, preserving newlines. Without them the integration **degrades cleanly**: PRs still mirror, authoritative links are still evaluated under the leaf-child, completion-policy, merged-close-intent, and no-authoritative-open/draft gates, and the connected account name still resolves from the `installation.created` webhook — but the PR card shows no CI or merge status.
 
 `FRONTEND_ORIGIN` must also be set (it already is for any production self-host); the setup callback bounces the user back to `<FRONTEND_ORIGIN>/settings?tab=github` after install.
 
@@ -187,7 +189,7 @@ In Multica:
 3. Pick the repositories to grant access to and **Install**.
 4. GitHub redirects back to `<api-host>/api/github/setup`, which records the installation and bounces you to `<FRONTEND_ORIGIN>/settings?tab=github&github_connected=1`.
 
-After that, open any PR whose branch / title / body contains an issue identifier — within a few seconds the Pull requests block appears on that issue's detail page.
+After that, open a PR whose branch or title contains an issue identifier, or whose body places it beside `Closes` / `Fixes` / `Resolves` — within a few seconds the Pull requests block appears on that issue's detail page. A body-only bare identifier remains an inferred hidden audit reference.
 
 ### 5. Verify with a curl probe
 
@@ -230,10 +232,10 @@ If any are missing, fix the App's **Subscribe to events** / **Permissions** — 
 
 A few rough edges to be aware of today:
 
-- **No manual link UI yet** — the only way to link a PR is to have the identifier in its branch, title, or body.
+- **No manual link UI yet** — authoritative links come from the branch, title, or an adjacent closing keyword in the body; a body-only bare identifier is inferred and hidden.
 - **No review threads or reviewer list** — CI status and mergeability are now surfaced on the PR card (see **What the PR card shows**), but review comments, individual reviewers, and their approval state are not.
-- **No workspace-level config** for the merge → Done rule — it's a fixed default (`merged → done`, unless `cancelled`). Workspace-customizable mappings are a future addition.
-- **Multi-PR-to-one-issue is conservative on merge** — if two PRs both reference `MUL-123` and the first one merges, the issue is moved to `Done` immediately. A follow-up change to wait for all linked PRs to resolve before advancing is in progress.
+- **Completion policy is metadata-driven** — only an absent value, exact empty string, or exact `leaf_child_only` permits provider completion; exact `record_only` records facts, and all other values fail closed.
+- **Multi-PR-to-one-issue completion waits** — an eligible leaf child is not completed while any authoritative GitHub, native VCS, or external-provider link remains `open` or `draft`. Inferred links do not block.
 
 ## Next
 

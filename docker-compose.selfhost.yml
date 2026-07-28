@@ -10,7 +10,10 @@
 #
 # Usage:
 #   cp .env.example .env
-#   # Edit .env — change JWT_SECRET at minimum
+#   # Edit .env — change JWT_SECRET and set a stable deployment-unique
+#   # MULTICA_WORKLOAD_ASSERTION_ISSUER and a secret-free issuer instance ID
+#   # that exactly matches AGS trusted_issuers[].id before validating or starting.
+#   docker compose -f docker-compose.selfhost.yml config >/dev/null
 #   docker compose -f docker-compose.selfhost.yml up -d
 #
 # Frontend: http://localhost:${FRONTEND_PORT:-3000}
@@ -82,6 +85,16 @@ services:
       MULTICA_DEV_VERIFICATION_CODE: ${MULTICA_DEV_VERIFICATION_CODE:-}
       MULTICA_APP_URL: ${MULTICA_APP_URL:-http://localhost:3000}
       MULTICA_SHUTDOWN_HOLD_DURATION: ${MULTICA_SHUTDOWN_HOLD_DURATION:-}
+      # Fork-only external PR callbacks and purpose-bound workload assertions.
+      # Secret values come from .env, shell, or deployment secret management.
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET:-}
+      MULTICA_EXTERNAL_PR_SERVICE_TOKEN: ${MULTICA_EXTERNAL_PR_SERVICE_TOKEN:-}
+      MULTICA_WORKLOAD_ASSERTION_SECRET: ${MULTICA_WORKLOAD_ASSERTION_SECRET:-}
+      MULTICA_WORKLOAD_ASSERTION_ISSUER: ${MULTICA_WORKLOAD_ASSERTION_ISSUER:?set a stable deployment-unique workload assertion JWT issuer}
+      MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID: ${MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID:?set the exact secret-free AGS trusted issuer ID}
+      MULTICA_WORKLOAD_ASSERTION_KEY_ID: ${MULTICA_WORKLOAD_ASSERTION_KEY_ID:-multica-workload-assertion-v1}
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE:-external-pr-link}
+      MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS: ${MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}

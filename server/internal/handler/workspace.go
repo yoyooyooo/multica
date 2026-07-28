@@ -770,11 +770,32 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockProviderWorkspaces(r.Context(), tx, []pgtype.UUID{requester.WorkspaceID}); err != nil {
+		slog.Warn("lock workspace provider facts for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
 
 	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
 		slog.Warn("lock workspace for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
 		return
+	}
+
+	// Workspace deletion cascades every provider link. Take the same sorted
+	// Issue advisory locks as provider fact writers before any Issue row can be
+	// removed, preserving advisory-lock -> row-lock order across the workspace.
+	issueIDs, err := qtx.ListIssueIDsByWorkspaceForCompletionLock(r.Context(), requester.WorkspaceID)
+	if err == nil {
+		err = lockCompletionIssues(r.Context(), qtx, issueIDs)
+	}
+	if err != nil {
+		slog.Warn("lock workspace Issues for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
+	if h.IssueDeleteHook != nil {
+		h.IssueDeleteHook("workspace_completion_locks_acquired")
 	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
@@ -793,6 +814,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// (the lookup would have errored otherwise), so reuse the resolved value.
 	if err := qtx.DeleteWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		slog.Warn("delete workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
+	if err := qtx.DeleteWorkspaceWorkloadAuthority(r.Context(), requester.WorkspaceID); err != nil {
+		slog.Warn("delete workspace workload authority failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
 		return
 	}
