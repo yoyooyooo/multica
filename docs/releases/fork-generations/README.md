@@ -9,4 +9,4 @@ Each file records one Multica fork generation derived from an exact official ups
 
 Active generation:
 
-- [`v0.4.12`](v0.4.12.md) — r1 deployed; r2 corrective convergence is required after donor-delta omissions were found.
+- [`v0.4.12`](v0.4.12.md) — r2 accepted and deployed from `fork-mini-v0.4.12-r2`; r1 remains immutable previous-generation evidence.

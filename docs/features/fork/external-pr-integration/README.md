@@ -219,6 +219,17 @@ External PR link、merge、auto-complete 记录为 `activity_log` system event�
 - Live headless proof: `multica issue external-prs <issue> --output json`。
 - Browser proof: Issue详情必须显示独立`External PRs`区块和真实provider/merge链接；render test不替代browser reachability。
 
+## Mini live acceptance
+
+`fork-mini-v0.4.12-r2`在规范公开入口`https://mini.tail9146e0.ts.net:37445`完成了独立authenticated browser proof：
+
+- `MINI-1278`显示AGS PR `jackie/agent-kit#279`、Forgejo projection `#266`、`closed`、`authoritative`、completion intent及timeline link activity；
+- disposable `MINI-1283`先显示AGS PR `#280` / Forgejo projection `#267`为`open`；
+- durable operator通过受支持的`ags-cli pr close`关闭AGS authority后，浏览器在没有reload的情况下收到`pull_request:updated`，重新GET exact Issue `/external-prs`并把侧栏收敛为`closed`；
+- browser errors为空；disposable branch已删除并验证absent，三个proof Issue均已取消。
+
+Owning receipt SHA-256：`941ab61790592b1046eeb179436f73c724f186cdaebc163ad06b1f3e5555b977`。该receipt不声明Forgejo CI、merge或独立human approval。
+
 ## 自动完成安全规则
 
 只有同时满足以下条件，Multica 才会把 Issue 标记为 `done`：
