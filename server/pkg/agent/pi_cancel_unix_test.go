@@ -134,7 +134,9 @@ func TestPiTimeoutUsesProcessGroupCleanup(t *testing.T) {
 	ctx := context.Background()
 	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
 		Cwd:     tempDir,
-		Timeout: 500 * time.Millisecond, // short timeout triggers deadline
+		// Leave enough startup headroom for the package's highly parallel Unix
+		// subprocess tests; the fake process still blocks until this deadline.
+		Timeout: 3 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
