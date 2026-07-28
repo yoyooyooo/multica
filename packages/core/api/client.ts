@@ -133,6 +133,7 @@ import type {
   NotificationPreferenceResponse,
   NotificationPreferences,
   GitHubPullRequest,
+  ListExternalPullRequestLinksResponse,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
   ListVCSConnectionsResponse,
@@ -279,6 +280,8 @@ import {
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_EXTERNAL_PULL_REQUESTS_RESPONSE,
+  ExternalPullRequestsResponseSchema,
   IssuePullRequestsResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
@@ -2810,6 +2813,18 @@ export class ApiClient {
       IssuePullRequestsResponseSchema,
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { endpoint: "GET /api/issues/:id/pull-requests" },
+    );
+  }
+
+  async listIssueExternalPullRequests(
+    issueId: string,
+  ): Promise<ListExternalPullRequestLinksResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/external-prs`);
+    return parseWithFallback(
+      raw,
+      ExternalPullRequestsResponseSchema,
+      EMPTY_EXTERNAL_PULL_REQUESTS_RESPONSE,
+      { endpoint: "GET /api/issues/:id/external-prs" },
     );
   }
 

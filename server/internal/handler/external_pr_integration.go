@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const defaultExternalPRLinkTokenAudience = "external-pr-link"
@@ -86,6 +87,7 @@ func (h *Handler) RegisterExternalPullRequestLink(w http.ResponseWriter, r *http
 		writeExternalPRError(w, err)
 		return
 	}
+	h.publishExternalPRProjectionUpdate(upserted, req)
 	if upserted.State == "merged" || upserted.State == "closed" {
 		if _, err := h.evaluatePullRequestCompletionWithActivitiesResult(
 			r.Context(),
@@ -119,11 +121,12 @@ func (h *Handler) CompleteIssueFromExternalPR(w http.ResponseWriter, r *http.Req
 	if strings.TrimSpace(req.LinkConfidence) == "" {
 		req.LinkConfidence = "authoritative"
 	}
-	_, err := h.upsertExternalPullRequestLink(r.Context(), req)
+	upserted, err := h.upsertExternalPullRequestLink(r.Context(), req)
 	if err != nil {
 		writeExternalPRError(w, err)
 		return
 	}
+	h.publishExternalPRProjectionUpdate(upserted, req)
 	out, err := h.completeLeafChildIssueFromExternalPR(r, req)
 	if err != nil {
 		slog.Warn("external PR integration: completion transaction failed", "error", err)
@@ -131,6 +134,25 @@ func (h *Handler) CompleteIssueFromExternalPR(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) publishExternalPRProjectionUpdate(
+	upserted externalPRUpsertResult,
+	req externalPullRequestLinkRequest,
+) {
+	h.publish(
+		protocol.EventPullRequestUpdated,
+		uuidToString(upserted.Issue.WorkspaceID),
+		"system",
+		"",
+		map[string]any{
+			"issue_id":        uuidToString(upserted.Issue.ID),
+			"provider":        req.Provider,
+			"external_repo":   req.ExternalRepo,
+			"external_number": req.ExternalNumber,
+			"state":           upserted.State,
+		},
+	)
 }
 
 func (h *Handler) ListExternalPullRequestsForIssue(w http.ResponseWriter, r *http.Request) {

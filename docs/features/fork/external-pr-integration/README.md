@@ -199,7 +199,7 @@ CLI 入口：
 multica issue external-prs MINI-379 --output json
 ```
 
-本generation保留backend API与CLI读取面；不在此batch新增或声明新的frontend projection。
+Frontend通过`packages/core` API schema/client和TanStack Query读取同一`/external-prs` projection。Issue详情侧栏提供独立的`External PRs`区块，展示provider PR、merge projection、state、confidence、completion intent和merged SHA；该区块不受GitHub/native PR sidebar开关控制。Issue timeline同时渲染下列system event。Frontend不写或推断External PR事实。
 
 External PR link、merge、auto-complete 记录为 `activity_log` system event：
 
@@ -207,7 +207,17 @@ External PR link、merge、auto-complete 记录为 `activity_log` system event�
 - `external_pr_merged`
 - `issue_completed_by_external_pr`
 
-这些 event 进入 issue timeline/activity，不写普通 `comment`，也不触发 comment/mention 唤醒。
+这些event进入issue timeline/activity，不写普通`comment`，也不触发comment/mention唤醒。Link事务提交后，backend发布`pull_request:updated`；frontend同时invalidate native/External PR projection，并按event中的`issue_id`刷新timeline。
+
+## Source and test anchors
+
+- Backend fact/API/completion: `server/internal/handler/external_pr_integration.go`、`pull_request_completion.go`及对应tests。
+- Routes: `server/cmd/server/router.go`、`external_pr_routes_integration_test.go`。
+- CLI: `server/cmd/multica/cmd_issue.go`及tests。
+- Frontend wire contract: `packages/core/types/github.ts`、`api/schemas.ts`、`api/client.ts`、`github/queries.ts`。
+- Frontend render: `packages/views/issues/components/pull-request-list.tsx`、`issue-detail.tsx`及对应render tests。
+- Live headless proof: `multica issue external-prs <issue> --output json`。
+- Browser proof: Issue详情必须显示独立`External PRs`区块和真实provider/merge链接；render test不替代browser reachability。
 
 ## 自动完成安全规则
 
@@ -262,43 +272,37 @@ MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE=external-pr-link
 MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS=ags
 ```
 
-只替换 backend、保留当前 Postgres 和 frontend。当前 `docker-compose.selfhost.build.yml` 不转发 host `GOPROXY`；如构建网络需要代理，必须先在受支持的 build 配置中显式加入并审查对应 build arg，不能把 shell 环境当作已生效的证据。
+包含frontend projection的generation部署必须从同一exact head构建backend和frontend。`docker-compose.selfhost.build.yml`把可选`GOPROXY`作为reviewed backend build arg传入，默认`https://proxy.golang.org,direct`；shell值只有在rendered Compose config中读回后才构成生效证据。
 
 ```bash
 docker compose \
   -f docker-compose.selfhost.yml \
   -f docker-compose.selfhost.build.yml \
-  build backend
+  build backend frontend
 
 docker compose \
   -f docker-compose.selfhost.yml \
   -f docker-compose.selfhost.build.yml \
-  up -d --no-deps --force-recreate backend
+  up -d --no-deps --force-recreate backend frontend
 ```
 
 关键约束：
 
-- 不要执行 `docker compose down`，避免影响 Postgres volume 和 frontend。
-- `--no-deps` 确保只重建 `backend`，不重启 `postgres` / `frontend`。
-- 切换后 `multica-backend-1` 的 image 应为 `multica-backend:dev`，而 `multica-postgres-1` / `multica-frontend-1` 应保持原样。
-- 新路由检查应返回非 `404`：
+- 不要执行 `docker compose down`，避免影响Postgres、network和`multica_pgdata`。
+- `--no-deps`确保不重启`postgres`。
+- Source Compose以`./data/uploads:/app/data/uploads`保留uploads bind authority；target override可把source绝对化，但不得改为新的named volume。
+- External PR路由检查应返回非`404`：
   - `POST /api/integrations/workload-assertions`
   - `POST /api/integrations/external-pr/link-token`（legacy wrapper）
   - `POST /api/integrations/external-pr/links`
   - `POST /api/integrations/external-pr/complete-from-merge`
   - `GET /api/issues/{issue_id_or_key}/external-prs`
 
-如果需要回滚到官方 backend，同样只操作 backend：
+回滚必须使用已记录的backend/frontend image pair；跨越forward-only migration 241时还必须恢复对应数据库备份，不能只交换镜像。
 
-```bash
-docker compose \
-  -f docker-compose.selfhost.yml \
-  up -d --no-deps --force-recreate backend
-```
+## Provider profile：AGS
 
-## Provider profile：AGS（待跨仓验收）
-
-AGS 是第一个预期 provider，但以下内容只是 Multica-owned integration contract，不证明当前 AGS runtime 或 shim 已实现。只有在 exact accepted AGS revision、verifier schema和target-local receipt通过后才可启用。示例中的 issuer 必须与本deployment的唯一值完全一致：
+AGS是第一个接入provider。以下内容是Multica-owned integration contract；具体accepted source/runtime和target-local proof由generation manifest及外部系统receipt证明。示例中的issuer必须与本deployment唯一值完全一致：
 
 ```yaml
 multica:
@@ -319,7 +323,7 @@ multica:
     mode: leaf_child_only
 ```
 
-跨仓验收合同：provider client只能经canonical `/api/integrations/workload-assertions`取得purpose-bound assertion；AGS必须验证purpose、audience、key、deployment-unique issuer、workload和target后再保存权威绑定。任何PR body marker都只能作可读projection，不能参与完成授权。具体shim触发、host gate和receipt字段等待AGS exact accepted generation冻结，本文不作runtime事实声明。
+跨仓验收合同：provider client只能经canonical `/api/integrations/workload-assertions`取得purpose-bound assertion；AGS必须验证purpose、audience、key、deployment-unique issuer、workload和target后再保存权威绑定。任何PR body marker都只能作可读projection，不能参与完成授权。本文不以配置示例替代AGS source、provider projection或runtime事实。
 
 ## Future / Roadmap
 

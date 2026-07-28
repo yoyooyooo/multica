@@ -5,6 +5,7 @@ export const githubKeys = {
   all: (wsId: string) => ["github", wsId] as const,
   installations: (wsId: string) => [...githubKeys.all(wsId), "installations"] as const,
   pullRequests: (issueId: string) => ["github", "pull-requests", issueId] as const,
+  externalPullRequests: (issueId: string) => ["external-prs", issueId] as const,
 };
 
 export const githubInstallationsOptions = (wsId: string) =>
@@ -18,5 +19,12 @@ export const issuePullRequestsOptions = (issueId: string) =>
   queryOptions({
     queryKey: githubKeys.pullRequests(issueId),
     queryFn: () => api.listIssuePullRequests(issueId),
+    enabled: !!issueId,
+  });
+
+export const issueExternalPullRequestsOptions = (issueId: string) =>
+  queryOptions({
+    queryKey: githubKeys.externalPullRequests(issueId),
+    queryFn: () => api.listIssueExternalPullRequests(issueId),
     enabled: !!issueId,
   });

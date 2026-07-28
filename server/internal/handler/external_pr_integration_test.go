@@ -84,6 +84,34 @@ func TestExternalPRInfrastructureFailureReturnsGeneric503(t *testing.T) {
 	}
 }
 
+func TestRegisterExternalPRPublishesProjectionRefresh(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-refresh-token")
+	issueID := createExternalPRTestIssue(t, "external projection refresh", "todo", "", nil)
+	eventsCh := make(chan events.Event, 1)
+	testHandler.Bus.Subscribe(protocol.EventPullRequestUpdated, func(e events.Event) {
+		payload, _ := e.Payload.(map[string]any)
+		if payload["issue_id"] == issueID && payload["provider"] == "ags" {
+			eventsCh <- e
+		}
+	})
+
+	reqBody := externalPRCompletionReq(testWorkspaceID, issueID, 10002)
+	reqBody.State = "open"
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", reqBody)
+	req.Header.Set("Authorization", "Bearer external-pr-refresh-token")
+	w := httptest.NewRecorder()
+	testHandler.RegisterExternalPullRequestLink(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	select {
+	case <-eventsCh:
+	case <-time.After(time.Second):
+		t.Fatalf("expected %s after External PR projection commit", protocol.EventPullRequestUpdated)
+	}
+}
+
 func TestExternalPRLinkTokenAudienceConfig(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE", "")
 	if got := externalPRLinkTokenAudience(); got != defaultExternalPRLinkTokenAudience {

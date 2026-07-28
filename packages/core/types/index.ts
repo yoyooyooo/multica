@@ -126,6 +126,7 @@ export type {
 } from "./project";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {
+  ExternalPullRequestLink,
   GitHubInstallation,
   GitHubMergeableState,
   GitHubPullRequest,
@@ -134,6 +135,7 @@ export type {
   GitHubPullRequestMergeable,
   GitHubPullRequestMergeStateStatus,
   GitHubPullRequestState,
+  ListExternalPullRequestLinksResponse,
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
 } from "./github";

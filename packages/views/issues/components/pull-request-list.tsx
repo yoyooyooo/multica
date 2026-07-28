@@ -16,6 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  issueExternalPullRequestsOptions,
   issuePullRequestsOptions,
   deriveChecksStatus,
   deriveMergeStatus,
@@ -23,7 +24,11 @@ import {
   type PullRequestChecksStatus,
   type PullRequestMergeStatus,
 } from "@multica/core/github";
-import type { GitHubPullRequest, GitHubPullRequestState } from "@multica/core/types";
+import type {
+  ExternalPullRequestLink,
+  GitHubPullRequest,
+  GitHubPullRequestState,
+} from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { useT, useTimeAgo } from "../../i18n";
 
@@ -89,6 +94,111 @@ export function PullRequestList({ issueId }: { issueId: string }) {
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export function ExternalPullRequestList({ issueId }: { issueId: string }) {
+  const { t } = useT("issues");
+  const { data, isLoading } = useQuery(issueExternalPullRequestsOptions(issueId));
+  const prs = data?.external_pull_requests ?? [];
+
+  if (isLoading) {
+    return (
+      <p className="px-2 text-xs text-muted-foreground">
+        {t(($) => $.detail.external_prs_loading)}
+      </p>
+    );
+  }
+  if (prs.length === 0) {
+    return (
+      <p className="px-2 text-xs text-muted-foreground">
+        {t(($) => $.detail.external_prs_empty)}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {prs.map((pr) => (
+        <ExternalPullRequestRow key={pr.id} pr={pr} />
+      ))}
+    </div>
+  );
+}
+
+function ExternalPullRequestRow({ pr }: { pr: ExternalPullRequestLink }) {
+  const { t } = useT("issues");
+  const cfg = STATE_ICON[pr.state as GitHubPullRequestState] ?? {
+    icon: GitPullRequest,
+    className: "text-muted-foreground",
+  };
+  const StateIcon = cfg.icon;
+  const externalLabel = `${pr.provider}:${pr.external_repo}#${pr.external_number}`;
+  const mergeLabel =
+    pr.merge_provider && pr.merge_repo && pr.merge_number
+      ? `${pr.merge_provider}:${pr.merge_repo}#${pr.merge_number}`
+      : pr.merge_provider;
+  const mergeText = mergeLabel
+    ? `${t(($) => $.detail.external_pr_merge)} ${mergeLabel}`
+    : null;
+
+  const externalContent = pr.external_url ? (
+    <a
+      data-testid="external-pull-request-link"
+      href={pr.external_url}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="hover:underline"
+    >
+      {externalLabel}
+    </a>
+  ) : (
+    <span>{externalLabel}</span>
+  );
+
+  const mergeContent = mergeText ? (
+    pr.merge_url ? (
+      <a
+        data-testid="external-pull-request-merge-link"
+        href={pr.merge_url}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="hover:underline"
+      >
+        {mergeText}
+      </a>
+    ) : (
+      <span>{mergeText}</span>
+    )
+  ) : null;
+
+  return (
+    <div
+      data-testid="external-pull-request-row"
+      className="group -mx-2 flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-accent/50"
+    >
+      <StateIcon className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", cfg.className)} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium leading-snug group-hover:text-foreground">
+          {externalContent}
+        </p>
+        <p className="truncate text-[11px] text-muted-foreground">
+          {getStateLabel(pr.state as GitHubPullRequestState, t)} · {pr.link_confidence}
+          {pr.completion_intent
+            ? ` · ${t(($) => $.detail.external_pr_completion_intent)}`
+            : null}
+        </p>
+        {mergeContent || pr.merged_sha ? (
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            {mergeContent}
+            {mergeContent && pr.merged_sha ? " · " : null}
+            {pr.merged_sha
+              ? `${t(($) => $.detail.external_pr_merged_sha)} ${pr.merged_sha.slice(0, 12)}`
+              : null}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

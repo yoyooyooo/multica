@@ -1,8 +1,9 @@
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { GitHubPullRequest } from "@multica/core/types";
+import type { ExternalPullRequestLink, GitHubPullRequest } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
@@ -19,12 +20,18 @@ vi.mock("@multica/core/github/queries", async () => {
       queryFn: async () => ({ pull_requests: mockPRs }),
       enabled: !!issueId,
     }),
+    issueExternalPullRequestsOptions: (issueId: string) => ({
+      queryKey: ["external-prs", issueId],
+      queryFn: async () => ({ external_pull_requests: mockExternalPRs }),
+      enabled: !!issueId,
+    }),
   };
 });
 
-import { PullRequestList } from "./pull-request-list";
+import { ExternalPullRequestList, PullRequestList } from "./pull-request-list";
 
 let mockPRs: GitHubPullRequest[] = [];
+let mockExternalPRs: ExternalPullRequestLink[] = [];
 
 function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   return {
@@ -62,20 +69,99 @@ function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   };
 }
 
-function renderList() {
+function makeExternalPR(
+  overrides: Partial<ExternalPullRequestLink> = {},
+): ExternalPullRequestLink {
+  return {
+    id: "external-pr-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    provider: "ags",
+    external_repo: "jackie/agent-kit",
+    external_number: 279,
+    external_url: "http://mini:6666/jackie/agent-kit/pull/279",
+    state: "closed",
+    link_confidence: "authoritative",
+    completion_intent: true,
+    merge_provider: "forgejo",
+    merge_repo: "jackie/agent-kit",
+    merge_number: 266,
+    merge_url: "http://forgejo.local/jackie/agent-kit/pulls/266",
+    merged_sha: null,
+    created_at: "2026-07-28T11:14:00Z",
+    updated_at: "2026-07-28T11:18:35Z",
+    ...overrides,
+  };
+}
+
+function renderWithQueryClient(element: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
-        <PullRequestList issueId="issue-1" />
+        {element}
       </I18nProvider>
     </QueryClientProvider>,
   );
 }
 
+function renderList() {
+  return renderWithQueryClient(<PullRequestList issueId="issue-1" />);
+}
+
+function renderExternalList() {
+  return renderWithQueryClient(<ExternalPullRequestList issueId="issue-1" />);
+}
+
 async function waitForRender() {
   return screen.findAllByRole("link");
 }
+
+describe("ExternalPullRequestList sidebar rows", () => {
+  it("renders the provider PR and merge projection links", async () => {
+    mockExternalPRs = [makeExternalPR()];
+    renderExternalList();
+
+    const providerLink = await screen.findByTestId("external-pull-request-link");
+    expect(providerLink).toHaveTextContent("ags:jackie/agent-kit#279");
+    expect(providerLink).toHaveAttribute(
+      "href",
+      "http://mini:6666/jackie/agent-kit/pull/279",
+    );
+    const mergeLink = screen.getByTestId("external-pull-request-merge-link");
+    expect(mergeLink).toHaveTextContent("merge forgejo:jackie/agent-kit#266");
+    expect(mergeLink).toHaveAttribute(
+      "href",
+      "http://forgejo.local/jackie/agent-kit/pulls/266",
+    );
+    expect(screen.getByText("Closed · authoritative · completion intent")).toBeInTheDocument();
+  });
+
+  it("renders a merged SHA without inventing a merge link", async () => {
+    mockExternalPRs = [
+      makeExternalPR({
+        state: "merged",
+        merge_url: null,
+        merged_sha: "39821e1064785679864bb0ddc93ffb6ced4541be",
+      }),
+    ];
+    renderExternalList();
+
+    await screen.findByTestId("external-pull-request-row");
+    expect(screen.queryByTestId("external-pull-request-merge-link")).not.toBeInTheDocument();
+    expect(screen.getByText(/merged SHA 39821e106478/)).toBeInTheDocument();
+  });
+
+  it("renders the explicit empty state", async () => {
+    mockExternalPRs = [];
+    renderExternalList();
+    expect(
+      await screen.findByText(
+        "No linked external PRs yet. External providers can create authoritative links with the External PR Integration.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
 
 describe("PullRequestList sidebar rows", () => {
   it("uses the sidebar list-row surface instead of a card surface", async () => {
