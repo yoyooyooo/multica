@@ -36,7 +36,7 @@ sed \
   -e 's#^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:selfhost-config-test#' \
   -e 's#^MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=multica-selfhost-config-test#' \
   .env.example >"$tmp_env"
-printf '\nBACKEND_PORT=9100\n' >>"$tmp_env"
+printf '\nBACKEND_PORT=9100\nMULTICA_LARK_WS_PROXY_URL=http://proxy.test:7890\n' >>"$tmp_env"
 
 if docker compose --env-file .env.example -f docker-compose.selfhost.yml config >/dev/null 2>&1; then
   echo "self-host compose unexpectedly accepted a missing workload assertion issuer"
@@ -73,6 +73,27 @@ require_config "$config" 'GOOGLE_REDIRECT_URI: http://localhost:3100/auth/callba
 require_config "$config" 'MULTICA_APP_URL: http://localhost:3100'
 require_config "$config" 'MULTICA_WORKLOAD_ASSERTION_ISSUER: urn:multica:deployment:selfhost-config-test'
 require_config "$config" 'MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID: multica-selfhost-config-test'
+require_config "$config" 'MULTICA_LARK_WS_PROXY_URL: http://proxy.test:7890'
+for proxy_key in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+  require_config "$config" "$proxy_key: \"\""
+done
+require_config "$config" "source: $ROOT_DIR/data/uploads"
+require_config "$config" 'target: /app/data/uploads'
+if grep -Fq 'source: multica_backend_uploads' <<<"$config"; then
+  echo "self-host compose must preserve uploads through the repository bind mount"
+  exit 1
+fi
+
+build_config="$(
+  GOPROXY='https://goproxy.example,direct' docker compose \
+    --env-file "$tmp_env" \
+    -f docker-compose.selfhost.yml \
+    -f docker-compose.selfhost.build.yml \
+    config
+)"
+require_config "$build_config" 'GOPROXY: https://goproxy.example,direct'
+require_config "$(cat Dockerfile)" 'ARG GOPROXY=https://proxy.golang.org,direct'
+require_config "$(cat Dockerfile)" 'ENV GOPROXY=${GOPROXY}'
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "helm is required for the real self-host chart contract test"

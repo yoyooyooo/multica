@@ -61,6 +61,8 @@ jobs:
               - 'scripts/selfhost-config.test.sh'
               - 'scripts/ensure-workload-issuer.sh'
               - 'scripts/validate-workload-issuer.sh'
+              - 'scripts/validate-cli-build-version.sh'
+              - 'scripts/validate-cli-build-version.test.sh'
               - 'scripts/install.sh'
               - 'scripts/install.ps1'
               - 'scripts/init-worktree-env.sh'
@@ -68,6 +70,7 @@ jobs:
               - 'scripts/dev.sh'
               - 'scripts/local-env.sh'
               - '.env.example'
+              - 'Dockerfile'
               - 'docker-compose.selfhost.yml'
               - 'docker-compose.selfhost.build.yml'
 
@@ -303,6 +306,9 @@ jobs:
 
       - name: Test Helm chart
         run: bash scripts/helm-config.test.sh
+
+      - name: Test CLI build version admission
+        run: bash scripts/validate-cli-build-version.test.sh
 
       - name: Build
         run: cd server && go build ./...
