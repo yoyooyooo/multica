@@ -25,7 +25,10 @@ if [ -n "$users" ]; then
     fi
   done
   echo "legacy uploads migration: stopping the owning backend before the copy"
-  "$docker_bin" compose -f "$root/docker-compose.selfhost.yml" stop backend
+  # Stop the admitted owners by exact container ID. This remains usable when
+  # an older generation's Compose schema cannot be rendered by current files.
+  # shellcheck disable=SC2086 # IDs are Docker-generated whitespace-free tokens.
+  "$docker_bin" stop $users >/dev/null
 fi
 
 mkdir -p "$target_dir" "$(dirname -- "$receipt")"
