@@ -59,6 +59,8 @@ jobs:
               - 'apps/docs/content/docs/self-host-quickstart.ja.mdx'
               - 'apps/docs/content/docs/self-host-quickstart.ko.mdx'
               - 'scripts/selfhost-config.test.sh'
+              - 'scripts/copy-legacy-uploads.sh'
+              - 'scripts/migrate-selfhost-uploads.sh'
               - 'scripts/ensure-workload-issuer.sh'
               - 'scripts/validate-workload-issuer.sh'
               - 'scripts/validate-cli-build-version.sh'

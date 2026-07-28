@@ -140,6 +140,9 @@ func (h *Handler) publishExternalPRProjectionUpdate(
 	upserted externalPRUpsertResult,
 	req externalPullRequestLinkRequest,
 ) {
+	if upserted.Replayed {
+		return
+	}
 	h.publish(
 		protocol.EventPullRequestUpdated,
 		uuidToString(upserted.Issue.WorkspaceID),

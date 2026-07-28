@@ -110,7 +110,9 @@ function renderList() {
 }
 
 function renderExternalList() {
-  return renderWithQueryClient(<ExternalPullRequestList issueId="issue-1" />);
+  return renderWithQueryClient(
+    <ExternalPullRequestList workspaceId="ws-1" issueId="issue-1" />,
+  );
 }
 
 async function waitForRender() {

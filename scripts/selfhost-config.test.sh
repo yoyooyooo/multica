@@ -95,6 +95,42 @@ require_config "$build_config" 'GOPROXY: https://goproxy.example,direct'
 require_config "$(cat Dockerfile)" 'ARG GOPROXY=https://proxy.golang.org,direct'
 require_config "$(cat Dockerfile)" 'ENV GOPROXY=${GOPROXY}'
 
+legacy_uploads="$tmp_dir/legacy-uploads"
+bind_uploads="$tmp_dir/bind-uploads"
+mkdir -p "$legacy_uploads/nested" "$bind_uploads"
+printf 'legacy payload\n' >"$legacy_uploads/nested/asset.txt"
+printf 'bind-owned payload\n' >"$bind_uploads/current.txt"
+ln -s nested/asset.txt "$legacy_uploads/asset-link"
+bash scripts/copy-legacy-uploads.sh "$legacy_uploads" "$bind_uploads"
+cmp "$legacy_uploads/nested/asset.txt" "$bind_uploads/nested/asset.txt"
+cmp <(printf 'bind-owned payload\n') "$bind_uploads/current.txt"
+[[ "$(readlink "$bind_uploads/asset-link")" == 'nested/asset.txt' ]]
+# A second pass must be idempotent and preserve the verified content.
+bash scripts/copy-legacy-uploads.sh "$legacy_uploads" "$bind_uploads"
+cmp "$legacy_uploads/nested/asset.txt" "$bind_uploads/nested/asset.txt"
+
+conflict_source="$tmp_dir/conflict-source"
+conflict_target="$tmp_dir/conflict-target"
+mkdir -p "$conflict_source" "$conflict_target"
+printf 'legacy\n' >"$conflict_source/same.txt"
+printf 'bind\n' >"$conflict_target/same.txt"
+if bash scripts/copy-legacy-uploads.sh "$conflict_source" "$conflict_target" >/dev/null 2>&1; then
+  echo "legacy uploads migration overwrote or accepted a conflicting bind-owned file"
+  exit 1
+fi
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+text = Path("Makefile").read_text()
+for target in ("selfhost", "selfhost-build"):
+    match = re.search(rf"^{target}:.*?(?=^[A-Za-z0-9_.-]+:|\Z)", text, re.M | re.S)
+    assert match, target
+    block = match.group(0)
+    assert block.index("scripts/migrate-selfhost-uploads.sh") < block.index("up -d"), target
+print("legacy uploads preflight order ok")
+PY
+
 if ! command -v helm >/dev/null 2>&1; then
   echo "helm is required for the real self-host chart contract test"
   exit 1

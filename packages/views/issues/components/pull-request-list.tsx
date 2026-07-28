@@ -98,9 +98,17 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   );
 }
 
-export function ExternalPullRequestList({ issueId }: { issueId: string }) {
+export function ExternalPullRequestList({
+  workspaceId,
+  issueId,
+}: {
+  workspaceId: string;
+  issueId: string;
+}) {
   const { t } = useT("issues");
-  const { data, isLoading } = useQuery(issueExternalPullRequestsOptions(issueId));
+  const { data, isLoading } = useQuery(
+    issueExternalPullRequestsOptions(workspaceId, issueId),
+  );
   const prs = data?.external_pull_requests ?? [];
 
   if (isLoading) {
@@ -185,7 +193,7 @@ function ExternalPullRequestRow({ pr }: { pr: ExternalPullRequestLink }) {
         </p>
         <p className="truncate text-[11px] text-muted-foreground">
           {getStateLabel(pr.state as GitHubPullRequestState, t)} · {pr.link_confidence}
-          {pr.completion_intent
+          {pr.completion_intent === true
             ? ` · ${t(($) => $.detail.external_pr_completion_intent)}`
             : null}
         </p>

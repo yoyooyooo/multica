@@ -102,7 +102,7 @@ accepted generation head
 
 Do not move deployment tags. When a migration boundary is forward-only, rollback requires the recorded database restore as well as prior images.
 
-Self-host source must preserve the uploads bind mount contract, deployment URL/issuer identity, and reviewed build arguments. Target overrides may pin images or absolute bind paths but must not silently change storage ownership.
+Self-host source must preserve the uploads bind mount contract, deployment URL/issuer identity, and reviewed build arguments. Target overrides may pin images or absolute bind paths but must not silently change storage ownership. When an accepted older generation used a named uploads volume, the forward generation must provide an idempotent, fail-closed copy-and-verify preflight before switching runtime authority to the bind path; it must retain the old volume until separate operator disposition.
 
 ## Documentation placement
 

@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica validate-cli-build-version build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost-env selfhost selfhost-build selfhost-stop
+.PHONY: help makehelp dev server daemon cli multica validate-cli-build-version build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost-env selfhost-migrate-uploads selfhost selfhost-build selfhost-stop
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -99,6 +99,10 @@ selfhost-env: ## Create or upgrade .env with secrets and a deployment-unique iss
 	@bash scripts/ensure-workload-issuer.sh .env deployment
 	@bash scripts/validate-workload-issuer.sh .env
 
+selfhost-migrate-uploads: selfhost-env ## Copy any legacy named-volume uploads into the bind-owned path
+	$(REQUIRE_COMPOSE)
+	@bash scripts/migrate-selfhost-uploads.sh
+
 selfhost: selfhost-env ## Create .env if needed, then pull and start the official self-hosted images
 	$(REQUIRE_COMPOSE)
 	@echo "==> Pulling official Multica images..."
@@ -109,6 +113,7 @@ selfhost: selfhost-env ## Create .env if needed, then pull and start the officia
 		echo "  make selfhost-build"; \
 		exit 1; \
 	fi
+	@bash scripts/migrate-selfhost-uploads.sh
 	@echo "==> Starting Multica via Docker Compose..."
 	$(COMPOSE) -f docker-compose.selfhost.yml up -d
 	@echo "==> Waiting for backend to be ready..."
@@ -142,7 +147,9 @@ selfhost: selfhost-env ## Create .env if needed, then pull and start the officia
 selfhost-build: selfhost-env ## Build backend/web from the current checkout and start the self-hosted stack
 	$(REQUIRE_COMPOSE)
 	@echo "==> Building Multica from the current checkout..."
-	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build
+	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml build
+	@bash scripts/migrate-selfhost-uploads.sh
+	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d
 	@echo "==> Waiting for backend to be ready..."
 	@for i in $$(seq 1 30); do \
 		if curl -sf http://localhost:$${PORT:-8080}/health > /dev/null 2>&1; then \

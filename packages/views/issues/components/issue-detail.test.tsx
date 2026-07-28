@@ -976,6 +976,31 @@ describe("IssueDetail (shared)", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders malformed External PR merge SHA details fail-closed", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "external-pr-merged-activity",
+        actor_type: "system",
+        actor_id: "system",
+        action: "external_pr_merged",
+        details: {
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: "279",
+          merged_sha: 12345,
+        },
+        created_at: "2026-07-28T11:18:35Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(
+      await screen.findByText(/merged external PR ags:jackie\/agent-kit#279 \(—\)/i),
+    ).toBeInTheDocument();
+  });
+
   it("renders comments from timeline", async () => {
     renderIssueDetail();
 

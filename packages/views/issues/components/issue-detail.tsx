@@ -279,7 +279,10 @@ function formatActivity(
         provider: details.provider ?? "external",
         repo: details.external_repo ?? "?",
         number: details.external_number ?? "?",
-        sha: details.merged_sha ? details.merged_sha.slice(0, 12) : "—",
+        sha:
+          typeof details.merged_sha === "string"
+            ? details.merged_sha.slice(0, 12)
+            : "—",
       });
     case "issue_completed_by_external_pr":
       return t(($) => $.activity.issue_completed_by_external_pr, {
@@ -2029,7 +2032,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </button>
         {externalPRsOpen && (
           <div className="pl-2">
-            <ExternalPullRequestList issueId={id} />
+            <ExternalPullRequestList workspaceId={wsId} issueId={id} />
           </div>
         )}
       </div>

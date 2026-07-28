@@ -207,7 +207,7 @@ External PR link、merge、auto-complete 记录为 `activity_log` system event�
 - `external_pr_merged`
 - `issue_completed_by_external_pr`
 
-这些event进入issue timeline/activity，不写普通`comment`，也不触发comment/mention唤醒。Link事务提交后，backend发布`pull_request:updated`；frontend同时invalidate native/External PR projection，并按event中的`issue_id`刷新timeline。
+这些event进入issue timeline/activity，不写普通`comment`，也不触发comment/mention唤醒。新Link/状态事务提交后，backend发布`pull_request:updated`；exact idempotency replay不重复广播。frontend同时invalidate native/External PR projection，并按event中的`issue_id`刷新timeline。
 
 ## Source and test anchors
 
@@ -274,6 +274,8 @@ MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS=ags
 
 包含frontend projection的generation部署必须从同一exact head构建backend和frontend。`docker-compose.selfhost.build.yml`把可选`GOPROXY`作为reviewed backend build arg传入，默认`https://proxy.golang.org,direct`；shell值只有在rendered Compose config中读回后才构成生效证据。
 
+从曾使用`multica_backend_uploads`的generation升级时，先执行`make selfhost-migrate-uploads`。该preflight只在旧volume存在时停止其owning backend，以non-overwrite方式复制并逐文件验证到`./data/uploads`，保留旧volume并写secret-safe receipt；冲突文件fail closed。普通`make selfhost`和`make selfhost-build`会在启动应用前执行同一preflight。
+
 ```bash
 docker compose \
   -f docker-compose.selfhost.yml \
@@ -290,7 +292,7 @@ docker compose \
 
 - 不要执行 `docker compose down`，避免影响Postgres、network和`multica_pgdata`。
 - `--no-deps`确保不重启`postgres`。
-- Source Compose以`./data/uploads:/app/data/uploads`保留uploads bind authority；target override可把source绝对化，但不得改为新的named volume。
+- Source Compose以`./data/uploads:/app/data/uploads`保留uploads bind authority；target override可把source绝对化，但不得改为新的named volume。旧named volume仅是迁移source，不是未来runtime authority。
 - External PR路由检查应返回非`404`：
   - `POST /api/integrations/workload-assertions`
   - `POST /api/integrations/external-pr/link-token`（legacy wrapper）

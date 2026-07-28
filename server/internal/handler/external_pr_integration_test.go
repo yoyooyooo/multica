@@ -110,6 +110,19 @@ func TestRegisterExternalPRPublishesProjectionRefresh(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("expected %s after External PR projection commit", protocol.EventPullRequestUpdated)
 	}
+
+	replayReq := newRequest(http.MethodPost, "/api/integrations/external-pr/links", reqBody)
+	replayReq.Header.Set("Authorization", "Bearer external-pr-refresh-token")
+	replayW := httptest.NewRecorder()
+	testHandler.RegisterExternalPullRequestLink(replayW, replayReq)
+	if replayW.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", replayW.Code, replayW.Body.String())
+	}
+	select {
+	case <-eventsCh:
+		t.Fatalf("idempotency replay published a duplicate %s", protocol.EventPullRequestUpdated)
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 func TestExternalPRLinkTokenAudienceConfig(t *testing.T) {
