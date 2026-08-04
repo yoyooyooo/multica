@@ -401,6 +401,7 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 		{name: "pr read by number", operation: "pr.read", constraints: map[string]any{"pull_request_number": float64(41)}, capabilities: []string{"repo:read"}},
 		{name: "pr read by head", operation: "pr.read", constraints: map[string]any{"head_ref": "agent/delegated-pr"}, capabilities: []string{"repo:read"}},
 		{name: "pr rebase", operation: "pr.rebase", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "expected_base_sha": sha}, capabilities: []string{"repo:read", "repo:write"}},
+		{name: "pr merge", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "merge_method": "fast-forward-only"}, capabilities: []string{"repo:read", "repo:write"}},
 		{name: "review read", operation: "review.read", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52)}, capabilities: []string{"repo:read"}},
 		{name: "ci read repository list", operation: "ci.read", constraints: map[string]any{}, capabilities: []string{"repo:read"}},
 		{name: "ci read run log", operation: "ci.read", constraints: map[string]any{"run_id": float64(73)}, capabilities: []string{"repo:read"}},
@@ -438,6 +439,15 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 			if !ok || operation["name"] != tc.operation || !reflect.DeepEqual(operation["constraints"], tc.constraints) {
 				t.Fatalf("signed operation = %#v, want name=%s constraints=%#v", operation, tc.operation, tc.constraints)
 			}
+			workload, ok := claims["workload"].(map[string]any)
+			authority, authorityOK := workload["authority"].(map[string]any)
+			wantPolicy := workspaceDefaultPolicyClass
+			if tc.operation == "pr.merge" {
+				wantPolicy = workspaceMaintainerPolicyClass
+			}
+			if !ok || !authorityOK || authority["policy_class"] != wantPolicy {
+				t.Fatalf("signed authority = %#v, want policy_class=%s", workload["authority"], wantPolicy)
+			}
 		})
 	}
 }
@@ -452,7 +462,7 @@ func TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSi
 	agentID := createHandlerTestAgent(t, "deferred-operation-assertion-agent", []byte(`{}`))
 	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 
-	for _, operation := range []string{"pr.merge", "review.submit", "repo.admin", "repo.create"} {
+	for _, operation := range []string{"review.submit", "repo.admin", "repo.create"} {
 		t.Run(operation, func(t *testing.T) {
 			req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
 				"purpose":                "ags_session_exchange",
@@ -636,6 +646,7 @@ func TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations(t *
 		{name: "pr read head variant", operation: "pr.read", constraints: map[string]any{"head_ref": "agent/delegated-pr"}, capabilities: []string{"repo:read"}},
 		{name: "pr read fully qualified head variant", operation: "pr.read", constraints: map[string]any{"head_ref": "refs/heads/agent/delegated-pr"}, capabilities: []string{"repo:read"}},
 		{name: "pr rebase exact intent", operation: "pr.rebase", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "expected_base_sha": sha}, capabilities: []string{"repo:read", "repo:write"}},
+		{name: "pr merge exact intent", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "merge_method": "fast-forward-only"}, capabilities: []string{"repo:read", "repo:write"}},
 		{name: "review read exact projection", operation: "review.read", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52)}, capabilities: []string{"repo:read"}},
 		{name: "ci read repository list", operation: "ci.read", constraints: map[string]any{}, capabilities: []string{"repo:read"}},
 		{name: "ci read run", operation: "ci.read", constraints: map[string]any{"run_id": float64(73)}, capabilities: []string{"repo:read"}},
@@ -657,13 +668,13 @@ func TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations(t *
 			}
 		})
 	}
-	for _, operation := range []string{"repo.read", "git.read", "git.push", "pr.create", "pr.read", "pr.rebase", "review.read", "ci.read"} {
+	for _, operation := range []string{"repo.read", "git.read", "git.push", "pr.create", "pr.read", "pr.rebase", "pr.merge", "review.read", "ci.read"} {
 		if !seenOperations[operation] {
 			t.Errorf("positive matrix is missing default operation %q", operation)
 		}
 	}
-	if len(seenOperations) != 8 {
-		t.Fatalf("positive matrix operations = %#v, want exactly eight defaults", seenOperations)
+	if len(seenOperations) != 9 {
+		t.Fatalf("positive matrix operations = %#v, want exactly nine accepted operations", seenOperations)
 	}
 }
 
@@ -770,11 +781,12 @@ func TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix(t *testing.T) {
 		{name: "ci read head null", operation: "ci.read", constraints: with(ciRead(), "head_sha", nil)},
 		{name: "ci read head uppercase", operation: "ci.read", constraints: with(ciRead(), "head_sha", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")},
 		{name: "ci read head secret", operation: "ci.read", constraints: with(ciRead(), "head_sha", "secret")},
-		{name: "deferred merge exact empty rejected", operation: "pr.merge", constraints: map[string]any{}},
+		{name: "merge exact empty rejected", operation: "pr.merge", constraints: map[string]any{}},
+		{name: "merge incomplete rejected", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41)}},
+		{name: "merge wrong capabilities shape rejected", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "merge_method": "octopus"}},
 		{name: "deferred review submit exact empty rejected", operation: "review.submit", constraints: map[string]any{}},
 		{name: "deferred repo admin exact empty rejected", operation: "repo.admin", constraints: map[string]any{}},
 		{name: "deferred repo create exact empty rejected", operation: "repo.create", constraints: map[string]any{}},
-		{name: "deferred merge nonempty rejected", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41)}},
 		{name: "deferred review submit nonempty rejected", operation: "review.submit", constraints: map[string]any{"pull_request_number": float64(41)}},
 		{name: "deferred repo admin nonempty rejected", operation: "repo.admin", constraints: map[string]any{"action": "onboard_forgejo"}},
 		{name: "deferred repo create nonempty rejected", operation: "repo.create", constraints: map[string]any{"name": "new-repo"}},
