@@ -34,6 +34,7 @@ const (
 	workloadAuthoritySchema                  = "workload.authority.v1"
 	workloadScopeSchema                      = "workload.scope.v1"
 	workspaceDefaultPolicyClass              = "multica.workspace.default.v1"
+	workspaceMaintainerPolicyClass           = "multica.workspace.maintainer.v1"
 )
 
 var (
@@ -56,7 +57,7 @@ var sessionOperationCapabilities = map[string][]string{
 	"ci.read":       {"repo:read"},
 	"review.read":   {"repo:read"},
 	"review.submit": {"repo:read"},
-	"pr.merge":      {"repo:read"},
+	"pr.merge":      {"repo:read", "repo:write"},
 	"repo.admin":    {"repo:read"},
 }
 
@@ -70,6 +71,12 @@ var (
 		"forgejo_pull_request_number": {},
 		"expected_head_sha":           {},
 		"expected_base_sha":           {},
+	}
+	prMergeConstraintKeys = map[string]struct{}{
+		"pull_request_number":         {},
+		"forgejo_pull_request_number": {},
+		"expected_head_sha":           {},
+		"merge_method":                {},
 	}
 	reviewReadConstraintKeys = map[string]struct{}{
 		"pull_request_number":         {},
@@ -266,7 +273,7 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	expiresAt := now.Add(workloadAssertionTTL)
 	assertionID := h.newWorkloadAssertionID()
 	if isSessionExchange {
-		if !h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID) {
+		if !h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID, scope.Operation.Name) {
 			return
 		}
 	}
@@ -450,13 +457,17 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 // enrichSessionExchangeWorkload adds the signed v1 envelope and server-owned
 // Team authority projection. The projection is resolved from durable server
 // state; neither the request nor Agent/Squad labels can influence it.
-func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID string) bool {
+func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID, operation string) bool {
 	authority, err := queries.GetWorkspaceWorkloadAuthority(r.Context(), resolved.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
 		return false
 	}
-	workload, err := assembleSessionExchangeWorkload(*resolved, authority, issuerInstanceID, assertionID)
+	policyClass := authority.PolicyClass
+	if operation == "pr.merge" {
+		policyClass = workspaceMaintainerPolicyClass
+	}
+	workload, err := assembleSessionExchangeWorkload(*resolved, authority, issuerInstanceID, assertionID, policyClass)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
 		return false
@@ -468,8 +479,9 @@ func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.R
 // assembleSessionExchangeWorkload is the canonical producer kernel used by the
 // HTTP handler. Database-backed bridge tests call the handler rather than this
 // helper; keeping assembly here gives every producer path one field mapping.
-func assembleSessionExchangeWorkload(resolved resolvedTaskWorkload, authority db.WorkspaceWorkloadAuthority, issuerInstanceID, assertionID string) (workloadAssertionWorkload, error) {
-	if !authority.TeamIdentityID.Valid || authority.MembershipEpoch <= 0 || authority.PolicyClass != workspaceDefaultPolicyClass {
+func assembleSessionExchangeWorkload(resolved resolvedTaskWorkload, authority db.WorkspaceWorkloadAuthority, issuerInstanceID, assertionID, policyClass string) (workloadAssertionWorkload, error) {
+	if !authority.TeamIdentityID.Valid || authority.MembershipEpoch <= 0 || authority.PolicyClass != workspaceDefaultPolicyClass ||
+		(policyClass != workspaceDefaultPolicyClass && policyClass != workspaceMaintainerPolicyClass) {
 		return workloadAssertionWorkload{}, fmt.Errorf("invalid workload authority")
 	}
 
@@ -494,7 +506,7 @@ func assembleSessionExchangeWorkload(resolved resolvedTaskWorkload, authority db
 		Schema:          workloadAuthoritySchema,
 		TeamIdentityID:  uuidToString(authority.TeamIdentityID),
 		MembershipEpoch: authority.MembershipEpoch,
-		PolicyClass:     authority.PolicyClass,
+		PolicyClass:     policyClass,
 	}
 	return workload, nil
 }
@@ -619,11 +631,13 @@ func normalizeRequestedOperation(operation workloadAssertionOperation) (workload
 		constraints, err = normalizePRReadConstraints(operation.Constraints)
 	case "pr.rebase":
 		constraints, err = normalizePRRebaseConstraints(operation.Constraints)
+	case "pr.merge":
+		constraints, err = normalizePRMergeConstraints(operation.Constraints)
 	case "review.read":
 		constraints, err = normalizeReviewReadConstraints(operation.Constraints)
 	case "ci.read":
 		constraints, err = normalizeCIReadConstraints(operation.Constraints)
-	case "pr.merge", "review.submit", "repo.admin", "repo.create":
+	case "review.submit", "repo.admin", "repo.create":
 		return workloadAssertionOperation{}, fmt.Errorf("requested operation is deferred and cannot be signed by the default workload assertion issuer")
 	default:
 		return workloadAssertionOperation{}, fmt.Errorf("requested operation is not registered")
@@ -709,6 +723,39 @@ func normalizePRRebaseConstraints(input map[string]any) (map[string]any, error) 
 		"forgejo_pull_request_number": forgejoPullRequestNumber,
 		"expected_head_sha":           expectedHeadSHA,
 		"expected_base_sha":           expectedBaseSHA,
+	}, nil
+}
+
+func normalizePRMergeConstraints(input map[string]any) (map[string]any, error) {
+	if err := requireExactConstraintKeys("pr.merge", input, prMergeConstraintKeys); err != nil {
+		return nil, err
+	}
+	pullRequestNumber, err := normalizePositiveSafeInteger("pr.merge", "pull_request_number", input["pull_request_number"])
+	if err != nil {
+		return nil, err
+	}
+	forgejoPullRequestNumber, err := normalizePositiveSafeInteger("pr.merge", "forgejo_pull_request_number", input["forgejo_pull_request_number"])
+	if err != nil {
+		return nil, err
+	}
+	expectedHeadSHA, err := normalizeCanonicalGitSHA("pr.merge", "expected_head_sha", input["expected_head_sha"])
+	if err != nil {
+		return nil, err
+	}
+	mergeMethod, ok := input["merge_method"].(string)
+	if !ok || mergeMethod != strings.TrimSpace(mergeMethod) {
+		return nil, fmt.Errorf("requested pr.merge merge_method must be canonical")
+	}
+	switch mergeMethod {
+	case "merge", "rebase", "rebase-merge", "squash", "fast-forward-only":
+	default:
+		return nil, fmt.Errorf("requested pr.merge merge_method is not registered")
+	}
+	return map[string]any{
+		"pull_request_number":         pullRequestNumber,
+		"forgejo_pull_request_number": forgejoPullRequestNumber,
+		"expected_head_sha":           expectedHeadSHA,
+		"merge_method":                mergeMethod,
 	}, nil
 }
 
