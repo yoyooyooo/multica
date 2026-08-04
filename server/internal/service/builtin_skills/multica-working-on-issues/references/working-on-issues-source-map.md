@@ -42,7 +42,9 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 |---|---|
 | Strict request, purpose/audience/TTL signing | `server/internal/handler/workload_assertion.go` (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
 | Team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizePRMergeConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
-| JWT issuer vs AGS issuer ID separation | same file (`ValidateWorkloadAssertionConfiguration`, `enrichSessionExchangeWorkload`) |
+| Human-created exact `pr.merge` delegation API and assertion lock | `server/internal/handler/workload_pr_merge_delegation.go` (`CreatePRMergeDelegation`, `GetPRMergeDelegation`, `RevokePRMergeDelegation`, `lockActivePRMergeDelegationForAssertion`) |
+| Durable delegation facts and single-active authority | `server/migrations/244_workload_pr_merge_delegation.up.sql`–`246_workload_pr_merge_delegation_active_index.up.sql`, `server/pkg/db/queries/workload_pr_merge_delegation.sql` |
+| JWT issuer vs AGS issuer ID separation | `server/internal/handler/workload_assertion.go` (`ValidateWorkloadAssertionConfiguration`, `enrichSessionExchangeWorkload`) |
 | Startup and readiness fail closed | `server/cmd/server/main.go` (`main`), `server/cmd/server/health.go` (`newServerHealth`, `computeReadiness`) |
 | Nine-operation signed/normalization matrix | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`) |
 | AgentKit Forgejo list/runs/log shapes and negative matrix | same file (`TestNormalizeAgentKitForgejoCommandConstraintFixtures`, `TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix`) |
@@ -57,10 +59,14 @@ is limited to `15m`, and remains absent when omitted.
 
 The fixed default team-v4 operations are `repo.read`, `git.read`, `git.push`,
 `pr.create`, `pr.read`, `pr.rebase`, `review.read`, and `ci.read`. Exact
-`pr.merge` is the ninth implemented operation, but it switches the signed
-authority to `multica.workspace.maintainer.v1` and requires `repo:read +
-repo:write`; it is never added to the default class. Their
-constraints are operation-specific: the repository/Git operations are exact
+`pr.merge` is the ninth implemented operation, but exact request shape alone
+does not select authority. It switches the signed authority to
+`multica.workspace.maintainer.v1` and requires `repo:read + repo:write` only
+after the signer locks an active human-created server delegation that exactly
+matches workspace, Task/Run, repository, both PR numbers, expected head, and
+merge method. Task credentials cannot manage that revisioned, expiring,
+revocable row; it is never added to the default class. Their constraints are
+operation-specific: the repository/Git operations are exact
 empty; PR create has both required canonical branch refs; PR read has one exact
 number-or-head variant; rebase retains its exact four-key intent; review read
 has both positive safe-integer PR numbers; and CI read accepts exactly a
@@ -68,10 +74,13 @@ repository-wide empty shape, a positive safe-integer `run_id`, or those two PR
 numbers with optional lowercase-40 `head_sha`. The Forgejo fixtures pin actual
 PR-list, runs, and log command shapes: state-only PR list, event-only, SHA-only,
 mixed, and unknown variants fail before signing. Unknown/mixed/legacy
-`exact_head`, wrong/null/secret-shaped values also fail. `pr.merge` requires exactly the AGS/Forgejo PR numbers, lowercase full expected
-head SHA, and a registered merge method. Missing/extra/wrong-type constraints
-are rejected before signing. Deferred `review.submit`, `repo.admin`, and
-`repo.create` are rejected even with exact empty constraints.
+`exact_head`, wrong/null/secret-shaped values also fail. `pr.merge` requires
+exactly the AGS/Forgejo PR numbers, lowercase full expected head SHA, and a
+registered merge method. Missing/extra/wrong-type constraints are rejected
+before signing; missing/mismatched/revoked/expired delegation returns 403 and no
+assertion. The assertion expiry is capped by the delegation expiry. Deferred
+`review.submit`, `repo.admin`, and `repo.create` are rejected even with exact
+empty constraints.
 
 ## Two distinct webhook paths: link vs close-intent
 
@@ -179,6 +188,8 @@ grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse stru
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
 grep -n 'evaluatePullRequestCompletion\|CompleteIssueFromPullRequest\|LockIssueCompletionTransition\|LockWorkspaceIssueTopology' internal/handler/{pull_request_completion.go,external_pr_integration.go,github.go,vcs_webhook.go,issue.go} internal/service/issue.go pkg/db/queries/{pull_request_completion.sql,issue.sql}
 grep -n 'normalizeRequestedOperation\|normalizePRCreateConstraints\|normalizePRReadConstraints\|normalizePRRebaseConstraints\|normalizePRMergeConstraints\|normalizeReviewReadConstraints\|normalizeCIReadConstraints' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go
+grep -n 'CreatePRMergeDelegation\|GetPRMergeDelegation\|RevokePRMergeDelegation\|lockActivePRMergeDelegationForAssertion' internal/handler/workload_pr_merge_delegation.go internal/handler/workload_pr_merge_delegation_test.go cmd/server/{router.go,workload_pr_merge_delegation_routes_integration_test.go}
+grep -n 'authority_revision\|granted_by_user_id\|expires_at\|revoked_at' migrations/244_workload_pr_merge_delegation.up.sql pkg/db/queries/workload_pr_merge_delegation.sql
 grep -n 'ValidateWorkloadAssertionConfiguration\|normalizeRequestedTTL\|issuer_instance_id\|requested_ttl' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go cmd/server/{main.go,health.go}
 grep -n 'func (h \*Handler) notifyParentOfChildDone\|func stageBarrierClosed\|func stageProgressSummary' internal/handler/issue_child_done.go
 grep -n 'func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go

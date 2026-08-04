@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY workload_pr_merge_delegation_id_uidx ON workload_pr_merge_delegation (id);

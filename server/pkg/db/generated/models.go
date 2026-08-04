@@ -1184,6 +1184,28 @@ type WebhookDelivery struct {
 	DispatchAttempts       int32              `json:"dispatch_attempts"`
 }
 
+type WorkloadPrMergeDelegation struct {
+	ID                       pgtype.UUID        `json:"id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	TaskID                   pgtype.UUID        `json:"task_id"`
+	RunID                    pgtype.UUID        `json:"run_id"`
+	Operation                string             `json:"operation"`
+	Repository               string             `json:"repository"`
+	PullRequestNumber        int64              `json:"pull_request_number"`
+	ForgejoPullRequestNumber int64              `json:"forgejo_pull_request_number"`
+	ExpectedHeadSha          string             `json:"expected_head_sha"`
+	MergeMethod              string             `json:"merge_method"`
+	AuthorityRevision        pgtype.UUID        `json:"authority_revision"`
+	GrantedByUserID          pgtype.UUID        `json:"granted_by_user_id"`
+	GrantedAt                pgtype.Timestamptz `json:"granted_at"`
+	ExpiresAt                pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt                pgtype.Timestamptz `json:"revoked_at"`
+	RevokedByUserID          pgtype.UUID        `json:"revoked_by_user_id"`
+	RevocationReason         pgtype.Text        `json:"revocation_reason"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Workspace struct {
 	ID           pgtype.UUID        `json:"id"`
 	Name         string             `json:"name"`

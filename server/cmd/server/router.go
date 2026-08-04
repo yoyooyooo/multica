@@ -938,6 +938,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
+					// Exact pr.merge delegations are human owner/operator authority.
+					// Task and cloud credentials are rejected before the handler.
+					r.With(handler.RequireHumanActor).Post("/workload-delegations/pr-merge", h.CreatePRMergeDelegation)
+					r.With(handler.RequireHumanActor).Get("/workload-delegations/pr-merge/{delegationId}", h.GetPRMergeDelegation)
+					r.With(handler.RequireHumanActor).Post("/workload-delegations/pr-merge/{delegationId}/revoke", h.RevokePRMergeDelegation)
 					// Custom runtime profile mutations (admin-only).
 					r.Post("/runtime-profiles", h.CreateRuntimeProfile)
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)

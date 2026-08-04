@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -270,12 +271,18 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	}
 
 	now := h.currentWorkloadAssertionTime()
-	expiresAt := now.Add(workloadAssertionTTL)
 	assertionID := h.newWorkloadAssertionID()
+	var authorityExpiresAt time.Time
 	if isSessionExchange {
-		if !h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID, scope.Operation.Name) {
+		var enriched bool
+		authorityExpiresAt, enriched = h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID, *scope, now)
+		if !enriched {
 			return
 		}
+	}
+	expiresAt := now.Add(workloadAssertionTTL)
+	if !authorityExpiresAt.IsZero() && authorityExpiresAt.Before(expiresAt) {
+		expiresAt = authorityExpiresAt
 	}
 	keyID := workloadAssertionKeyID()
 	claims := jwt.MapClaims{
@@ -457,23 +464,34 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 // enrichSessionExchangeWorkload adds the signed v1 envelope and server-owned
 // Team authority projection. The projection is resolved from durable server
 // state; neither the request nor Agent/Squad labels can influence it.
-func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID, operation string) bool {
+func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID string, scope workloadAssertionScope, now time.Time) (time.Time, bool) {
 	authority, err := queries.GetWorkspaceWorkloadAuthority(r.Context(), resolved.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
-		return false
+		return time.Time{}, false
 	}
 	policyClass := authority.PolicyClass
-	if operation == "pr.merge" {
+	var authorityExpiresAt time.Time
+	if scope.Operation.Name == "pr.merge" {
+		delegation, err := h.lockActivePRMergeDelegationForAssertion(r, queries, *resolved, scope, now)
+		if errors.Is(err, errActivePRMergeDelegationRequired) {
+			writeError(w, http.StatusForbidden, "active exact PR merge delegation required")
+			return time.Time{}, false
+		}
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "PR merge delegation is unavailable")
+			return time.Time{}, false
+		}
 		policyClass = workspaceMaintainerPolicyClass
+		authorityExpiresAt = delegation.ExpiresAt.Time.UTC()
 	}
 	workload, err := assembleSessionExchangeWorkload(*resolved, authority, issuerInstanceID, assertionID, policyClass)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
-		return false
+		return time.Time{}, false
 	}
 	resolved.Workload = workload
-	return true
+	return authorityExpiresAt, true
 }
 
 // assembleSessionExchangeWorkload is the canonical producer kernel used by the

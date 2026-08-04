@@ -409,6 +409,14 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 		{name: "ci read PR runs at head", operation: "ci.read", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "head_sha": sha}, capabilities: []string{"repo:read"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.operation == "pr.merge" {
+				now := time.Now().UTC()
+				insertPRMergeDelegationFixture(t, prMergeDelegationFixture{
+					workspaceID: testWorkspaceID, taskID: taskID, runID: taskID, repository: "jackie/agent-kit",
+					pullRequestNumber: 41, forgejoPullRequestNumber: 52, expectedHeadSHA: sha,
+					mergeMethod: "fast-forward-only", grantedAt: now.Add(-time.Minute), expiresAt: now.Add(10 * time.Minute),
+				})
+			}
 			req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
 				"purpose":                "ags_session_exchange",
 				"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
