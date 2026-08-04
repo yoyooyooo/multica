@@ -2274,7 +2274,7 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 		taskID, _ := cmd.Flags().GetString("task-id")
 		taskID = strings.TrimSpace(taskID)
 		if !uuidRegexp.MatchString(taskID) {
-			return fmt.Errorf("--task-id must be a canonical UUID, got %q", taskID)
+			return errors.New("--task-id must be a canonical UUID")
 		}
 		body["task_id"] = taskID
 	}
