@@ -781,6 +781,7 @@ func TestIssueRerunCLIRequestBody(t *testing.T) {
 }
 
 func TestIssueRerunCLIRejectsInvalidTaskIDBeforeRequest(t *testing.T) {
+	const sensitiveMarker = "FED397_SENSITIVE_TASK_ID_MARKER_DO_NOT_DISCLOSE"
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -789,11 +790,23 @@ func TestIssueRerunCLIRejectsInvalidTaskIDBeforeRequest(t *testing.T) {
 	defer srv.Close()
 	setCLITestServerEnv(t, srv.URL)
 
-	for _, taskID := range []string{"not-a-uuid", ""} {
-		t.Run(fmt.Sprintf("task_id_%q", taskID), func(t *testing.T) {
-			err := runPublicIssueRerunCommand(t, "FED-397", issueRerunTaskID(taskID))
+	tests := []struct {
+		name      string
+		taskID    string
+		sensitive bool
+	}{
+		{name: "non UUID", taskID: "not-a-uuid"},
+		{name: "empty", taskID: ""},
+		{name: "sensitive value", taskID: sensitiveMarker, sensitive: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runPublicIssueRerunCommand(t, "FED-397", issueRerunTaskID(tc.taskID))
 			if err == nil || !strings.Contains(err.Error(), "canonical UUID") {
 				t.Fatalf("error = %v, want canonical UUID validation error", err)
+			}
+			if tc.sensitive && strings.Contains(err.Error(), sensitiveMarker) {
+				t.Fatal("canonical UUID validation error disclosed the caller-supplied task ID")
 			}
 		})
 	}
