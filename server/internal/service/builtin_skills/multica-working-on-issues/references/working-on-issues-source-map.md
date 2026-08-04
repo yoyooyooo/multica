@@ -178,7 +178,7 @@ grep -n 'ListPullRequestsForIssue' cmd/server/router.go internal/handler/github.
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
 grep -n 'evaluatePullRequestCompletion\|CompleteIssueFromPullRequest\|LockIssueCompletionTransition\|LockWorkspaceIssueTopology' internal/handler/{pull_request_completion.go,external_pr_integration.go,github.go,vcs_webhook.go,issue.go} internal/service/issue.go pkg/db/queries/{pull_request_completion.sql,issue.sql}
-grep -n 'normalizeRequestedOperation\|normalizePRCreateConstraints\|normalizePRReadConstraints\|normalizePRRebaseConstraints\|normalizeReviewReadConstraints\|normalizeCIReadConstraints' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go
+grep -n 'normalizeRequestedOperation\|normalizePRCreateConstraints\|normalizePRReadConstraints\|normalizePRRebaseConstraints\|normalizePRMergeConstraints\|normalizeReviewReadConstraints\|normalizeCIReadConstraints' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go
 grep -n 'ValidateWorkloadAssertionConfiguration\|normalizeRequestedTTL\|issuer_instance_id\|requested_ttl' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go cmd/server/{main.go,health.go}
 grep -n 'func (h \*Handler) notifyParentOfChildDone\|func stageBarrierClosed\|func stageProgressSummary' internal/handler/issue_child_done.go
 grep -n 'func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go
