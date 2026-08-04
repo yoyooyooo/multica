@@ -248,9 +248,13 @@ func TestApproveAndRevokeRequireStrictEmptyJSONObject(t *testing.T) {
 				t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "1")
 				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 				req.Header.Set("X-User-ID", testUserID)
+				route := chi.NewRouteContext()
+				route.URLParams.Add("id", testWorkspaceID)
+				route.URLParams.Add("delegationId", "55555555-5555-5555-5555-555555555555")
+				req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
 				recorder := httptest.NewRecorder()
 				handler.call(recorder, req)
-				if recorder.Code != http.StatusBadRequest {
+				if recorder.Code != http.StatusBadRequest || recorder.Body.String() != "{\"error\":\"invalid request body\"}\n" {
 					t.Fatalf("body %q status=%d response=%s", body, recorder.Code, recorder.Body.String())
 				}
 			})
