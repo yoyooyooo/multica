@@ -32,8 +32,6 @@ var (
 	errPRMergeDelegationDenied = errors.New("PR merge delegation denied")
 )
 
-type emptyDelegationRequest struct{}
-
 type prMergeDelegationFacts struct {
 	Schema                  string `json:"schema"`
 	DelegationID            string `json:"delegation_id"`
@@ -232,11 +230,9 @@ func (h *Handler) ApprovePRMergeDelegation(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	var req emptyDelegationRequest
-	if !decodeClosedJSONRequest(w, r, &req) {
+	if !decodeStrictEmptyJSONObject(w, r) {
 		return
 	}
-	now := h.currentWorkloadAssertionTime()
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, 500, "failed to approve PR merge delegation")
@@ -261,13 +257,13 @@ func (h *Handler) ApprovePRMergeDelegation(w http.ResponseWriter, r *http.Reques
 		writeError(w, 409, "PR merge delegation is not pending approval")
 		return
 	}
-	if !h.prMergeDelegationFactsRemainCurrent(r.Context(), qtx, row, now) {
+	if !h.prMergeDelegationFactsRemainCurrent(r.Context(), qtx, row) {
 		writeError(w, 409, "PR merge delegation facts are stale")
 		return
 	}
 	row, err = qtx.ApprovePRMergeDelegationInWorkspace(r.Context(), db.ApprovePRMergeDelegationInWorkspaceParams{
-		ApprovedAt: pgtype.Timestamptz{Time: now, Valid: true}, ApprovedByUserID: userID,
-		NotAfter: pgtype.Timestamptz{Time: now.Add(prMergeDelegationApprovalTTL), Valid: true}, ID: delegationID, WorkspaceID: workspaceID,
+		ApprovalTtlSeconds: int32(prMergeDelegationApprovalTTL / time.Second), ApprovedByUserID: userID,
+		ID: delegationID, WorkspaceID: workspaceID,
 	})
 	if err != nil {
 		writeError(w, 409, "PR merge delegation is not pending approval")
@@ -300,8 +296,7 @@ func (h *Handler) RevokePRMergeDelegation(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	var req emptyDelegationRequest
-	if !decodeClosedJSONRequest(w, r, &req) {
+	if !decodeStrictEmptyJSONObject(w, r) {
 		return
 	}
 	now := h.currentWorkloadAssertionTime()
@@ -376,7 +371,6 @@ func (h *Handler) handlePRMergeDelegationServiceRequest(w http.ResponseWriter, r
 		writeError(w, 400, err.Error())
 		return
 	}
-	now := h.currentWorkloadAssertionTime()
 	preflight, err := h.Queries.GetPRMergeDelegationByID(r.Context(), delegationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, 404, "PR merge delegation not found")
@@ -451,34 +445,32 @@ func (h *Handler) handlePRMergeDelegationServiceRequest(w http.ResponseWriter, r
 		writeError(w, 409, "PR merge delegation was consumed by another intent")
 		return
 	}
-	if row.State == "approved" && row.NotAfter.Valid && !row.NotAfter.Time.After(now) {
-		expired, expireErr := qtx.ExpirePRMergeDelegationByID(r.Context(), db.ExpirePRMergeDelegationByIDParams{
-			ExpiredAt: pgtype.Timestamptz{Time: now, Valid: true}, ID: row.ID,
-		})
-		if expireErr != nil {
-			writeError(w, 409, "PR merge delegation is not active")
-			return
-		}
-		if eventErr := createPRMergeDelegationEvent(r.Context(), qtx, expired, "expired", "system", "multica", pgtype.UUID{}, map[string]any{}); eventErr != nil {
-			writeError(w, 503, "failed to record PR merge delegation expiry")
-			return
-		}
-		if err := tx.Commit(r.Context()); err != nil {
-			writeError(w, 503, "PR merge delegation is unavailable")
-			return
-		}
-		writeError(w, 409, "PR merge delegation is not active")
-		return
-	}
-	if !prMergeDelegationFactsRemainCurrent(lockedTask, lockedLink, row, now) {
+	if !prMergeDelegationFactsRemainCurrent(lockedTask, lockedLink, row) {
 		writeError(w, 409, "PR merge delegation facts do not match")
 		return
 	}
-	if row.State != "approved" || !row.NotAfter.Valid || !row.NotAfter.Time.After(now) {
+	if row.State != "approved" || !row.NotAfter.Valid {
 		writeError(w, 409, "PR merge delegation is not active")
 		return
 	}
 	if !consume {
+		expired, expireErr := qtx.ExpirePRMergeDelegationByID(r.Context(), delegationID)
+		if expireErr == nil {
+			if eventErr := createPRMergeDelegationEvent(r.Context(), qtx, expired, "expired", "system", "multica", pgtype.UUID{}, map[string]any{}); eventErr != nil {
+				writeError(w, 503, "failed to record PR merge delegation expiry")
+				return
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				writeError(w, 503, "PR merge delegation is unavailable")
+				return
+			}
+			writeError(w, 409, "PR merge delegation is not active")
+			return
+		}
+		if !errors.Is(expireErr, pgx.ErrNoRows) {
+			writeError(w, 503, "PR merge delegation is unavailable")
+			return
+		}
 		if err := tx.Commit(r.Context()); err != nil {
 			writeError(w, 503, "PR merge delegation is unavailable")
 			return
@@ -490,13 +482,28 @@ func (h *Handler) handlePRMergeDelegationServiceRequest(w http.ResponseWriter, r
 	row, err = qtx.ConsumePRMergeDelegation(r.Context(), db.ConsumePRMergeDelegationParams{
 		ConsumerInstanceID: pgtype.Text{String: req.TargetInstance, Valid: true}, ConsumerIntentID: intentID,
 		ConsumeRequestDigest: pgtype.Text{String: serviceRequestDigest(req), Valid: true}, ConsumptionReceiptID: receiptID,
-		ConsumedAt: pgtype.Timestamptz{Time: now, Valid: true}, ID: delegationID,
+		ID: delegationID,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		expired, expireErr := qtx.ExpirePRMergeDelegationByID(r.Context(), delegationID)
+		if expireErr == nil {
+			if eventErr := createPRMergeDelegationEvent(r.Context(), qtx, expired, "expired", "system", "multica", pgtype.UUID{}, map[string]any{}); eventErr != nil {
+				writeError(w, 503, "failed to record PR merge delegation expiry")
+				return
+			}
+			if commitErr := tx.Commit(r.Context()); commitErr != nil {
+				writeError(w, 503, "PR merge delegation is unavailable")
+				return
+			}
+			writeError(w, 409, "PR merge delegation is not active")
+			return
+		}
+	}
 	if err != nil {
 		writeError(w, 409, "PR merge delegation could not be consumed")
 		return
 	}
-	if err := createPRMergeDelegationEvent(r.Context(), qtx, row, "consumed", "ags_service", req.TargetInstance, intentID, map[string]any{"session_id": req.SessionID}); err != nil {
+	if err := createPRMergeDelegationEvent(r.Context(), qtx, row, "consumed", "ags_service", req.TargetInstance, intentID, map[string]any{}); err != nil {
 		writeError(w, 503, "failed to record PR merge delegation consumption")
 		return
 	}
@@ -590,6 +597,20 @@ func decodeClosedJSONRequest(w http.ResponseWriter, r *http.Request, target any)
 	return true
 }
 
+func decodeStrictEmptyJSONObject(w http.ResponseWriter, r *http.Request) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	var object map[string]json.RawMessage
+	if err := decoder.Decode(&object); err != nil || object == nil || len(object) != 0 {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
+}
+
 func requireHumanDelegationActor(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("X-Actor-Source") != "" {
 		writeError(w, http.StatusForbidden, "PR merge delegations require a human workspace operator")
@@ -625,7 +646,10 @@ func validatePRMergeDelegationServiceRequest(req prMergeDelegationServiceRequest
 	if _, err := uuid.Parse(req.RunID); err != nil {
 		return fmt.Errorf("run id is invalid")
 	}
-	if strings.TrimSpace(req.SessionID) == "" || req.SessionID != strings.TrimSpace(req.SessionID) {
+	if len(req.SessionID) > 64 || secretShapedValuePattern.MatchString(req.SessionID) {
+		return fmt.Errorf("session id is invalid")
+	}
+	if _, err := uuid.Parse(req.SessionID); err != nil {
 		return fmt.Errorf("session id is invalid")
 	}
 	if req.Phase != "exchange" && req.Phase != "preflight" && req.Phase != "pre_effect" {
@@ -647,7 +671,8 @@ func validatePRMergeDelegationServiceRequest(req prMergeDelegationServiceRequest
 }
 
 func serviceRequestMatchesDelegation(req prMergeDelegationServiceRequest, row db.WorkloadPrMergeDelegation) bool {
-	return req.AuthorityRevision == uuidToString(row.AuthorityRevision) && req.FactsDigest == row.FactsDigest &&
+	return prMergeDelegationFactsDigestMatchesRow(row) &&
+		req.AuthorityRevision == uuidToString(row.AuthorityRevision) && req.FactsDigest == row.FactsDigest &&
 		req.TargetInstance == row.TargetInstance && req.CanonicalRepositoryID == row.CanonicalRepositoryID &&
 		req.CanonicalRepository == row.CanonicalRepository && req.ProviderBindingID == row.ProviderBindingID &&
 		req.ProviderBindingRevision == row.ProviderBindingRevision && req.ProviderRepository == row.ProviderRepository &&
@@ -663,7 +688,7 @@ func serviceRequestDigest(req prMergeDelegationServiceRequest) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) prMergeDelegationFactsRemainCurrent(ctx context.Context, queries *db.Queries, row db.WorkloadPrMergeDelegation, now time.Time) bool {
+func (h *Handler) prMergeDelegationFactsRemainCurrent(ctx context.Context, queries *db.Queries, row db.WorkloadPrMergeDelegation) bool {
 	task, err := queries.LockTaskForPRMergeDelegation(ctx, db.LockTaskForPRMergeDelegationParams{ID: row.TaskID, WorkspaceID: row.WorkspaceID})
 	if err != nil || task.Status != "running" || !task.ExecutionID.Valid || task.ExecutionID != row.ExecutionID || !task.RuntimeID.Valid || task.RuntimeID != row.RuntimeID {
 		return false
@@ -672,13 +697,13 @@ func (h *Handler) prMergeDelegationFactsRemainCurrent(ctx context.Context, queri
 	if err != nil {
 		return false
 	}
-	return externalProjectionMatchesDelegation(link, row) && (row.State != "approved" || (row.NotAfter.Valid && row.NotAfter.Time.After(now)))
+	return externalProjectionMatchesDelegation(link, row) && prMergeDelegationFactsDigestMatchesRow(row)
 }
 
-func prMergeDelegationFactsRemainCurrent(task db.AgentTaskQueue, link db.ExternalPullRequestLink, row db.WorkloadPrMergeDelegation, now time.Time) bool {
+func prMergeDelegationFactsRemainCurrent(task db.AgentTaskQueue, link db.ExternalPullRequestLink, row db.WorkloadPrMergeDelegation) bool {
 	return task.Status == "running" && task.ExecutionID.Valid && task.ExecutionID == row.ExecutionID &&
 		task.RuntimeID.Valid && task.RuntimeID == row.RuntimeID && externalProjectionMatchesDelegation(link, row) &&
-		(row.State != "approved" || (row.NotAfter.Valid && row.NotAfter.Time.After(now)))
+		prMergeDelegationFactsDigestMatchesRow(row)
 }
 
 func externalProjectionMatchesDelegation(link db.ExternalPullRequestLink, row db.WorkloadPrMergeDelegation) bool {
@@ -778,6 +803,25 @@ func digestPRMergeDelegationFacts(facts prMergeDelegationBindingFacts) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+func prMergeDelegationBindingFactsFromRow(row db.WorkloadPrMergeDelegation) prMergeDelegationBindingFacts {
+	return prMergeDelegationBindingFacts{
+		WorkspaceID: uuidToString(row.WorkspaceID), IssueID: uuidToString(row.IssueID),
+		ExternalPRLinkID: uuidToString(row.ExternalPrLinkID), TaskID: uuidToString(row.TaskID),
+		ExecutionID: uuidToString(row.ExecutionID), RuntimeID: uuidToString(row.RuntimeID),
+		TargetInstance: row.TargetInstance, CanonicalRepositoryID: row.CanonicalRepositoryID,
+		CanonicalRepository: row.CanonicalRepository, Provider: row.Provider,
+		ProviderBindingID: row.ProviderBindingID, ProviderBindingRevision: row.ProviderBindingRevision,
+		ProviderRepository: row.ProviderRepository, AGSPRNumber: row.AgsPrNumber,
+		ProviderPRNumber: row.ProviderPrNumber, ExpectedHeadSHA: row.ExpectedHeadSha,
+		ExpectedBaseSHA: row.ExpectedBaseSha, BaseRef: row.BaseRef, MergeMethod: row.MergeMethod,
+		ProjectionFactsRevision: row.ProjectionFactsRevision,
+	}
+}
+
+func prMergeDelegationFactsDigestMatchesRow(row db.WorkloadPrMergeDelegation) bool {
+	return row.FactsDigest == digestPRMergeDelegationFacts(prMergeDelegationBindingFactsFromRow(row))
+}
+
 func (h *Handler) ensureApprovedPRMergeDelegationForAssertion(ctx context.Context, queries *db.Queries, resolved resolvedTaskWorkload, scope workloadAssertionScope, target workloadAssertionTarget, now time.Time) (db.WorkloadPrMergeDelegation, error) {
 	if !delegatedPRMergeEnabled() || !resolved.Task.ExecutionID.Valid || !resolved.Task.RuntimeID.Valid || !resolved.Task.IssueID.Valid {
 		return db.WorkloadPrMergeDelegation{}, errPRMergeDelegationDenied
@@ -822,15 +866,15 @@ func (h *Handler) ensureApprovedPRMergeDelegationForAssertion(ctx context.Contex
 		WorkspaceID: resolved.WorkspaceID, TaskID: resolved.Task.ID, ExecutionID: resolved.Task.ExecutionID,
 	})
 	if err == nil {
-		if current.FactsDigest == digest && current.ProjectionFactsRevision == facts.ProjectionFactsRevision {
-			if current.State == "approved" && current.NotAfter.Valid && current.NotAfter.Time.After(now) {
-				return current, nil
-			}
+		if prMergeDelegationFactsDigestMatchesRow(current) && current.FactsDigest == digest && current.ProjectionFactsRevision == facts.ProjectionFactsRevision {
 			if current.State == "pending_approval" {
 				return current, errPRMergeApprovalRequired
 			}
 			if current.State == "approved" {
-				expired, expireErr := queries.ExpirePRMergeDelegationByID(ctx, db.ExpirePRMergeDelegationByIDParams{ExpiredAt: pgtype.Timestamptz{Time: now, Valid: true}, ID: current.ID})
+				expired, expireErr := queries.ExpirePRMergeDelegationByID(ctx, current.ID)
+				if errors.Is(expireErr, pgx.ErrNoRows) {
+					return current, nil
+				}
 				if expireErr != nil {
 					return db.WorkloadPrMergeDelegation{}, expireErr
 				}
@@ -868,11 +912,20 @@ func (h *Handler) ensureApprovedPRMergeDelegationForAssertion(ctx context.Contex
 		current, currentErr := queries.GetCurrentPRMergeDelegationForExecution(ctx, db.GetCurrentPRMergeDelegationForExecutionParams{
 			WorkspaceID: resolved.WorkspaceID, TaskID: resolved.Task.ID, ExecutionID: resolved.Task.ExecutionID,
 		})
-		if currentErr != nil || current.FactsDigest != digest || current.ProjectionFactsRevision != facts.ProjectionFactsRevision {
+		if currentErr != nil || !prMergeDelegationFactsDigestMatchesRow(current) || current.FactsDigest != digest || current.ProjectionFactsRevision != facts.ProjectionFactsRevision {
 			return db.WorkloadPrMergeDelegation{}, errPRMergeDelegationDenied
 		}
-		if current.State == "approved" && current.NotAfter.Valid && current.NotAfter.Time.After(now) {
-			return current, nil
+		if current.State == "approved" && current.NotAfter.Valid {
+			expired, expireErr := queries.ExpirePRMergeDelegationByID(ctx, current.ID)
+			if errors.Is(expireErr, pgx.ErrNoRows) {
+				return current, nil
+			}
+			if expireErr != nil {
+				return db.WorkloadPrMergeDelegation{}, expireErr
+			}
+			if eventErr := createPRMergeDelegationEvent(ctx, queries, expired, "expired", "system", "multica", pgtype.UUID{}, map[string]any{}); eventErr != nil {
+				return db.WorkloadPrMergeDelegation{}, eventErr
+			}
 		}
 		return current, errPRMergeApprovalRequired
 	}

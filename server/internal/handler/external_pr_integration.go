@@ -723,7 +723,7 @@ WHERE workspace_id=$1 AND issue_id=$2 AND provider=$3 AND external_repo=$4 AND e
 		superseded, err := qtx.SupersedePRMergeDelegationsForExternalLink(ctx, db.SupersedePRMergeDelegationsForExternalLinkParams{
 			SupersededAt:     pgtype.Timestamptz{Time: supersededAt, Valid: true},
 			SupersedeReason:  pgtype.Text{String: "server-owned projection facts changed", Valid: true},
-			ExternalPrLinkID: externalLinkID, ProjectionFactsRevision: projection.factsRevision,
+			ExternalPrLinkID: externalLinkID,
 		})
 		if err != nil {
 			return out, fmt.Errorf("supersede stale PR merge delegations: %w", err)

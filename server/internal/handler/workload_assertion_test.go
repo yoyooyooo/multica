@@ -1334,6 +1334,14 @@ func TestPRMergeDelegationV2PendingApproveConsumeLifecycle(t *testing.T) {
 	if approveRecorder.Code != http.StatusOK {
 		t.Fatalf("approve status=%d body=%s", approveRecorder.Code, approveRecorder.Body.String())
 	}
+	if err := testPool.QueryRow(ctx, `SELECT `+workloadPRMergeDelegationColumnsForTest+` FROM workload_pr_merge_delegation WHERE id=$1`, delegation.ID).Scan(workloadPRMergeDelegationScanTargetsForTest(&delegation)...); err != nil {
+		t.Fatalf("read approved delegation: %v", err)
+	}
+	if !delegation.ApprovedAt.Valid || !delegation.NotAfter.Valid || !delegation.UpdatedAt.Valid ||
+		delegation.NotAfter.Time.Sub(delegation.ApprovedAt.Time) != prMergeDelegationApprovalTTL ||
+		!delegation.UpdatedAt.Time.Equal(delegation.ApprovedAt.Time) {
+		t.Fatalf("approval timestamps are not one DB-authoritative instant: approved=%v not_after=%v updated=%v", delegation.ApprovedAt, delegation.NotAfter, delegation.UpdatedAt)
+	}
 
 	signedRecorder := httptest.NewRecorder()
 	testHandler.CreateWorkloadAssertion(signedRecorder, newAssertionRequest())
@@ -1357,7 +1365,7 @@ func TestPRMergeDelegationV2PendingApproveConsumeLifecycle(t *testing.T) {
 		AGSPRNumber: facts.AGSPRNumber, ProviderPRNumber: facts.ProviderPRNumber,
 		ExpectedHeadSHA: facts.ExpectedHeadSHA, ExpectedBaseSHA: facts.ExpectedBaseSHA,
 		BaseRef: facts.BaseRef, MergeMethod: facts.MergeMethod, ProjectionFactsRevision: facts.ProjectionFactsRevision,
-		TaskID: facts.TaskID, RunID: facts.RunID, SessionID: "ags-session-v2-test",
+		TaskID: facts.TaskID, RunID: facts.RunID, SessionID: "aaaaaaaa-1111-4111-8111-111111111111",
 		IntentID: "99999999-9999-9999-9999-999999999999", Phase: "pre_effect",
 	}
 	introspectBody := consumeBody
@@ -1399,6 +1407,21 @@ func TestPRMergeDelegationV2PendingApproveConsumeLifecycle(t *testing.T) {
 	testHandler.ConsumePRMergeDelegation(consumeRecorder, consumeReq)
 	if consumeRecorder.Code != http.StatusOK || !strings.Contains(consumeRecorder.Body.String(), `"outcome":"consumed"`) {
 		t.Fatalf("consume status=%d body=%s", consumeRecorder.Code, consumeRecorder.Body.String())
+	}
+	var consumedAt, consumedUpdatedAt time.Time
+	var receiptID string
+	if err := testPool.QueryRow(ctx, `SELECT consumed_at, updated_at, consumption_receipt_id FROM workload_pr_merge_delegation WHERE id=$1`, delegation.ID).Scan(&consumedAt, &consumedUpdatedAt, &receiptID); err != nil {
+		t.Fatalf("read consumed authority timestamps: %v", err)
+	}
+	if !consumedAt.Equal(consumedUpdatedAt) || receiptID == "" {
+		t.Fatalf("consume did not persist one DB-authoritative instant and receipt: consumed=%v updated=%v receipt=%q", consumedAt, consumedUpdatedAt, receiptID)
+	}
+	var consumedDetails []byte
+	if err := testPool.QueryRow(ctx, `SELECT details FROM workload_pr_merge_delegation_event WHERE delegation_id=$1 AND event_type='consumed'`, delegation.ID).Scan(&consumedDetails); err != nil {
+		t.Fatalf("read consumed event: %v", err)
+	}
+	if strings.Contains(string(consumedDetails), "session") || strings.Contains(string(consumedDetails), consumeBody.SessionID) {
+		t.Fatalf("consumed event persisted caller session identifier: %s", consumedDetails)
 	}
 	// Same intent is idempotent and cannot produce a second authority commit.
 	consumeRetryReq := newRequest(http.MethodPost, "/", consumeBody)
@@ -1492,6 +1515,126 @@ func TestPRMergeDelegationV2PendingApproveConsumeLifecycle(t *testing.T) {
 	testHandler.ConsumePRMergeDelegation(secondConsumeRecorder, secondConsumeReq)
 	if secondConsumeRecorder.Code != http.StatusConflict {
 		t.Fatalf("revoked consume status=%d body=%s", secondConsumeRecorder.Code, secondConsumeRecorder.Body.String())
+	}
+}
+
+func TestPRMergeDelegationProductionPathsRejectStoredDigestDrift(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "1")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "digest-drift-service-token")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "digest-drift-signing-secret")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "urn:multica:deployment:digest-drift-test")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", "digest-drift-test")
+	const wrongDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+	approval := seedPRMergeConcurrencyFixture(t, "10 minutes")
+	if _, err := testPool.Exec(ctx, `UPDATE workload_pr_merge_delegation SET state='pending_approval', approved_at=NULL, approved_by_user_id=NULL, not_after=NULL, facts_digest=$2 WHERE id=$1`, approval.row.ID, wrongDigest); err != nil {
+		t.Fatalf("corrupt pending row digest: %v", err)
+	}
+	approveReq := newRequest(http.MethodPost, "/", map[string]any{})
+	approveReq.Header.Set("X-User-ID", uuidToString(approval.userID))
+	approveRoute := chi.NewRouteContext()
+	approveRoute.URLParams.Add("id", uuidToString(approval.workspaceID))
+	approveRoute.URLParams.Add("delegationId", uuidToString(approval.row.ID))
+	approveReq = approveReq.WithContext(context.WithValue(approveReq.Context(), chi.RouteCtxKey, approveRoute))
+	approveRecorder := httptest.NewRecorder()
+	testHandler.ApprovePRMergeDelegation(approveRecorder, approveReq)
+	if approveRecorder.Code != http.StatusConflict {
+		t.Fatalf("digest-drift approval status=%d body=%s", approveRecorder.Code, approveRecorder.Body.String())
+	}
+
+	tokenHash := uuid.NewString()
+	if _, err := testHandler.Queries.CreateTaskToken(ctx, db.CreateTaskTokenParams{
+		TokenHash: tokenHash, TaskID: approval.row.TaskID,
+		AgentID: func() pgtype.UUID {
+			var id pgtype.UUID
+			if err := testPool.QueryRow(ctx, `SELECT agent_id FROM agent_task_queue WHERE id=$1`, approval.row.TaskID).Scan(&id); err != nil {
+				t.Fatalf("read task agent: %v", err)
+			}
+			return id
+		}(),
+		WorkspaceID: approval.workspaceID, UserID: approval.userID, ExecutionID: approval.row.ExecutionID,
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatalf("create digest-drift task token: %v", err)
+	}
+	assertionReq := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
+		"purpose":            "ags_session_exchange",
+		"target":             map[string]any{"provider": "ags", "instance": "mini", "repository": "ux/smip"},
+		"requested_resource": map[string]any{"service": "ags", "repository": "ux/smip"},
+		"requested_operation": map[string]any{"name": "pr.merge", "constraints": map[string]any{
+			"pull_request_number": 41, "forgejo_pull_request_number": 52,
+			"expected_head_sha": approval.row.ExpectedHeadSha, "merge_method": approval.row.MergeMethod,
+		}},
+		"requested_capabilities": []string{"repo:read", "repo:write"},
+	})
+	assertionReq.Header.Set("X-Actor-Source", "task_token")
+	assertionReq.Header.Set("X-Task-ID", uuidToString(approval.row.TaskID))
+	assertionReq.Header.Set("X-Run-ID", uuidToString(approval.row.ExecutionID))
+	assertionReq.Header.Set("X-Workspace-ID", uuidToString(approval.workspaceID))
+	assertionReq.Header.Set("X-Task-Token-Hash", tokenHash)
+	assertionRecorder := httptest.NewRecorder()
+	testHandler.CreateWorkloadAssertion(assertionRecorder, assertionReq)
+	if assertionRecorder.Code != http.StatusConflict || !strings.Contains(assertionRecorder.Body.String(), "merge_approval_required") {
+		t.Fatalf("digest-drift signing status=%d body=%s", assertionRecorder.Code, assertionRecorder.Body.String())
+	}
+	var oldState string
+	if err := testPool.QueryRow(ctx, `SELECT state FROM workload_pr_merge_delegation WHERE id=$1`, approval.row.ID).Scan(&oldState); err != nil || oldState != "superseded" {
+		t.Fatalf("digest-drift row state=%q err=%v", oldState, err)
+	}
+
+	service := seedPRMergeConcurrencyFixture(t, "10 minutes")
+	if _, err := testPool.Exec(ctx, `UPDATE workload_pr_merge_delegation SET facts_digest=$2 WHERE id=$1`, service.row.ID, wrongDigest); err != nil {
+		t.Fatalf("corrupt approved row digest: %v", err)
+	}
+	service.row.FactsDigest = wrongDigest
+	requestBody := prMergeDelegationServiceRequest{
+		AuthorityRevision: uuidToString(service.row.AuthorityRevision), FactsDigest: wrongDigest,
+		TargetInstance: service.row.TargetInstance, CanonicalRepositoryID: service.row.CanonicalRepositoryID,
+		CanonicalRepository: service.row.CanonicalRepository, ProviderBindingID: service.row.ProviderBindingID,
+		ProviderBindingRevision: service.row.ProviderBindingRevision, ProviderRepository: service.row.ProviderRepository,
+		AGSPRNumber: service.row.AgsPrNumber, ProviderPRNumber: service.row.ProviderPrNumber,
+		ExpectedHeadSHA: service.row.ExpectedHeadSha, ExpectedBaseSHA: service.row.ExpectedBaseSha,
+		BaseRef: service.row.BaseRef, MergeMethod: service.row.MergeMethod, ProjectionFactsRevision: service.row.ProjectionFactsRevision,
+		TaskID: uuidToString(service.row.TaskID), RunID: uuidToString(service.row.ExecutionID), SessionID: "bbbbbbbb-2222-4222-8222-222222222222",
+	}
+	for _, test := range []struct {
+		name    string
+		consume bool
+		call    func(http.ResponseWriter, *http.Request)
+	}{{"introspect", false, testHandler.IntrospectPRMergeDelegation}, {"consume", true, testHandler.ConsumePRMergeDelegation}} {
+		t.Run(test.name, func(t *testing.T) {
+			body := requestBody
+			if test.consume {
+				body.Phase = "pre_effect"
+				body.IntentID = uuid.NewString()
+			} else {
+				body.Phase = "exchange"
+			}
+			req := newRequest(http.MethodPost, "/", body)
+			req.Header.Set("Authorization", "Bearer digest-drift-service-token")
+			route := chi.NewRouteContext()
+			route.URLParams.Add("delegationId", uuidToString(service.row.ID))
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+			recorder := httptest.NewRecorder()
+			test.call(recorder, req)
+			if recorder.Code != http.StatusConflict || strings.Contains(recorder.Body.String(), wrongDigest) {
+				t.Fatalf("digest-drift %s status=%d body=%s", test.name, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	var state string
+	var receipt pgtype.UUID
+	var events int
+	if err := testPool.QueryRow(ctx, `SELECT state, consumption_receipt_id FROM workload_pr_merge_delegation WHERE id=$1`, service.row.ID).Scan(&state, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM workload_pr_merge_delegation_event WHERE delegation_id=$1`, service.row.ID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if state != "approved" || receipt.Valid || events != 0 {
+		t.Fatalf("digest drift produced authority effect: state=%s receipt=%v events=%d", state, receipt, events)
 	}
 }
 

@@ -69,16 +69,20 @@ SELECT * FROM workload_pr_merge_delegation
 WHERE id = $1 AND workspace_id = $2;
 
 -- name: ApprovePRMergeDelegationInWorkspace :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS approved_at
+)
 UPDATE workload_pr_merge_delegation
 SET state = 'approved',
-    approved_at = sqlc.arg(approved_at),
+    approved_at = authority_time.approved_at,
     approved_by_user_id = sqlc.arg(approved_by_user_id),
-    not_after = sqlc.arg(not_after),
-    updated_at = sqlc.arg(approved_at)
+    not_after = authority_time.approved_at + make_interval(secs => sqlc.arg(approval_ttl_seconds)::int),
+    updated_at = authority_time.approved_at
+FROM authority_time
 WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
   AND state = 'pending_approval'
-RETURNING *;
+RETURNING workload_pr_merge_delegation.*;
 
 -- name: RevokePRMergeDelegationInWorkspace :one
 UPDATE workload_pr_merge_delegation
@@ -96,24 +100,34 @@ RETURNING *;
 SELECT * FROM workload_pr_merge_delegation WHERE id = $1 FOR UPDATE;
 
 -- name: ConsumePRMergeDelegation :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS consumed_at
+)
 UPDATE workload_pr_merge_delegation
 SET state = 'consumed',
     consumer_instance_id = sqlc.arg(consumer_instance_id),
     consumer_intent_id = sqlc.arg(consumer_intent_id),
     consume_request_digest = sqlc.arg(consume_request_digest),
     consumption_receipt_id = sqlc.arg(consumption_receipt_id),
-    consumed_at = sqlc.arg(consumed_at),
-    updated_at = sqlc.arg(consumed_at)
+    consumed_at = authority_time.consumed_at,
+    updated_at = authority_time.consumed_at
+FROM authority_time
 WHERE id = sqlc.arg(id)
   AND state = 'approved'
-  AND not_after > sqlc.arg(consumed_at)
-RETURNING *;
+  AND not_after > authority_time.consumed_at
+RETURNING workload_pr_merge_delegation.*;
 
 -- name: ExpirePRMergeDelegationByID :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS expired_at
+)
 UPDATE workload_pr_merge_delegation
-SET state = 'expired', updated_at = sqlc.arg(expired_at)
-WHERE id = sqlc.arg(id) AND state = 'approved' AND not_after <= sqlc.arg(expired_at)
-RETURNING *;
+SET state = 'expired', updated_at = authority_time.expired_at
+FROM authority_time
+WHERE id = sqlc.arg(id)
+  AND state = 'approved'
+  AND not_after <= authority_time.expired_at
+RETURNING workload_pr_merge_delegation.*;
 
 -- name: SupersedePRMergeDelegationByID :one
 UPDATE workload_pr_merge_delegation
@@ -126,15 +140,34 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: SupersedePRMergeDelegationsForExternalLink :many
-UPDATE workload_pr_merge_delegation
+UPDATE workload_pr_merge_delegation AS delegation
 SET state = 'superseded',
     superseded_at = sqlc.arg(superseded_at),
     supersede_reason = sqlc.arg(supersede_reason),
     updated_at = sqlc.arg(superseded_at)
-WHERE external_pr_link_id = sqlc.arg(external_pr_link_id)
-  AND state IN ('pending_approval', 'approved')
-  AND projection_facts_revision <> sqlc.arg(projection_facts_revision)
-RETURNING *;
+WHERE delegation.external_pr_link_id = sqlc.arg(external_pr_link_id)
+  AND delegation.state IN ('pending_approval', 'approved')
+  AND EXISTS (
+      SELECT 1
+      FROM external_pull_request_link AS link
+      WHERE link.id = delegation.external_pr_link_id
+        AND (
+          delegation.target_instance IS DISTINCT FROM link.target_instance OR
+          delegation.canonical_repository_id IS DISTINCT FROM link.canonical_repository_id OR
+          delegation.canonical_repository IS DISTINCT FROM link.canonical_repository OR
+          delegation.provider_binding_id IS DISTINCT FROM link.provider_binding_id OR
+          delegation.provider_binding_revision IS DISTINCT FROM link.provider_binding_revision OR
+          delegation.provider_repository IS DISTINCT FROM link.provider_repository OR
+          delegation.ags_pr_number IS DISTINCT FROM link.external_number OR
+          delegation.provider_pr_number IS DISTINCT FROM link.merge_number OR
+          delegation.expected_head_sha IS DISTINCT FROM link.expected_head_sha OR
+          delegation.expected_base_sha IS DISTINCT FROM link.expected_base_sha OR
+          delegation.base_ref IS DISTINCT FROM link.base_ref OR
+          delegation.merge_method IS DISTINCT FROM link.delegated_merge_method OR
+          delegation.projection_facts_revision IS DISTINCT FROM link.projection_facts_revision
+        )
+  )
+RETURNING delegation.*;
 
 -- name: CreatePRMergeDelegationEvent :one
 INSERT INTO workload_pr_merge_delegation_event (
