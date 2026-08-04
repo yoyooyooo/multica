@@ -57,19 +57,24 @@ AgentKit production sends short branch names such as `main` or `agent/delegated-
 
 Optional `requested_ttl` is accepted only for session exchange as a trimmed canonical `<positive integer><s|m|h>` string no greater than `15m`; invalid types, `null`, unknown/compound units, secret-shaped values, zero, and larger durations fail before signing. An accepted value is copied unchanged as the top-level JWT claim, while absence remains absence. These are Multica producer guarantees aligned to the inspected AgentKit production requests and AGS team-v4 registry; they do not by themselves prove an AGS verifier revision is deployed or accepts the assertion.
 
-## Owner/operator PR merge delegation
+## One-shot PR merge delegation
 
-A human workspace owner or admin creates, reads, and revokes the exact grant through supported routes:
+A `pr.merge` request never elevates itself. With the feature flag enabled, the first exact request binds the authenticated Task and distinct execution ID to canonical AGS projection facts and creates an idempotent `pending_approval` row. No JWT is signed; the response is `409 merge_approval_required` with a secret-free locator. Human approval accepts an empty body only—the server derives Task/Run, instance, immutable repository and provider-binding identities, both PRs, head/base, branch, method, revision and fixed expiry from the running task and AGS service projection.
 
 ```text
-POST /api/workspaces/{workspace_id}/workload-delegations/pr-merge
+GET  /api/workspaces/{workspace_id}/workload-delegations/pr-merge
 GET  /api/workspaces/{workspace_id}/workload-delegations/pr-merge/{delegation_id}
-POST /api/workspaces/{workspace_id}/workload-delegations/pr-merge/{delegation_id}/revoke
+POST /api/workspaces/{workspace_id}/workload-delegations/pr-merge/{delegation_id}/approve  {}
+POST /api/workspaces/{workspace_id}/workload-delegations/pr-merge/{delegation_id}/revoke   {}
+
+POST /api/integrations/ags/workload-delegations/pr-merge/{delegation_id}/introspect
+POST /api/integrations/ags/workload-delegations/pr-merge/{delegation_id}/consume
+POST /api/integrations/ags/workload-delegations/pr-merge/{delegation_id}/effects
 ```
 
-Creation accepts only `task_id`, equal `run_id`, canonical `repository`, both PR numbers, `expected_head_sha`, `merge_method`, and a positive `ttl_seconds` no greater than 900. The server records a generated authority revision, granting human, grant/expiry timestamps, and optional revocation actor/reason. A newer owner-authorized grant for the same Task/Run atomically revokes the previous revision. Task tokens and cloud credentials are rejected by the HTTP middleware and handler; workload metadata, Agent/Squad/name/role, Prompt, Skill, Context, profile, environment, and requested operation cannot create or widen a grant.
+The human CLI is correspondingly narrow: `multica issue merge status|approve|revoke <issue>`. It does not accept authority facts. Approval, revocation, projection supersession, one-shot consumption and effect outcomes are append-only events and never ordinary Issue comments, so these control actions do not trigger Agent Runs.
 
-Assertion issuance locks the running Task authority and the exact active delegation in one transaction. Missing, expired, revoked, wrong-workspace, wrong-Task/Run, wrong-repository, wrong-PR, wrong-head, or wrong-method rows all return `403` before JWT signing. The assertion expiry is capped by the delegation expiry. Revocation linearizes with issuance through the delegation row lock; it prevents future assertions but does not pretend to invalidate a JWT already signed before the revocation transaction.
+An approved request signs the closed `workload.merge_delegation` v2 object and clamps assertion expiry to `not_after`. The canonical cross-repository wire fixture is `fixtures/pr-merge-delegation-v2.json` (SHA-256 `fc6bf25cefe84cb55e2bec9976e94e333543974747de5561a7a9cda50a9a2416`). AGS must introspect at exchange/use time and atomically consume immediately before provider effect. Revoke and consume lock the same row: revoke wins before consumption, while successful consume is the explicit irreversible authorization commit and same-intent retries return the original receipt. A different intent cannot reuse the delegation. Projection, execution, task terminal state, instance, binding, PR, head/base or method drift denies signing/introspection/consumption. `MULTICA_DELEGATED_PR_MERGE_ENABLED` defaults off; when off, normal operations remain available, `pr.merge` stays a deferred operation, and no pending row, assertion, approval, introspection, or consumption is produced.
 
 ## Closed claim shapes by purpose
 
@@ -82,11 +87,11 @@ Both purposes include only the common signed claims `ver`, `iss`, `aud`, `sub`, 
 ## Security boundary
 
 - The task token authenticates the running workload; callers cannot choose workload, Issue, workspace, or actor claims. Authentication joins the token to an exact `running` task, and issuance locks/freshly rechecks both rows in one transaction. Task completion/failure/cancellation therefore linearizes against issuance: terminalization first rejects issuance; issuance first proves only that the task was running at that signing transaction, not that it remains running for the assertion's full TTL.
-- Repository targets are normalized before signing so equivalent host/path spellings do not produce different authority scopes.
+- Privileged merge scope uses AGS-projected immutable repository and provider-binding digests plus strict canonical owner/name display values; aliases are not accepted as authority.
 - Assertions are short-lived and signed with `MULTICA_WORKLOAD_ASSERTION_SECRET`; raw provider credentials are not returned.
 - Signing configuration is deployment-owned. `MULTICA_WORKLOAD_ASSERTION_ISSUER` is the deployment-unique JWT `iss`. The separate required secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID` must be a canonical safe ID, differ from `iss`, and exactly match AGS `trusted_issuers[].id`; it is the only value written to `workload_context.issuer_instance_id`. Install helpers generate each value once and preserve it, but operators must configure the generated ID explicitly in AGS rather than infer it from a target name. Source presence alone does not prove a usable trust relationship with AGS.
 - The session-only signed `scope` cannot be replaced by caller metadata after issuance.
-- `pr.merge` maintainer authority additionally requires a durable, revisioned, bounded, human-created server row whose exact facts are locked and checked before signing. Requested operation alone never selects privileged authority.
+- `pr.merge` maintainer authority requires the revisioned pending→approved→consumed state machine and provider-effect-time AGS introspection/atomic consumption. Requested operation, Context, Agent role or Prompt never selects privileged authority.
 - Session-only `workload_context` and `authority` are Multica-owned issuer facts. AGS must still verify the accepted issuer/key/schema and re-evaluate current principal, team binding, native grant and requested operation; this source does not claim an accepted or deployed AGS runtime.
 
 ## Source anchors
@@ -96,7 +101,8 @@ Both purposes include only the common signed claims `ver`, `iss`, `aud`, `sub`, 
 - `server/internal/handler/workload_pr_merge_delegation.go`
 - `server/internal/handler/workload_pr_merge_delegation_test.go`
 - `server/pkg/db/queries/workload_pr_merge_delegation.sql`
-- `server/migrations/244_workload_pr_merge_delegation.up.sql` through `246_workload_pr_merge_delegation_active_index.up.sql`
+- `server/migrations/244_workload_pr_merge_delegation.up.sql` through `250_workload_pr_merge_delegation_event_history_index.up.sql`
+- `docs/features/fork/workload-assertions/fixtures/pr-merge-delegation-v2.json`
 - `server/cmd/server/router.go`
 - `server/cmd/server/workload_pr_merge_delegation_routes_integration_test.go`
 - `.env.example`

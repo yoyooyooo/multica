@@ -46,6 +46,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
 			r.Header.Del("X-Task-Token-Hash")
+			r.Header.Del("X-Run-ID")
 
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
@@ -88,6 +89,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
 				r.Header.Set("X-Task-Token-Hash", hash)
+				if tt.ExecutionID.Valid {
+					r.Header.Set("X-Run-ID", uuidToString(tt.ExecutionID))
+				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table. The value "task_token" is the only signal

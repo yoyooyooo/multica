@@ -1,6 +1,6 @@
 -- name: CreateTaskToken :one
-INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, execution_id, expires_at)
+VALUES (@token_hash, @task_id, @agent_id, @workspace_id, @user_id, @execution_id, @expires_at)
 RETURNING *;
 
 -- name: GetTaskTokenByHash :one
@@ -11,7 +11,8 @@ SELECT tt.* FROM task_token tt
 JOIN agent_task_queue atq ON atq.id = tt.task_id
 WHERE tt.token_hash = $1
   AND tt.expires_at > now()
-  AND atq.status = 'running';
+  AND atq.status = 'running'
+  AND tt.execution_id IS NOT DISTINCT FROM atq.execution_id;
 
 -- name: LockRunningTaskTokenForAssertion :one
 -- Linearization point for assertion issuance versus task terminalization.
@@ -25,6 +26,7 @@ WHERE tt.token_hash = sqlc.arg('token_hash')
   AND tt.workspace_id = sqlc.arg('workspace_id')
   AND tt.expires_at > now()
   AND atq.status = 'running'
+  AND tt.execution_id IS NOT DISTINCT FROM atq.execution_id
 FOR UPDATE OF tt, atq;
 
 -- name: DeleteTaskTokensByTask :exec

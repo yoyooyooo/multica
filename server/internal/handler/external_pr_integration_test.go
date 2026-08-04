@@ -307,6 +307,31 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
 		t.Fatalf("seed external PR link: %v", err)
 	}
+	var linkID, delegationID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM external_pull_request_link WHERE workspace_id=$1 AND issue_id=$2`, testWorkspaceID, issueID).Scan(&linkID); err != nil {
+		t.Fatalf("read external PR link: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `INSERT INTO workload_pr_merge_delegation (
+		workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id,
+		target_instance, canonical_repository_id, canonical_repository,
+		provider_binding_id, provider_binding_revision, provider_repository,
+		ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha,
+		base_ref, merge_method, projection_facts_revision, facts_digest, state
+	) VALUES ($1,$2,$3,$4,$5,$6,'mini',$7,'jackie/agent-kit',$8,$9,'jackie/agent-kit',1501,2501,$10,$11,'main','rebase',$12,$13,'pending_approval') RETURNING id`,
+		testWorkspaceID, issueID, linkID, uuid.NewString(), uuid.NewString(), uuid.NewString(),
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		"1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222",
+		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").Scan(&delegationID); err != nil {
+		t.Fatalf("seed PR merge delegation: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO workload_pr_merge_delegation_event (
+		workspace_id, issue_id, delegation_id, event_type, actor_type, actor_id
+	) VALUES ($1,$2,$3,'request_created','system','delete-cleanup-test')`, testWorkspaceID, issueID, delegationID); err != nil {
+		t.Fatalf("seed PR merge delegation event: %v", err)
+	}
 
 	if err := testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{
 		ID:          parseUUID(issueID),
@@ -333,6 +358,14 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("external PR receipts after issue delete = %d, want 0", count)
+	}
+	for table := range map[string]struct{}{"workload_pr_merge_delegation": {}, "workload_pr_merge_delegation_event": {}} {
+		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE issue_id=$1`, issueID).Scan(&count); err != nil {
+			t.Fatalf("count %s after issue delete: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after issue delete=%d, want 0", table, count)
+		}
 	}
 }
 
@@ -941,6 +974,68 @@ func TestCompleteIssueFromExternalPRWritesActivityNotIssueComments(t *testing.T)
 		if count != 1 {
 			t.Fatalf("activity %s count = %d, want 1", action, count)
 		}
+	}
+}
+
+func TestExternalPRProjectionDriftSupersedesMergeDelegationWithEvent(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	issueID := createExternalPRTestIssue(t, "merge projection drift", "in_review", "", nil)
+	intent := false
+	projection := externalPullRequestLinkRequest{
+		Provider: "ags", IssueID: issueID, WorkspaceID: testWorkspaceID, Workspace: handlerTestWorkspaceSlug,
+		IssueKey: "HAN-merge-drift", ExternalRepo: "ux/smip", ExternalNumber: 61,
+		MergeProvider: "forgejo", MergeRepo: "ux/smip", MergeNumber: 62,
+		LinkConfidence: "authoritative", CompletionIntent: &intent, State: "open", IdempotencyKey: "merge-projection-v1-" + issueID,
+		TargetInstance: "mini", CanonicalRepositoryID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CanonicalRepository: "ux/smip", ProviderBindingID: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ProviderBindingRevision: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ProviderRepository:      "ux/smip", ExpectedHeadSHA: "1111111111111111111111111111111111111111",
+		ExpectedBaseSHA: "2222222222222222222222222222222222222222", BaseRef: "main", DelegatedMergeMethod: "rebase",
+		ProjectionFactsRevision: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+	}
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, projection); err != nil {
+		t.Fatalf("seed projection: %v", err)
+	}
+	var linkID, delegationID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM external_pull_request_link WHERE workspace_id=$1 AND issue_id=$2 AND external_number=61`, testWorkspaceID, issueID).Scan(&linkID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `INSERT INTO workload_pr_merge_delegation (
+		workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id,
+		target_instance, canonical_repository_id, canonical_repository, provider_binding_id,
+		provider_binding_revision, provider_repository, ags_pr_number, provider_pr_number,
+		expected_head_sha, expected_base_sha, base_ref, merge_method, projection_facts_revision, facts_digest, state
+	) VALUES ($1,$2,$3,$4,$5,$6,'mini',$7,'ux/smip',$8,$9,'ux/smip',61,62,$10,$11,'main','rebase',$12,$13,'pending_approval') RETURNING id`,
+		testWorkspaceID, issueID, linkID, uuid.NewString(), uuid.NewString(), uuid.NewString(),
+		projection.CanonicalRepositoryID, projection.ProviderBindingID, projection.ProviderBindingRevision,
+		projection.ExpectedHeadSHA, projection.ExpectedBaseSHA, projection.ProjectionFactsRevision,
+		"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").Scan(&delegationID); err != nil {
+		t.Fatalf("seed delegation: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO workload_pr_merge_delegation_event (workspace_id,issue_id,delegation_id,event_type,actor_type,actor_id) VALUES ($1,$2,$3,'request_created','task','projection-test')`, testWorkspaceID, issueID, delegationID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM workload_pr_merge_delegation_event WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM workload_pr_merge_delegation WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_link WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, issueID)
+	})
+
+	projection.ExpectedHeadSHA = "3333333333333333333333333333333333333333"
+	projection.ProjectionFactsRevision = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	projection.IdempotencyKey = "merge-projection-v2-" + issueID
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, projection); err != nil {
+		t.Fatalf("update projection: %v", err)
+	}
+	var state string
+	if err := testPool.QueryRow(ctx, `SELECT state FROM workload_pr_merge_delegation WHERE id=$1`, delegationID).Scan(&state); err != nil || state != "superseded" {
+		t.Fatalf("delegation state=%q err=%v", state, err)
+	}
+	var supersededEvents int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM workload_pr_merge_delegation_event WHERE delegation_id=$1 AND event_type='superseded'`, delegationID).Scan(&supersededEvents); err != nil || supersededEvents != 1 {
+		t.Fatalf("superseded events=%d err=%v", supersededEvents, err)
 	}
 }
 

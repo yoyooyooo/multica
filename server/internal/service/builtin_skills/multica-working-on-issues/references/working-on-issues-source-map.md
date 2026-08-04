@@ -42,11 +42,11 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 |---|---|
 | Strict request, purpose/audience/TTL signing | `server/internal/handler/workload_assertion.go` (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
 | Team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizePRMergeConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
-| Human-created exact `pr.merge` delegation API and assertion lock | `server/internal/handler/workload_pr_merge_delegation.go` (`CreatePRMergeDelegation`, `GetPRMergeDelegation`, `RevokePRMergeDelegation`, `lockActivePRMergeDelegationForAssertion`) |
-| Durable delegation facts and single-active authority | `server/migrations/244_workload_pr_merge_delegation.up.sql`–`246_workload_pr_merge_delegation_active_index.up.sql`, `server/pkg/db/queries/workload_pr_merge_delegation.sql` |
+| Server-derived one-shot `pr.merge` delegation, approval and AGS effect-time APIs | `server/internal/handler/workload_pr_merge_delegation.go` (`ensureApprovedPRMergeDelegationForAssertion`, `ApprovePRMergeDelegation`, `RevokePRMergeDelegation`, `IntrospectPRMergeDelegation`, `ConsumePRMergeDelegation`, `RecordPRMergeDelegationEffect`) |
+| Durable delegation/events and interrupted-index reconciliation | `server/migrations/244_workload_pr_merge_delegation.up.sql`–`250_workload_pr_merge_delegation_event_history_index.up.sql`, `server/pkg/db/queries/workload_pr_merge_delegation.sql`, `server/cmd/migrate/main.go` |
 | JWT issuer vs AGS issuer ID separation | `server/internal/handler/workload_assertion.go` (`ValidateWorkloadAssertionConfiguration`, `enrichSessionExchangeWorkload`) |
 | Startup and readiness fail closed | `server/cmd/server/main.go` (`main`), `server/cmd/server/health.go` (`newServerHealth`, `computeReadiness`) |
-| Nine-operation signed/normalization matrix | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`) |
+| Eight default-class signed operations plus separately gated ninth `pr.merge` shape | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`, `TestPRMergeDelegationV2PendingApproveConsumeLifecycle`) |
 | AgentKit Forgejo list/runs/log shapes and negative matrix | same file (`TestNormalizeAgentKitForgejoCommandConstraintFixtures`, `TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix`) |
 | Deferred-operation signer rejection | same file (`TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSigning`) |
 
@@ -62,10 +62,11 @@ The fixed default team-v4 operations are `repo.read`, `git.read`, `git.push`,
 `pr.merge` is the ninth implemented operation, but exact request shape alone
 does not select authority. It switches the signed authority to
 `multica.workspace.maintainer.v1` and requires `repo:read + repo:write` only
-after the signer locks an active human-created server delegation that exactly
-matches workspace, Task/Run, repository, both PR numbers, expected head, and
-merge method. Task credentials cannot manage that revisioned, expiring,
-revocable row; it is never added to the default class. Their constraints are
+after the signer finds an approved, server-derived delegation for the exact
+workspace, Task/execution, immutable repository/provider binding, both PRs,
+head/base and method. Human approval takes only an Issue/delegation locator;
+AGS must introspect and atomically consume the one-shot authority immediately
+before provider effect. It is never added to the default class. Their constraints are
 operation-specific: the repository/Git operations are exact
 empty; PR create has both required canonical branch refs; PR read has one exact
 number-or-head variant; rebase retains its exact four-key intent; review read
@@ -76,9 +77,7 @@ PR-list, runs, and log command shapes: state-only PR list, event-only, SHA-only,
 mixed, and unknown variants fail before signing. Unknown/mixed/legacy
 `exact_head`, wrong/null/secret-shaped values also fail. `pr.merge` requires
 exactly the AGS/Forgejo PR numbers, lowercase full expected head SHA, and a
-registered merge method. Missing/extra/wrong-type constraints are rejected
-before signing; missing/mismatched/revoked/expired delegation returns 403 and no
-assertion. The assertion expiry is capped by the delegation expiry. Deferred
+registered merge method. Missing/extra/wrong-type constraints are rejected before signing. Missing or mismatched canonical projection facts return 403 and no assertion; absent, revoked, expired, or superseded authority requires a fresh pending approval and returns typed 409 without signing. The assertion expiry is capped by the delegation expiry. Deferred
 `review.submit`, `repo.admin`, and `repo.create` are rejected even with exact
 empty constraints.
 
@@ -139,7 +138,7 @@ cannot create a cycle. Child create then locks its parent; reparent locks the
 child and old/new parents in UUID order and revalidates parent state/topology.
 Terminal status and its activity commit in one
 transaction; activity failure rolls back status and prevents task/parent
-release. Provider facts take a workspace-scoped provider lock before identity and Issue locks. Workspace/GitHub-installation/VCS-connection deletion takes that same provider lock before freezing workspace rows, enumerating all affected Issues, and taking UUID-sorted Issue locks; Issue/batch deletion takes its exact Issue locks before row/FK/application cleanup. This preserves provider-workspace → identity → Issue advisory → row-lock order. GitHub PR fact transaction errors return non-2xx so the provider retries instead of accepting a rolled-back multi-Issue delivery. Only after commit are activity/Issue events published and
+release. Provider facts take a workspace-scoped provider lock before identity and Issue locks. Workspace/GitHub-installation/VCS-connection deletion takes that same provider lock before freezing workspace rows, enumerating all affected Issues, and taking UUID-sorted Issue locks; Issue/batch deletion now takes the same provider-workspace fence before its exact Issue locks and row/FK/application cleanup. This preserves provider-workspace → identity → Issue advisory → row-lock order. GitHub PR fact transaction errors return non-2xx so the provider retries instead of accepting a rolled-back multi-Issue delivery. Only after commit are activity/Issue events published and
 `notifyParentOfChildDone` invoked. The design does not claim an outbox guarantee
 for a process crash after that commit.
 

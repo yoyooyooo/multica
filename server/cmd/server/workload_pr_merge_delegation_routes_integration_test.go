@@ -1,17 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/auth"
 )
 
 func TestPRMergeDelegationRoutesRequireHumanWorkspaceOperator(t *testing.T) {
+	t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "1")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "router-v2-service-token")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "imile-win")
 	ctx := context.Background()
 	var agentID, runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT id, runtime_id FROM agent
@@ -22,14 +24,14 @@ WHERE workspace_id=$1 AND runtime_id IS NOT NULL ORDER BY created_at LIMIT 1`, t
 	if err := testPool.QueryRow(ctx, `INSERT INTO issue (
 workspace_id, number, title, status, priority, position, creator_type, creator_id
 ) VALUES ($1, (SELECT issue_counter + 1100 FROM workspace WHERE id=$1),
-'router PR merge delegation', 'in_progress', 'none', 1, 'member', $2) RETURNING id`,
-		testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+'router PR merge delegation v2', 'in_progress', 'none', 1, 'member', $2) RETURNING id`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
 		t.Fatalf("create route issue: %v", err)
 	}
+	executionID := uuid.NewString()
 	var taskID string
 	if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (
-agent_id, runtime_id, issue_id, status, priority, started_at
-) VALUES ($1,$2,$3,'running',0,now()) RETURNING id`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+agent_id, runtime_id, issue_id, execution_id, status, priority, started_at
+) VALUES ($1,$2,$3,$4,'running',0,now()) RETURNING id`, agentID, runtimeID, issueID, executionID).Scan(&taskID); err != nil {
 		t.Fatalf("create route task: %v", err)
 	}
 	rawToken, err := auth.GenerateAgentTaskToken()
@@ -37,139 +39,70 @@ agent_id, runtime_id, issue_id, status, priority, started_at
 		t.Fatal(err)
 	}
 	if _, err := testPool.Exec(ctx, `INSERT INTO task_token (
-token_hash, task_id, agent_id, workspace_id, user_id, expires_at
-) VALUES ($1,$2,$3,$4,$5,$6)`, auth.HashToken(rawToken), taskID, agentID, testWorkspaceID, testUserID, time.Now().Add(time.Hour)); err != nil {
+token_hash, task_id, agent_id, workspace_id, user_id, execution_id, expires_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7)`, auth.HashToken(rawToken), taskID, agentID, testWorkspaceID, testUserID, executionID, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create route task token: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workload_pr_merge_delegation WHERE task_id=$1`, taskID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_token WHERE task_id=$1`, taskID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id=$1`, taskID)
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id=$1`, issueID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID)
 	})
 
 	var memberUserID string
-	memberEmail := "pr-merge-delegation-member@multica.test"
-	if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name,email) VALUES ('Delegation Member',$1) RETURNING id`, memberEmail).Scan(&memberUserID); err != nil {
-		t.Fatalf("create non-operator member: %v", err)
+	memberEmail := "pr-merge-delegation-v2-member@multica.test"
+	if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name,email) VALUES ('Delegation V2 Member',$1) RETURNING id`, memberEmail).Scan(&memberUserID); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id,user_id,role) VALUES ($1,$2,'member')`, testWorkspaceID, memberUserID); err != nil {
-		t.Fatalf("add non-operator member: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM member WHERE workspace_id=$1 AND user_id=$2`, testWorkspaceID, memberUserID)
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id=$1`, memberUserID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM member WHERE workspace_id=$1 AND user_id=$2`, testWorkspaceID, memberUserID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM "user" WHERE id=$1`, memberUserID)
 	})
-	memberToken, err := generateTestJWT(memberUserID, memberEmail, "Delegation Member")
+	memberToken, err := generateTestJWT(memberUserID, memberEmail, "Delegation V2 Member")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	body := map[string]any{
-		"task_id": taskID, "run_id": taskID, "repository": "jackie/agent-kit",
-		"pull_request_number": 41, "forgejo_pull_request_number": 52,
-		"expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"merge_method":      "fast-forward-only", "ttl_seconds": 600,
+	listPath := "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge?issue_id=" + issueID
+	for name, token := range map[string]string{"task": rawToken, "ordinary_member": memberToken} {
+		req, err := http.NewRequest(http.MethodGet, testServer.URL+listPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s list status=%d, want 403", name, resp.StatusCode)
+		}
 	}
-	encoded, _ := json.Marshal(body)
-	machineReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge", bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
+	listResp := authRequest(t, http.MethodGet, listPath, nil)
+	if listResp.StatusCode != http.StatusOK {
+		listResp.Body.Close()
+		t.Fatalf("human list status=%d", listResp.StatusCode)
 	}
-	machineReq.Header.Set("Authorization", "Bearer "+rawToken)
-	machineReq.Header.Set("Content-Type", "application/json")
-	machineResp, err := http.DefaultClient.Do(machineReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machineResp.Body.Close()
-	if machineResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("task token create status=%d, want 403", machineResp.StatusCode)
-	}
+	listResp.Body.Close()
 
-	memberReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge", bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
+	// The raw human grant route was removed: authority requests can only be
+	// derived by an authenticated workload assertion attempt.
+	legacyResp := authRequest(t, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge", map[string]any{"task_id": taskID})
+	if legacyResp.StatusCode != http.StatusMethodNotAllowed {
+		legacyResp.Body.Close()
+		t.Fatalf("legacy raw grant status=%d, want 405", legacyResp.StatusCode)
 	}
-	memberReq.Header.Set("Authorization", "Bearer "+memberToken)
-	memberReq.Header.Set("Content-Type", "application/json")
-	memberResp, err := http.DefaultClient.Do(memberReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	memberResp.Body.Close()
-	if memberResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("non-operator member create status=%d, want 403", memberResp.StatusCode)
-	}
+	legacyResp.Body.Close()
 
-	createResp := authRequest(t, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge", body)
-	if createResp.StatusCode != http.StatusCreated {
-		createResp.Body.Close()
-		t.Fatalf("human create status=%d", createResp.StatusCode)
+	unknownID := uuid.NewString()
+	approveResp := authRequest(t, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge/"+unknownID+"/approve", map[string]any{})
+	if approveResp.StatusCode != http.StatusNotFound {
+		approveResp.Body.Close()
+		t.Fatalf("unknown approve status=%d", approveResp.StatusCode)
 	}
-	var created struct {
-		ID                string `json:"id"`
-		State             string `json:"state"`
-		AuthorityRevision string `json:"authority_revision"`
-		GrantedByUserID   string `json:"granted_by_user_id"`
-	}
-	readJSON(t, createResp, &created)
-	if created.ID == "" || created.State != "active" || created.AuthorityRevision == "" || created.GrantedByUserID != testUserID {
-		t.Fatalf("created delegation=%#v", created)
-	}
-
-	getPath := "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge/" + created.ID
-	getResp := authRequest(t, http.MethodGet, getPath, nil)
-	if getResp.StatusCode != http.StatusOK {
-		getResp.Body.Close()
-		t.Fatalf("human read status=%d", getResp.StatusCode)
-	}
-	getResp.Body.Close()
-
-	machineGetReq, err := http.NewRequest(http.MethodGet, testServer.URL+getPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machineGetReq.Header.Set("Authorization", "Bearer "+rawToken)
-	machineGetResp, err := http.DefaultClient.Do(machineGetReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machineGetResp.Body.Close()
-	if machineGetResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("task token read status=%d, want 403", machineGetResp.StatusCode)
-	}
-
-	revokePath := getPath + "/revoke"
-	machineRevokeBody, _ := json.Marshal(map[string]any{"reason": "machine attempted revocation"})
-	machineRevokeReq, err := http.NewRequest(http.MethodPost, testServer.URL+revokePath, bytes.NewReader(machineRevokeBody))
-	if err != nil {
-		t.Fatal(err)
-	}
-	machineRevokeReq.Header.Set("Authorization", "Bearer "+rawToken)
-	machineRevokeReq.Header.Set("Content-Type", "application/json")
-	machineRevokeResp, err := http.DefaultClient.Do(machineRevokeReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machineRevokeResp.Body.Close()
-	if machineRevokeResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("task token revoke status=%d, want 403", machineRevokeResp.StatusCode)
-	}
-
-	revokeResp := authRequest(t, http.MethodPost, revokePath, map[string]any{
-		"reason": "operator cancelled exact merge authority",
-	})
-	if revokeResp.StatusCode != http.StatusOK {
-		revokeResp.Body.Close()
-		t.Fatalf("human revoke status=%d", revokeResp.StatusCode)
-	}
-	var revoked struct {
-		State string `json:"state"`
-	}
-	readJSON(t, revokeResp, &revoked)
-	if revoked.State != "revoked" {
-		t.Fatalf("revoked state=%q", revoked.State)
-	}
+	approveResp.Body.Close()
 }

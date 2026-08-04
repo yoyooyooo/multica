@@ -147,18 +147,19 @@ type workloadActor struct {
 }
 
 type workloadAssertionWorkload struct {
-	Workspace       string               `json:"workspace"`
-	WorkspaceID     string               `json:"workspace_id"`
-	AgentID         string               `json:"agent_id"`
-	AgentName       string               `json:"agent_name"`
-	TaskID          string               `json:"task_id"`
-	RunID           string               `json:"run_id,omitempty"`
-	IssueID         string               `json:"issue_id,omitempty"`
-	IssueKey        string               `json:"issue_key,omitempty"`
-	IssueURL        string               `json:"issue_url,omitempty"`
-	Actor           *workloadActor       `json:"actor,omitempty"`
-	WorkloadContext *workloadContextV1   `json:"workload_context,omitempty"`
-	Authority       *workloadAuthorityV1 `json:"authority,omitempty"`
+	Workspace       string                  `json:"workspace"`
+	WorkspaceID     string                  `json:"workspace_id"`
+	AgentID         string                  `json:"agent_id"`
+	AgentName       string                  `json:"agent_name"`
+	TaskID          string                  `json:"task_id"`
+	RunID           string                  `json:"run_id,omitempty"`
+	IssueID         string                  `json:"issue_id,omitempty"`
+	IssueKey        string                  `json:"issue_key,omitempty"`
+	IssueURL        string                  `json:"issue_url,omitempty"`
+	Actor           *workloadActor          `json:"actor,omitempty"`
+	WorkloadContext *workloadContextV1      `json:"workload_context,omitempty"`
+	Authority       *workloadAuthorityV1    `json:"authority,omitempty"`
+	MergeDelegation *prMergeDelegationFacts `json:"merge_delegation,omitempty"`
 }
 
 type workloadAssertionResponse struct {
@@ -170,9 +171,10 @@ type workloadAssertionResponse struct {
 }
 
 type resolvedTaskWorkload struct {
-	Workload    workloadAssertionWorkload
-	Task        db.AgentTaskQueue
-	WorkspaceID pgtype.UUID
+	Workload               workloadAssertionWorkload
+	Task                   db.AgentTaskQueue
+	WorkspaceID            pgtype.UUID
+	PendingMergeDelegation *db.WorkloadPrMergeDelegation
 }
 
 // CreateWorkloadAssertion mints a short-lived, purpose-bound assertion from
@@ -239,6 +241,16 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 		}
 		scope = &resolvedScope
 		req.RequestedCapabilities = resolvedScope.RequestedCapabilities
+		if resolvedScope.Operation.Name == "pr.merge" {
+			requireIssue = true
+			if !delegatedPRMergeEnabled() {
+				// Keep the high-risk operation deferred until the full server
+				// authority path is explicitly enabled. Ordinary operations remain
+				// available and no pending authority row is created.
+				writeError(w, http.StatusBadRequest, "requested operation is deferred")
+				return
+			}
+		}
 	}
 
 	secret := workloadAssertionSigningSecret()
@@ -259,6 +271,20 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if scope != nil && scope.Operation.Name == "pr.merge" {
+		workspaceID, parseOK := parseUUIDOrBadRequest(w, r.Header.Get("X-Workspace-ID"), "workspace id")
+		if !parseOK {
+			return
+		}
+		if err := lockProviderWorkspaces(r.Context(), tx, []pgtype.UUID{workspaceID}); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "PR merge delegation is unavailable")
+			return
+		}
+		if _, err := qtx.LockWorkspaceForPRMergeDelegation(r.Context(), workspaceID); err != nil {
+			writeError(w, http.StatusConflict, "workspace is not active")
+			return
+		}
+	}
 	if !lockRunningTaskTokenForAssertion(w, r, qtx) {
 		return
 	}
@@ -275,8 +301,15 @@ func (h *Handler) CreateWorkloadAssertion(w http.ResponseWriter, r *http.Request
 	var authorityExpiresAt time.Time
 	if isSessionExchange {
 		var enriched bool
-		authorityExpiresAt, enriched = h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID, *scope, now)
+		authorityExpiresAt, enriched = h.enrichSessionExchangeWorkload(w, r, qtx, &resolved, issuerInstanceID, assertionID, *scope, target, now)
 		if !enriched {
+			if resolved.PendingMergeDelegation != nil {
+				if err := tx.Commit(r.Context()); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to persist PR merge approval request")
+					return
+				}
+				writePRMergeApprovalRequired(w, *resolved.PendingMergeDelegation)
+			}
 			return
 		}
 	}
@@ -441,9 +474,13 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 		writeError(w, http.StatusNotFound, "agent not found")
 		return resolvedTaskWorkload{}, false
 	}
+	runID := uuidToString(task.ID)
+	if task.ExecutionID.Valid {
+		runID = uuidToString(task.ExecutionID)
+	}
 	workload := workloadAssertionWorkload{
 		Workspace: workspace.Slug, WorkspaceID: uuidToString(workspaceID), AgentID: uuidToString(task.AgentID),
-		AgentName: agent.Name, TaskID: uuidToString(task.ID), RunID: uuidToString(task.ID),
+		AgentName: agent.Name, TaskID: uuidToString(task.ID), RunID: runID,
 	}
 	if task.IssueID.Valid {
 		issue, err := queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
@@ -464,7 +501,7 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 // enrichSessionExchangeWorkload adds the signed v1 envelope and server-owned
 // Team authority projection. The projection is resolved from durable server
 // state; neither the request nor Agent/Squad labels can influence it.
-func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID string, scope workloadAssertionScope, now time.Time) (time.Time, bool) {
+func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries, resolved *resolvedTaskWorkload, issuerInstanceID, assertionID string, scope workloadAssertionScope, target workloadAssertionTarget, now time.Time) (time.Time, bool) {
 	authority, err := queries.GetWorkspaceWorkloadAuthority(r.Context(), resolved.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
@@ -472,10 +509,15 @@ func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.R
 	}
 	policyClass := authority.PolicyClass
 	var authorityExpiresAt time.Time
+	var mergeDelegation *prMergeDelegationFacts
 	if scope.Operation.Name == "pr.merge" {
-		delegation, err := h.lockActivePRMergeDelegationForAssertion(r, queries, *resolved, scope, now)
-		if errors.Is(err, errActivePRMergeDelegationRequired) {
-			writeError(w, http.StatusForbidden, "active exact PR merge delegation required")
+		delegation, err := h.ensureApprovedPRMergeDelegationForAssertion(r.Context(), queries, *resolved, scope, target, now)
+		if errors.Is(err, errPRMergeApprovalRequired) {
+			resolved.PendingMergeDelegation = &delegation
+			return time.Time{}, false
+		}
+		if errors.Is(err, errPRMergeDelegationDenied) {
+			writeError(w, http.StatusForbidden, "exact server-owned PR merge delegation is unavailable")
 			return time.Time{}, false
 		}
 		if err != nil {
@@ -483,13 +525,16 @@ func (h *Handler) enrichSessionExchangeWorkload(w http.ResponseWriter, r *http.R
 			return time.Time{}, false
 		}
 		policyClass = workspaceMaintainerPolicyClass
-		authorityExpiresAt = delegation.ExpiresAt.Time.UTC()
+		authorityExpiresAt = delegation.NotAfter.Time.UTC()
+		facts := mergeDelegationFactsFromRow(delegation)
+		mergeDelegation = &facts
 	}
 	workload, err := assembleSessionExchangeWorkload(*resolved, authority, issuerInstanceID, assertionID, policyClass)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "workload authority is unavailable")
 		return time.Time{}, false
 	}
+	workload.MergeDelegation = mergeDelegation
 	resolved.Workload = workload
 	return authorityExpiresAt, true
 }

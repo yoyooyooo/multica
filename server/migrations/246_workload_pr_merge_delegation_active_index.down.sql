@@ -1,1 +1,1 @@
-DROP INDEX CONCURRENTLY IF EXISTS workload_pr_merge_delegation_active_task_uidx;
+DROP INDEX CONCURRENTLY workload_pr_merge_delegation_current_execution_uidx;

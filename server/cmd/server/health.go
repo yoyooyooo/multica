@@ -36,6 +36,8 @@ type serverHealth struct {
 	requiredMigrations         []string
 	initErr                    error
 	workloadAssertionConfigErr error
+	delegatedPRMergeConfigErr  error
+	delegatedPRMergeEnabled    bool
 	cacheTTL                   time.Duration
 	refreshMu                  sync.Mutex
 	cache                      atomic.Pointer[cachedReadiness]
@@ -60,6 +62,7 @@ type readinessChecks struct {
 	DB                        string `json:"db"`
 	Migrations                string `json:"migrations"`
 	WorkloadAssertionIdentity string `json:"workload_assertion_identity"`
+	DelegatedPRMerge          string `json:"delegated_pr_merge"`
 }
 
 func newServerHealth(pool *pgxpool.Pool) *serverHealth {
@@ -72,7 +75,9 @@ func newServerHealth(pool *pgxpool.Pool) *serverHealth {
 			os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER"),
 			os.Getenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID"),
 		),
-		cacheTTL: readinessCacheTTL,
+		delegatedPRMergeConfigErr: handler.ValidateDelegatedPRMergeConfiguration(),
+		delegatedPRMergeEnabled:   os.Getenv("MULTICA_DELEGATED_PR_MERGE_ENABLED") == "1",
+		cacheTTL:                  readinessCacheTTL,
 	}
 }
 
@@ -127,7 +132,19 @@ func (h *serverHealth) computeReadiness(parent context.Context) (readinessRespon
 			DB:                        "ok",
 			Migrations:                "ok",
 			WorkloadAssertionIdentity: "ok",
+			DelegatedPRMerge:          "disabled",
 		},
+	}
+
+	if h.delegatedPRMergeEnabled {
+		resp.Checks.DelegatedPRMerge = "ok"
+	}
+	if h.delegatedPRMergeConfigErr != nil {
+		resp.Status = "not_ready"
+		resp.Checks.DB = "unknown"
+		resp.Checks.Migrations = "unknown"
+		resp.Checks.DelegatedPRMerge = "error"
+		return resp, http.StatusServiceUnavailable
 	}
 
 	if h.workloadAssertionConfigErr != nil {
