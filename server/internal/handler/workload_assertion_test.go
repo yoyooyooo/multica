@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -401,7 +402,6 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 		{name: "pr read by number", operation: "pr.read", constraints: map[string]any{"pull_request_number": float64(41)}, capabilities: []string{"repo:read"}},
 		{name: "pr read by head", operation: "pr.read", constraints: map[string]any{"head_ref": "agent/delegated-pr"}, capabilities: []string{"repo:read"}},
 		{name: "pr rebase", operation: "pr.rebase", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "expected_base_sha": sha}, capabilities: []string{"repo:read", "repo:write"}},
-		{name: "pr merge", operation: "pr.merge", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "expected_head_sha": sha, "merge_method": "fast-forward-only"}, capabilities: []string{"repo:read", "repo:write"}},
 		{name: "review read", operation: "review.read", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52)}, capabilities: []string{"repo:read"}},
 		{name: "ci read repository list", operation: "ci.read", constraints: map[string]any{}, capabilities: []string{"repo:read"}},
 		{name: "ci read run log", operation: "ci.read", constraints: map[string]any{"run_id": float64(73)}, capabilities: []string{"repo:read"}},
@@ -409,14 +409,6 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 		{name: "ci read PR runs at head", operation: "ci.read", constraints: map[string]any{"pull_request_number": float64(41), "forgejo_pull_request_number": float64(52), "head_sha": sha}, capabilities: []string{"repo:read"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.operation == "pr.merge" {
-				now := time.Now().UTC()
-				insertPRMergeDelegationFixture(t, prMergeDelegationFixture{
-					workspaceID: testWorkspaceID, taskID: taskID, runID: taskID, repository: "jackie/agent-kit",
-					pullRequestNumber: 41, forgejoPullRequestNumber: 52, expectedHeadSHA: sha,
-					mergeMethod: "fast-forward-only", grantedAt: now.Add(-time.Minute), expiresAt: now.Add(10 * time.Minute),
-				})
-			}
 			req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
 				"purpose":                "ags_session_exchange",
 				"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
@@ -450,9 +442,6 @@ func TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraint
 			workload, ok := claims["workload"].(map[string]any)
 			authority, authorityOK := workload["authority"].(map[string]any)
 			wantPolicy := workspaceDefaultPolicyClass
-			if tc.operation == "pr.merge" {
-				wantPolicy = workspaceMaintainerPolicyClass
-			}
 			if !ok || !authorityOK || authority["policy_class"] != wantPolicy {
 				t.Fatalf("signed authority = %#v, want policy_class=%s", workload["authority"], wantPolicy)
 			}
@@ -490,6 +479,27 @@ func TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSi
 			}
 		})
 	}
+
+	t.Run("pr.merge feature off remains deferred and default class is never signed", func(t *testing.T) {
+		t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "0")
+		req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
+			"purpose":                "ags_session_exchange",
+			"target":                 map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
+			"requested_resource":     map[string]any{"service": "ags", "repository": "jackie/agent-kit"},
+			"requested_operation":    map[string]any{"name": "pr.merge", "constraints": map[string]any{"pull_request_number": 41, "forgejo_pull_request_number": 52, "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "merge_method": "fast-forward-only"}},
+			"requested_capabilities": []string{"repo:read", "repo:write"},
+		})
+		authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+		rr := httptest.NewRecorder()
+		testHandler.CreateWorkloadAssertion(rr, req)
+		if rr.Code != http.StatusBadRequest || strings.Contains(rr.Body.String(), `"assertion"`) {
+			t.Fatalf("disabled merge status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var count int
+		if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM workload_pr_merge_delegation WHERE task_id=$1`, taskID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("disabled merge authority rows=%d err=%v", count, err)
+		}
+	})
 }
 
 func TestCreateWorkloadAssertionSessionExchangeSignsExactPRRebaseScope(t *testing.T) {
@@ -1088,6 +1098,8 @@ func TestWorkspaceWorkloadAuthorityCleansUpWithWorkspace(t *testing.T) {
 	t.Cleanup(func() {
 		// Keep the test database clean if the regression assertion fails before
 		// the workspace cascade can complete.
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workload_pr_merge_delegation_event WHERE workspace_id=$1`, workspace.ID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workload_pr_merge_delegation WHERE workspace_id=$1`, workspace.ID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM member WHERE workspace_id=$1`, workspace.ID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace_workload_authority WHERE workspace_id=$1`, workspace.ID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, workspace.ID)
@@ -1099,6 +1111,25 @@ func TestWorkspaceWorkloadAuthorityCleansUpWithWorkspace(t *testing.T) {
 		Role:        "owner",
 	}); err != nil {
 		t.Fatalf("create member: %v", err)
+	}
+	var delegationID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO workload_pr_merge_delegation (
+		workspace_id,issue_id,external_pr_link_id,task_id,execution_id,runtime_id,
+		target_instance,canonical_repository_id,canonical_repository,provider_binding_id,
+		provider_binding_revision,provider_repository,ags_pr_number,provider_pr_number,
+		expected_head_sha,expected_base_sha,base_ref,merge_method,projection_facts_revision,facts_digest,state
+	) VALUES ($1,$2,$3,$4,$5,$6,'mini',$7,'jackie/agent-kit',$8,$9,'jackie/agent-kit',41,52,$10,$11,'main','rebase',$12,$13,'pending_approval') RETURNING id`,
+		workspace.ID, uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(),
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		"1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222",
+		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").Scan(&delegationID); err != nil {
+		t.Fatalf("seed workspace merge delegation: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO workload_pr_merge_delegation_event (workspace_id,issue_id,delegation_id,event_type,actor_type,actor_id) SELECT workspace_id,issue_id,id,'request_created','system','workspace-delete-test' FROM workload_pr_merge_delegation WHERE id=$1`, delegationID); err != nil {
+		t.Fatalf("seed workspace merge event: %v", err)
 	}
 	w := httptest.NewRecorder()
 	req := newRequest(http.MethodDelete, "/api/workspaces/"+uuidToString(workspace.ID), nil)
@@ -1114,6 +1145,12 @@ func TestWorkspaceWorkloadAuthorityCleansUpWithWorkspace(t *testing.T) {
 	}
 	if authorityCount != 0 {
 		t.Fatalf("authority rows after workspace cleanup = %d, want 0", authorityCount)
+	}
+	for table := range map[string]struct{}{"workload_pr_merge_delegation": {}, "workload_pr_merge_delegation_event": {}} {
+		var count int
+		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE workspace_id=$1`, workspace.ID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s rows after workspace cleanup=%d err=%v", table, count, err)
+		}
 	}
 }
 
@@ -1200,4 +1237,316 @@ func TestCreateExternalPRLinkTokenKeepsLegacyContract(t *testing.T) {
 	if claims["workspace_id"] != testWorkspaceID || claims["agent_id"] != agentID || claims["task_id"] != taskID || claims["issue_id"] != issueID {
 		t.Fatalf("legacy claims = %#v", claims)
 	}
+}
+
+func TestPRMergeDelegationV2PendingApproveConsumeLifecycle(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "1")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "merge-v2-service-token")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "merge-v2-signing-secret")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "urn:multica:deployment:merge-v2-test")
+	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", "merge-v2-test")
+
+	issueID := createExternalPRTestIssue(t, "merge v2 lifecycle", "in_review", "", nil)
+	agentID := createHandlerTestAgent(t, "merge-v2-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	executionID := uuid.NewString()
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET execution_id=$2 WHERE id=$1`, taskID, executionID); err != nil {
+		t.Fatalf("set execution id: %v", err)
+	}
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent_task_queue WHERE id=$1`, taskID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read runtime id: %v", err)
+	}
+	linkID := uuid.NewString()
+	if _, err := testPool.Exec(ctx, `INSERT INTO external_pull_request_link (
+		id, workspace_id, issue_id, provider, external_repo, external_number,
+		merge_provider, merge_repo, merge_number, link_confidence, completion_intent, state,
+		target_instance, canonical_repository_id, canonical_repository,
+		provider_binding_id, provider_binding_revision, provider_repository,
+		expected_head_sha, expected_base_sha, base_ref, delegated_merge_method, projection_facts_revision
+	) VALUES ($1,$2,$3,'ags','ux/smip',41,'forgejo','ux/smip',52,'authoritative',false,'open',
+		'mini',$4,'ux/smip',$5,$6,'ux/smip',$7,$8,'main','rebase',$9)`,
+		linkID, testWorkspaceID, issueID,
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		"1111111111111111111111111111111111111111",
+		"2222222222222222222222222222222222222222",
+		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"); err != nil {
+		t.Fatalf("seed merge projection: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM workload_pr_merge_delegation_event WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM workload_pr_merge_delegation WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_link WHERE id=$1`, linkID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, issueID)
+	})
+	tokenHash := uuid.NewString()
+	if _, err := testHandler.Queries.CreateTaskToken(ctx, db.CreateTaskTokenParams{
+		TokenHash: tokenHash, TaskID: parseUUID(taskID), AgentID: parseUUID(agentID),
+		WorkspaceID: parseUUID(testWorkspaceID), UserID: parseUUID(testUserID),
+		ExecutionID: parseUUID(executionID), ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatalf("create execution token: %v", err)
+	}
+
+	newAssertionRequest := func() *http.Request {
+		req := newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
+			"purpose":            "ags_session_exchange",
+			"target":             map[string]any{"provider": "ags", "instance": "mini", "repository": "ux/smip"},
+			"requested_resource": map[string]any{"service": "ags", "repository": "ux/smip"},
+			"requested_operation": map[string]any{"name": "pr.merge", "constraints": map[string]any{
+				"pull_request_number": 41, "forgejo_pull_request_number": 52,
+				"expected_head_sha": "1111111111111111111111111111111111111111", "merge_method": "rebase",
+			}},
+			"requested_capabilities": []string{"repo:read", "repo:write"},
+		})
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Task-ID", taskID)
+		req.Header.Set("X-Run-ID", executionID)
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		req.Header.Set("X-Task-Token-Hash", tokenHash)
+		return req
+	}
+	pendingRecorder := httptest.NewRecorder()
+	testHandler.CreateWorkloadAssertion(pendingRecorder, newAssertionRequest())
+	if pendingRecorder.Code != http.StatusConflict || !strings.Contains(pendingRecorder.Body.String(), "merge_approval_required") {
+		t.Fatalf("pending response status=%d body=%s", pendingRecorder.Code, pendingRecorder.Body.String())
+	}
+	var delegation db.WorkloadPrMergeDelegation
+	if err := testPool.QueryRow(ctx, `SELECT `+workloadPRMergeDelegationColumnsForTest+` FROM workload_pr_merge_delegation WHERE task_id=$1`, taskID).Scan(workloadPRMergeDelegationScanTargetsForTest(&delegation)...); err != nil {
+		t.Fatalf("read pending delegation: %v", err)
+	}
+	if delegation.State != "pending_approval" || uuidToString(delegation.ExecutionID) != executionID {
+		t.Fatalf("pending delegation=%#v", delegation)
+	}
+
+	approveReq := newRequest(http.MethodPost, "/", map[string]any{})
+	approveReq.Header.Set("X-User-ID", testUserID)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", testWorkspaceID)
+	routeCtx.URLParams.Add("delegationId", uuidToString(delegation.ID))
+	approveReq = approveReq.WithContext(context.WithValue(approveReq.Context(), chi.RouteCtxKey, routeCtx))
+	approveRecorder := httptest.NewRecorder()
+	testHandler.ApprovePRMergeDelegation(approveRecorder, approveReq)
+	if approveRecorder.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRecorder.Code, approveRecorder.Body.String())
+	}
+
+	signedRecorder := httptest.NewRecorder()
+	testHandler.CreateWorkloadAssertion(signedRecorder, newAssertionRequest())
+	if signedRecorder.Code != http.StatusOK {
+		t.Fatalf("signed status=%d body=%s", signedRecorder.Code, signedRecorder.Body.String())
+	}
+	var signed workloadAssertionResponse
+	if err := json.NewDecoder(signedRecorder.Body).Decode(&signed); err != nil {
+		t.Fatal(err)
+	}
+	if signed.Workload.Authority == nil || signed.Workload.Authority.PolicyClass != workspaceMaintainerPolicyClass || signed.Workload.MergeDelegation == nil || signed.Workload.MergeDelegation.RunID != executionID {
+		t.Fatalf("signed merge workload=%#v", signed.Workload)
+	}
+
+	facts := signed.Workload.MergeDelegation
+	consumeBody := prMergeDelegationServiceRequest{
+		AuthorityRevision: facts.AuthorityRevision, FactsDigest: facts.FactsDigest,
+		TargetInstance: facts.TargetInstance, CanonicalRepositoryID: facts.CanonicalRepositoryID,
+		CanonicalRepository: facts.CanonicalRepository, ProviderBindingID: facts.ProviderBindingID,
+		ProviderBindingRevision: facts.ProviderBindingRevision, ProviderRepository: facts.ProviderRepository,
+		AGSPRNumber: facts.AGSPRNumber, ProviderPRNumber: facts.ProviderPRNumber,
+		ExpectedHeadSHA: facts.ExpectedHeadSHA, ExpectedBaseSHA: facts.ExpectedBaseSHA,
+		BaseRef: facts.BaseRef, MergeMethod: facts.MergeMethod, ProjectionFactsRevision: facts.ProjectionFactsRevision,
+		TaskID: facts.TaskID, RunID: facts.RunID, SessionID: "ags-session-v2-test",
+		IntentID: "99999999-9999-9999-9999-999999999999", Phase: "pre_effect",
+	}
+	introspectBody := consumeBody
+	introspectBody.IntentID = ""
+	introspectBody.Phase = "exchange"
+	introspectReq := newRequest(http.MethodPost, "/", introspectBody)
+	introspectReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	introspectRoute := chi.NewRouteContext()
+	introspectRoute.URLParams.Add("delegationId", facts.DelegationID)
+	introspectReq = introspectReq.WithContext(context.WithValue(introspectReq.Context(), chi.RouteCtxKey, introspectRoute))
+	introspectRecorder := httptest.NewRecorder()
+	testHandler.IntrospectPRMergeDelegation(introspectRecorder, introspectReq)
+	if introspectRecorder.Code != http.StatusOK || !strings.Contains(introspectRecorder.Body.String(), `"outcome":"active"`) {
+		t.Fatalf("introspect status=%d body=%s", introspectRecorder.Code, introspectRecorder.Body.String())
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status='completed' WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	terminalReq := newRequest(http.MethodPost, "/", introspectBody)
+	terminalReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	terminalRoute := chi.NewRouteContext()
+	terminalRoute.URLParams.Add("delegationId", facts.DelegationID)
+	terminalReq = terminalReq.WithContext(context.WithValue(terminalReq.Context(), chi.RouteCtxKey, terminalRoute))
+	terminalRecorder := httptest.NewRecorder()
+	testHandler.IntrospectPRMergeDelegation(terminalRecorder, terminalReq)
+	if terminalRecorder.Code != http.StatusConflict {
+		t.Fatalf("terminal introspect status=%d body=%s", terminalRecorder.Code, terminalRecorder.Body.String())
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status='running' WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	consumeReq := newRequest(http.MethodPost, "/", consumeBody)
+	consumeReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	consumeRoute := chi.NewRouteContext()
+	consumeRoute.URLParams.Add("delegationId", facts.DelegationID)
+	consumeReq = consumeReq.WithContext(context.WithValue(consumeReq.Context(), chi.RouteCtxKey, consumeRoute))
+	consumeRecorder := httptest.NewRecorder()
+	testHandler.ConsumePRMergeDelegation(consumeRecorder, consumeReq)
+	if consumeRecorder.Code != http.StatusOK || !strings.Contains(consumeRecorder.Body.String(), `"outcome":"consumed"`) {
+		t.Fatalf("consume status=%d body=%s", consumeRecorder.Code, consumeRecorder.Body.String())
+	}
+	// Same intent is idempotent and cannot produce a second authority commit.
+	consumeRetryReq := newRequest(http.MethodPost, "/", consumeBody)
+	consumeRetryReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	consumeRetryRoute := chi.NewRouteContext()
+	consumeRetryRoute.URLParams.Add("delegationId", facts.DelegationID)
+	consumeRetryReq = consumeRetryReq.WithContext(context.WithValue(consumeRetryReq.Context(), chi.RouteCtxKey, consumeRetryRoute))
+	consumeRetryRecorder := httptest.NewRecorder()
+	testHandler.ConsumePRMergeDelegation(consumeRetryRecorder, consumeRetryReq)
+	if consumeRetryRecorder.Code != http.StatusOK || !strings.Contains(consumeRetryRecorder.Body.String(), "already_consumed") {
+		t.Fatalf("consume retry status=%d body=%s", consumeRetryRecorder.Code, consumeRetryRecorder.Body.String())
+	}
+	wrongIntent := consumeBody
+	wrongIntent.IntentID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	wrongIntentReq := newRequest(http.MethodPost, "/", wrongIntent)
+	wrongIntentReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	wrongIntentRoute := chi.NewRouteContext()
+	wrongIntentRoute.URLParams.Add("delegationId", facts.DelegationID)
+	wrongIntentReq = wrongIntentReq.WithContext(context.WithValue(wrongIntentReq.Context(), chi.RouteCtxKey, wrongIntentRoute))
+	wrongIntentRecorder := httptest.NewRecorder()
+	testHandler.ConsumePRMergeDelegation(wrongIntentRecorder, wrongIntentReq)
+	if wrongIntentRecorder.Code != http.StatusConflict {
+		t.Fatalf("different intent status=%d body=%s", wrongIntentRecorder.Code, wrongIntentRecorder.Body.String())
+	}
+
+	revokeReq := newRequest(http.MethodPost, "/", map[string]any{})
+	revokeReq.Header.Set("X-User-ID", testUserID)
+	revokeRoute := chi.NewRouteContext()
+	revokeRoute.URLParams.Add("id", testWorkspaceID)
+	revokeRoute.URLParams.Add("delegationId", facts.DelegationID)
+	revokeReq = revokeReq.WithContext(context.WithValue(revokeReq.Context(), chi.RouteCtxKey, revokeRoute))
+	revokeRecorder := httptest.NewRecorder()
+	testHandler.RevokePRMergeDelegation(revokeRecorder, revokeReq)
+	if revokeRecorder.Code != http.StatusConflict {
+		t.Fatalf("post-consume revoke status=%d body=%s", revokeRecorder.Code, revokeRecorder.Body.String())
+	}
+
+	// A new one-shot request can be approved after the consumed authority, and
+	// revocation committed before consume must win the same-row state race.
+	secondPendingRecorder := httptest.NewRecorder()
+	testHandler.CreateWorkloadAssertion(secondPendingRecorder, newAssertionRequest())
+	if secondPendingRecorder.Code != http.StatusConflict {
+		t.Fatalf("second pending status=%d body=%s", secondPendingRecorder.Code, secondPendingRecorder.Body.String())
+	}
+	var second db.WorkloadPrMergeDelegation
+	if err := testPool.QueryRow(ctx, `SELECT `+workloadPRMergeDelegationColumnsForTest+` FROM workload_pr_merge_delegation WHERE task_id=$1 AND state='pending_approval'`, taskID).Scan(workloadPRMergeDelegationScanTargetsForTest(&second)...); err != nil {
+		t.Fatal(err)
+	}
+	secondApproveReq := newRequest(http.MethodPost, "/", map[string]any{})
+	secondApproveReq.Header.Set("X-User-ID", testUserID)
+	secondApproveRoute := chi.NewRouteContext()
+	secondApproveRoute.URLParams.Add("id", testWorkspaceID)
+	secondApproveRoute.URLParams.Add("delegationId", uuidToString(second.ID))
+	secondApproveReq = secondApproveReq.WithContext(context.WithValue(secondApproveReq.Context(), chi.RouteCtxKey, secondApproveRoute))
+	secondApproveRecorder := httptest.NewRecorder()
+	testHandler.ApprovePRMergeDelegation(secondApproveRecorder, secondApproveReq)
+	if secondApproveRecorder.Code != http.StatusOK {
+		t.Fatalf("second approve status=%d body=%s", secondApproveRecorder.Code, secondApproveRecorder.Body.String())
+	}
+	secondSignedRecorder := httptest.NewRecorder()
+	testHandler.CreateWorkloadAssertion(secondSignedRecorder, newAssertionRequest())
+	if secondSignedRecorder.Code != http.StatusOK {
+		t.Fatalf("second signed status=%d body=%s", secondSignedRecorder.Code, secondSignedRecorder.Body.String())
+	}
+	var secondSigned workloadAssertionResponse
+	if err := json.NewDecoder(secondSignedRecorder.Body).Decode(&secondSigned); err != nil {
+		t.Fatal(err)
+	}
+	secondFacts := secondSigned.Workload.MergeDelegation
+	secondRevokeReq := newRequest(http.MethodPost, "/", map[string]any{})
+	secondRevokeReq.Header.Set("X-User-ID", testUserID)
+	secondRevokeRoute := chi.NewRouteContext()
+	secondRevokeRoute.URLParams.Add("id", testWorkspaceID)
+	secondRevokeRoute.URLParams.Add("delegationId", secondFacts.DelegationID)
+	secondRevokeReq = secondRevokeReq.WithContext(context.WithValue(secondRevokeReq.Context(), chi.RouteCtxKey, secondRevokeRoute))
+	secondRevokeRecorder := httptest.NewRecorder()
+	testHandler.RevokePRMergeDelegation(secondRevokeRecorder, secondRevokeReq)
+	if secondRevokeRecorder.Code != http.StatusOK {
+		t.Fatalf("pre-consume revoke status=%d body=%s", secondRevokeRecorder.Code, secondRevokeRecorder.Body.String())
+	}
+	secondConsumeBody := consumeBody
+	secondConsumeBody.AuthorityRevision = secondFacts.AuthorityRevision
+	secondConsumeBody.FactsDigest = secondFacts.FactsDigest
+	secondConsumeBody.IntentID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	secondConsumeReq := newRequest(http.MethodPost, "/", secondConsumeBody)
+	secondConsumeReq.Header.Set("Authorization", "Bearer merge-v2-service-token")
+	secondConsumeRoute := chi.NewRouteContext()
+	secondConsumeRoute.URLParams.Add("delegationId", secondFacts.DelegationID)
+	secondConsumeReq = secondConsumeReq.WithContext(context.WithValue(secondConsumeReq.Context(), chi.RouteCtxKey, secondConsumeRoute))
+	secondConsumeRecorder := httptest.NewRecorder()
+	testHandler.ConsumePRMergeDelegation(secondConsumeRecorder, secondConsumeReq)
+	if secondConsumeRecorder.Code != http.StatusConflict {
+		t.Fatalf("revoked consume status=%d body=%s", secondConsumeRecorder.Code, secondConsumeRecorder.Body.String())
+	}
+}
+
+func TestClaimAgentTaskGeneratesDistinctExecutionIdentity(t *testing.T) {
+	ctx := context.Background()
+	issueID := createExternalPRTestIssue(t, "execution identity claim", "todo", "", nil)
+	agentID := createHandlerTestAgent(t, "execution-identity-agent", []byte(`{}`))
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id=$1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	var taskID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id,runtime_id,issue_id,status,priority) VALUES ($1,$2,$3,'queued',0) RETURNING id`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id=$1`, taskID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id=$1`, issueID)
+	})
+	claimed, err := testHandler.Queries.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{AgentID: parseUUID(agentID), PrepareLeaseSecs: 30})
+	if err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if !claimed.ExecutionID.Valid || uuidToString(claimed.ExecutionID) == taskID {
+		t.Fatalf("claim task_id=%s execution_id=%s valid=%v", taskID, uuidToString(claimed.ExecutionID), claimed.ExecutionID.Valid)
+	}
+	// Stale-dispatch redelivery refreshes only the lease and preserves the same execution.
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET prepare_lease_expires_at=now()-interval '1 second' WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := testHandler.Queries.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
+		RuntimeID: parseUUID(runtimeID), PrepareLeaseSecs: 30, ClaimRecoverySecs: 0,
+	})
+	if err != nil {
+		t.Fatalf("reclaim task: %v", err)
+	}
+	if reclaimed.ID != claimed.ID || reclaimed.ExecutionID != claimed.ExecutionID {
+		t.Fatalf("stale reclaim changed execution: first=%s second=%s", uuidToString(claimed.ExecutionID), uuidToString(reclaimed.ExecutionID))
+	}
+}
+
+const workloadPRMergeDelegationColumnsForTest = `id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id, operation,
+ target_instance, canonical_repository_id, canonical_repository, provider, provider_binding_id, provider_binding_revision,
+ provider_repository, ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha, base_ref, merge_method,
+ projection_facts_revision, facts_digest, authority_revision, approval_policy_revision, state, requested_at, approved_at,
+ approved_by_user_id, not_after, revoked_at, revoked_by_user_id, revocation_reason, superseded_at, supersede_reason,
+ consumer_instance_id, consumer_intent_id, consume_request_digest, consumption_receipt_id, consumed_at, created_at, updated_at`
+
+func workloadPRMergeDelegationScanTargetsForTest(row *db.WorkloadPrMergeDelegation) []any {
+	return []any{&row.ID, &row.WorkspaceID, &row.IssueID, &row.ExternalPrLinkID, &row.TaskID, &row.ExecutionID, &row.RuntimeID,
+		&row.Operation, &row.TargetInstance, &row.CanonicalRepositoryID, &row.CanonicalRepository, &row.Provider,
+		&row.ProviderBindingID, &row.ProviderBindingRevision, &row.ProviderRepository, &row.AgsPrNumber, &row.ProviderPrNumber,
+		&row.ExpectedHeadSha, &row.ExpectedBaseSha, &row.BaseRef, &row.MergeMethod, &row.ProjectionFactsRevision, &row.FactsDigest,
+		&row.AuthorityRevision, &row.ApprovalPolicyRevision, &row.State, &row.RequestedAt, &row.ApprovedAt, &row.ApprovedByUserID,
+		&row.NotAfter, &row.RevokedAt, &row.RevokedByUserID, &row.RevocationReason, &row.SupersededAt, &row.SupersedeReason,
+		&row.ConsumerInstanceID, &row.ConsumerIntentID, &row.ConsumeRequestDigest, &row.ConsumptionReceiptID, &row.ConsumedAt,
+		&row.CreatedAt, &row.UpdatedAt}
 }

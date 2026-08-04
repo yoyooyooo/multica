@@ -151,6 +151,7 @@ type AgentTaskQueue struct {
 	// The one human accountable for this run, for audit / visibility / cost only — NEVER consulted for authorization (that is originator_user_id). Invariant: when originator_user_id IS NOT NULL, this equals it; the two diverge only when originator_user_id IS NULL (autopilot rule_owner / degraded owner_fallback name an accountable human while authorization carries none). No FK, no cascade (MUL-4302 §1/§7). NULL means no accountable human was resolved: a pre-migration row, OR a NEW row whose audit source is not-yet-resolved / unattributed (e.g. run_only autopilot until rule_owner lands) — NOT pre-migration only.
 	AccountableUserID     pgtype.UUID `json:"accountable_user_id"`
 	SessionRolloutMissing bool        `json:"session_rollout_missing"`
+	ExecutionID           pgtype.UUID `json:"execution_id"`
 }
 
 type AgentToLabel struct {
@@ -495,24 +496,35 @@ type DaemonToken struct {
 }
 
 type ExternalPullRequestLink struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	IssueID          pgtype.UUID        `json:"issue_id"`
-	Provider         string             `json:"provider"`
-	ExternalRepo     string             `json:"external_repo"`
-	ExternalNumber   int32              `json:"external_number"`
-	ExternalUrl      pgtype.Text        `json:"external_url"`
-	MergeProvider    pgtype.Text        `json:"merge_provider"`
-	MergeRepo        pgtype.Text        `json:"merge_repo"`
-	MergeNumber      pgtype.Int4        `json:"merge_number"`
-	MergeUrl         pgtype.Text        `json:"merge_url"`
-	MergedSha        pgtype.Text        `json:"merged_sha"`
-	LinkConfidence   string             `json:"link_confidence"`
-	CompletionIntent bool               `json:"completion_intent"`
-	State            string             `json:"state"`
-	IdempotencyKey   pgtype.Text        `json:"idempotency_key"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	Provider                string             `json:"provider"`
+	ExternalRepo            string             `json:"external_repo"`
+	ExternalNumber          int32              `json:"external_number"`
+	ExternalUrl             pgtype.Text        `json:"external_url"`
+	MergeProvider           pgtype.Text        `json:"merge_provider"`
+	MergeRepo               pgtype.Text        `json:"merge_repo"`
+	MergeNumber             pgtype.Int4        `json:"merge_number"`
+	MergeUrl                pgtype.Text        `json:"merge_url"`
+	MergedSha               pgtype.Text        `json:"merged_sha"`
+	LinkConfidence          string             `json:"link_confidence"`
+	CompletionIntent        bool               `json:"completion_intent"`
+	State                   string             `json:"state"`
+	IdempotencyKey          pgtype.Text        `json:"idempotency_key"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	TargetInstance          pgtype.Text        `json:"target_instance"`
+	CanonicalRepositoryID   pgtype.Text        `json:"canonical_repository_id"`
+	CanonicalRepository     pgtype.Text        `json:"canonical_repository"`
+	ProviderBindingID       pgtype.Text        `json:"provider_binding_id"`
+	ProviderBindingRevision pgtype.Text        `json:"provider_binding_revision"`
+	ProviderRepository      pgtype.Text        `json:"provider_repository"`
+	ExpectedHeadSha         pgtype.Text        `json:"expected_head_sha"`
+	ExpectedBaseSha         pgtype.Text        `json:"expected_base_sha"`
+	BaseRef                 pgtype.Text        `json:"base_ref"`
+	DelegatedMergeMethod    pgtype.Text        `json:"delegated_merge_method"`
+	ProjectionFactsRevision pgtype.Text        `json:"projection_facts_revision"`
 }
 
 type ExternalPullRequestReceipt struct {
@@ -1003,6 +1015,7 @@ type TaskToken struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExecutionID pgtype.UUID        `json:"execution_id"`
 }
 
 type TaskUsage struct {
@@ -1185,25 +1198,61 @@ type WebhookDelivery struct {
 }
 
 type WorkloadPrMergeDelegation struct {
-	ID                       pgtype.UUID        `json:"id"`
-	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
-	TaskID                   pgtype.UUID        `json:"task_id"`
-	RunID                    pgtype.UUID        `json:"run_id"`
-	Operation                string             `json:"operation"`
-	Repository               string             `json:"repository"`
-	PullRequestNumber        int64              `json:"pull_request_number"`
-	ForgejoPullRequestNumber int64              `json:"forgejo_pull_request_number"`
-	ExpectedHeadSha          string             `json:"expected_head_sha"`
-	MergeMethod              string             `json:"merge_method"`
-	AuthorityRevision        pgtype.UUID        `json:"authority_revision"`
-	GrantedByUserID          pgtype.UUID        `json:"granted_by_user_id"`
-	GrantedAt                pgtype.Timestamptz `json:"granted_at"`
-	ExpiresAt                pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt                pgtype.Timestamptz `json:"revoked_at"`
-	RevokedByUserID          pgtype.UUID        `json:"revoked_by_user_id"`
-	RevocationReason         pgtype.Text        `json:"revocation_reason"`
-	CreatedAt                pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	ExternalPrLinkID        pgtype.UUID        `json:"external_pr_link_id"`
+	TaskID                  pgtype.UUID        `json:"task_id"`
+	ExecutionID             pgtype.UUID        `json:"execution_id"`
+	RuntimeID               pgtype.UUID        `json:"runtime_id"`
+	Operation               string             `json:"operation"`
+	TargetInstance          string             `json:"target_instance"`
+	CanonicalRepositoryID   string             `json:"canonical_repository_id"`
+	CanonicalRepository     string             `json:"canonical_repository"`
+	Provider                string             `json:"provider"`
+	ProviderBindingID       string             `json:"provider_binding_id"`
+	ProviderBindingRevision string             `json:"provider_binding_revision"`
+	ProviderRepository      string             `json:"provider_repository"`
+	AgsPrNumber             int64              `json:"ags_pr_number"`
+	ProviderPrNumber        int64              `json:"provider_pr_number"`
+	ExpectedHeadSha         string             `json:"expected_head_sha"`
+	ExpectedBaseSha         string             `json:"expected_base_sha"`
+	BaseRef                 string             `json:"base_ref"`
+	MergeMethod             string             `json:"merge_method"`
+	ProjectionFactsRevision string             `json:"projection_facts_revision"`
+	FactsDigest             string             `json:"facts_digest"`
+	AuthorityRevision       pgtype.UUID        `json:"authority_revision"`
+	ApprovalPolicyRevision  string             `json:"approval_policy_revision"`
+	State                   string             `json:"state"`
+	RequestedAt             pgtype.Timestamptz `json:"requested_at"`
+	ApprovedAt              pgtype.Timestamptz `json:"approved_at"`
+	ApprovedByUserID        pgtype.UUID        `json:"approved_by_user_id"`
+	NotAfter                pgtype.Timestamptz `json:"not_after"`
+	RevokedAt               pgtype.Timestamptz `json:"revoked_at"`
+	RevokedByUserID         pgtype.UUID        `json:"revoked_by_user_id"`
+	RevocationReason        pgtype.Text        `json:"revocation_reason"`
+	SupersededAt            pgtype.Timestamptz `json:"superseded_at"`
+	SupersedeReason         pgtype.Text        `json:"supersede_reason"`
+	ConsumerInstanceID      pgtype.Text        `json:"consumer_instance_id"`
+	ConsumerIntentID        pgtype.UUID        `json:"consumer_intent_id"`
+	ConsumeRequestDigest    pgtype.Text        `json:"consume_request_digest"`
+	ConsumptionReceiptID    pgtype.UUID        `json:"consumption_receipt_id"`
+	ConsumedAt              pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WorkloadPrMergeDelegationEvent struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	DelegationID     pgtype.UUID        `json:"delegation_id"`
+	EventType        string             `json:"event_type"`
+	ActorType        string             `json:"actor_type"`
+	ActorID          string             `json:"actor_id"`
+	ConsumerIntentID pgtype.UUID        `json:"consumer_intent_id"`
+	Details          []byte             `json:"details"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type Workspace struct {

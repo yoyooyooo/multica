@@ -3349,6 +3349,10 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockProviderWorkspaces(r.Context(), tx, []pgtype.UUID{issue.WorkspaceID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete issue")
+		return
+	}
 	if err := lockCompletionIssues(r.Context(), qtx, []pgtype.UUID{issue.ID}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete issue")
 		return
@@ -3774,6 +3778,14 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	workspaceIDs := make([]pgtype.UUID, 0, len(targets))
+	for _, target := range targets {
+		workspaceIDs = append(workspaceIDs, target.issue.WorkspaceID)
+	}
+	if err := lockProviderWorkspaces(r.Context(), tx, workspaceIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete issues")
+		return
+	}
 	if err := lockCompletionIssues(r.Context(), qtx, issueIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete issues")
 		return

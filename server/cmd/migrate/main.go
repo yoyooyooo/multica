@@ -55,8 +55,14 @@ var preMigrationHooks = map[string]preMigrationHook{
 	// historical reconciliation: if CREATE INDEX CONCURRENTLY leaves an invalid
 	// artifact before ledger commit, the next run removes/rebuilds it; once
 	// ledgered, later migrations remain free to evolve the definition.
-	"242_external_pr_link_issue_updated_index":    reconcileMigrationIndex(externalPRCleanupIndexSpecs[0]),
-	"243_external_pr_receipt_issue_cleanup_index": reconcileMigrationIndex(externalPRCleanupIndexSpecs[1]),
+	"242_external_pr_link_issue_updated_index":               reconcileMigrationIndex(externalPRCleanupIndexSpecs[0]),
+	"243_external_pr_receipt_issue_cleanup_index":            reconcileMigrationIndex(externalPRCleanupIndexSpecs[1]),
+	"245_workload_pr_merge_delegation_id_index":              reconcileMigrationIndex(prMergeDelegationIndexSpecs[0]),
+	"246_workload_pr_merge_delegation_active_index":          reconcileMigrationIndex(prMergeDelegationIndexSpecs[1]),
+	"247_workload_pr_merge_delegation_consumer_intent_index": reconcileMigrationIndex(prMergeDelegationIndexSpecs[2]),
+	"248_workload_pr_merge_delegation_issue_state_index":     reconcileMigrationIndex(prMergeDelegationIndexSpecs[3]),
+	"249_workload_pr_merge_delegation_event_id_index":        reconcileMigrationIndex(prMergeDelegationIndexSpecs[4]),
+	"250_workload_pr_merge_delegation_event_history_index":   reconcileMigrationIndex(prMergeDelegationIndexSpecs[5]),
 }
 
 const externalPRIndexReconciliationFenceVersion = "241_external_pr_index_reconciliation_fence"
@@ -119,11 +125,21 @@ type migrationIndexSpec struct {
 	Unique              bool
 	Columns             []string
 	PredicateNormalized string
+	PredicateSQL        string
 }
 
 var externalPRCleanupIndexSpecs = []migrationIndexSpec{
 	{Name: "idx_external_pr_link_workspace_issue_updated", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "updated_at"}},
 	{Name: "idx_external_pr_receipt_workspace_issue", Table: "external_pull_request_receipt", Columns: []string{"workspace_id", "issue_id"}},
+}
+
+var prMergeDelegationIndexSpecs = []migrationIndexSpec{
+	{Name: "workload_pr_merge_delegation_id_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"id"}},
+	{Name: "workload_pr_merge_delegation_current_execution_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"workspace_id", "task_id", "execution_id", "operation"}, PredicateNormalized: "state=anyarray[pending_approval,approved]", PredicateSQL: "state IN ('pending_approval', 'approved')"},
+	{Name: "workload_pr_merge_delegation_consumer_intent_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"consumer_instance_id", "consumer_intent_id"}, PredicateNormalized: "consumer_intent_idisnotnull", PredicateSQL: "consumer_intent_id IS NOT NULL"},
+	{Name: "workload_pr_merge_delegation_issue_state_idx", Table: "workload_pr_merge_delegation", Columns: []string{"workspace_id", "issue_id", "state", "updated_at"}},
+	{Name: "workload_pr_merge_delegation_event_id_uidx", Table: "workload_pr_merge_delegation_event", Unique: true, Columns: []string{"id"}},
+	{Name: "workload_pr_merge_delegation_event_history_idx", Table: "workload_pr_merge_delegation_event", Columns: []string{"delegation_id", "created_at", "id"}},
 }
 
 var externalPRIndexSpecs = []migrationIndexSpec{
@@ -243,10 +259,11 @@ func createMigrationIndexSQL(schema string, spec migrationIndexSpec) string {
 	// PostgreSQL places the index in the table's schema and does not accept a
 	// schema-qualified index name in CREATE INDEX. The table remains qualified.
 	sql := verb + pgx.Identifier{spec.Name}.Sanitize() + " ON " + pgx.Identifier{schema, spec.Table}.Sanitize() + "(" + strings.Join(columns, ", ") + ")"
-	if spec.Name == "idx_external_pr_link_issue_state" {
+	if spec.PredicateSQL != "" {
+		sql += " WHERE " + spec.PredicateSQL
+	} else if spec.Name == "idx_external_pr_link_issue_state" {
 		sql += " WHERE state IN ('open', 'draft') AND link_confidence = 'authoritative'"
-	}
-	if spec.Name == "idx_external_pr_link_workspace_idempotency" {
+	} else if spec.Name == "idx_external_pr_link_workspace_idempotency" {
 		sql += " WHERE idempotency_key IS NOT NULL"
 	}
 	return sql

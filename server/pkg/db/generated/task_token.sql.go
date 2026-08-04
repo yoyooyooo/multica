@@ -12,9 +12,9 @@ import (
 )
 
 const createTaskToken = `-- name: CreateTaskToken :one
-INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at
+INSERT INTO task_token (token_hash, task_id, agent_id, workspace_id, user_id, execution_id, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, token_hash, task_id, agent_id, workspace_id, user_id, expires_at, created_at, execution_id
 `
 
 type CreateTaskTokenParams struct {
@@ -23,6 +23,7 @@ type CreateTaskTokenParams struct {
 	AgentID     pgtype.UUID        `json:"agent_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	UserID      pgtype.UUID        `json:"user_id"`
+	ExecutionID pgtype.UUID        `json:"execution_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 }
 
@@ -33,6 +34,7 @@ func (q *Queries) CreateTaskToken(ctx context.Context, arg CreateTaskTokenParams
 		arg.AgentID,
 		arg.WorkspaceID,
 		arg.UserID,
+		arg.ExecutionID,
 		arg.ExpiresAt,
 	)
 	var i TaskToken
@@ -45,6 +47,7 @@ func (q *Queries) CreateTaskToken(ctx context.Context, arg CreateTaskTokenParams
 		&i.UserID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.ExecutionID,
 	)
 	return i, err
 }
@@ -68,11 +71,12 @@ func (q *Queries) DeleteTaskTokensByTask(ctx context.Context, taskID pgtype.UUID
 }
 
 const getTaskTokenByHash = `-- name: GetTaskTokenByHash :one
-SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at FROM task_token tt
+SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at, tt.execution_id FROM task_token tt
 JOIN agent_task_queue atq ON atq.id = tt.task_id
 WHERE tt.token_hash = $1
   AND tt.expires_at > now()
   AND atq.status = 'running'
+  AND tt.execution_id IS NOT DISTINCT FROM atq.execution_id
 `
 
 // A task token is executable authority only while both the token and its task
@@ -90,18 +94,20 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 		&i.UserID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.ExecutionID,
 	)
 	return i, err
 }
 
 const lockRunningTaskTokenForAssertion = `-- name: LockRunningTaskTokenForAssertion :one
-SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at FROM task_token tt
+SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at, tt.execution_id FROM task_token tt
 JOIN agent_task_queue atq ON atq.id = tt.task_id
 WHERE tt.token_hash = $1
   AND tt.task_id = $2
   AND tt.workspace_id = $3
   AND tt.expires_at > now()
   AND atq.status = 'running'
+  AND tt.execution_id IS NOT DISTINCT FROM atq.execution_id
 FOR UPDATE OF tt, atq
 `
 
@@ -127,6 +133,7 @@ func (q *Queries) LockRunningTaskTokenForAssertion(ctx context.Context, arg Lock
 		&i.UserID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.ExecutionID,
 	)
 	return i, err
 }

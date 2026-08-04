@@ -1,1 +1,1 @@
-CREATE UNIQUE INDEX CONCURRENTLY workload_pr_merge_delegation_active_task_uidx ON workload_pr_merge_delegation (workspace_id, task_id, run_id, operation) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS workload_pr_merge_delegation_current_execution_uidx ON workload_pr_merge_delegation (workspace_id, task_id, execution_id, operation) WHERE state IN ('pending_approval', 'approved');

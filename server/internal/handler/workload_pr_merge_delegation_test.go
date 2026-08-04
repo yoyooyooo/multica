@@ -1,348 +1,157 @@
 package handler
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"os"
 	"testing"
-	"time"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const (
-	prMergeTestRepository = "jackie/agent-kit"
-	prMergeTestHead       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-)
-
-func withDelegationRouteParams(req *http.Request, workspaceID, delegationID string) *http.Request {
-	routeContext := chi.NewRouteContext()
-	routeContext.URLParams.Add("id", workspaceID)
-	if delegationID != "" {
-		routeContext.URLParams.Add("delegationId", delegationID)
+func TestDelegatedPRMergeFeatureFlagDefaultsOff(t *testing.T) {
+	t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "")
+	if delegatedPRMergeEnabled() {
+		t.Fatal("delegated pr.merge must default off")
 	}
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
-}
-
-func configurePRMergeAssertionTest(t *testing.T, now time.Time) {
-	t.Helper()
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "merge-delegation-test-signing-value")
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "urn:multica:deployment:merge-delegation-test")
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", "multica-merge-delegation-test")
-	testHandler.workloadAssertionNow = func() time.Time { return now }
-	t.Cleanup(func() { testHandler.workloadAssertionNow = nil })
-}
-
-func newPRMergeAssertionRequest(repository string, pullRequestNumber, forgejoPullRequestNumber int64, head, method string) *http.Request {
-	return newRequest(http.MethodPost, "/api/integrations/workload-assertions", map[string]any{
-		"purpose": "ags_session_exchange",
-		"target": map[string]any{
-			"provider": "ags", "instance": "mini", "repository": repository,
-		},
-		"requested_resource": map[string]any{"service": "ags", "repository": repository},
-		"requested_operation": map[string]any{"name": "pr.merge", "constraints": map[string]any{
-			"pull_request_number": pullRequestNumber, "forgejo_pull_request_number": forgejoPullRequestNumber,
-			"expected_head_sha": head, "merge_method": method,
-		}},
-		"requested_capabilities": []string{"repo:read", "repo:write"},
-	})
-}
-
-type prMergeDelegationFixture struct {
-	workspaceID              string
-	taskID                   string
-	runID                    string
-	repository               string
-	pullRequestNumber        int64
-	forgejoPullRequestNumber int64
-	expectedHeadSHA          string
-	mergeMethod              string
-	grantedAt                time.Time
-	expiresAt                time.Time
-	revokedAt                *time.Time
-}
-
-func insertPRMergeDelegationFixture(t *testing.T, fixture prMergeDelegationFixture) string {
-	t.Helper()
-	var id string
-	var revokedBy any
-	var revocationReason any
-	if fixture.revokedAt != nil {
-		revokedBy = testUserID
-		revocationReason = "test revocation"
+	t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", "1")
+	if !delegatedPRMergeEnabled() {
+		t.Fatal("delegated pr.merge should require exact enabled value")
 	}
-	if err := testPool.QueryRow(context.Background(), `
-INSERT INTO workload_pr_merge_delegation (
-    workspace_id, task_id, run_id, repository, pull_request_number,
-    forgejo_pull_request_number, expected_head_sha, merge_method,
-    granted_by_user_id, granted_at, expires_at, revoked_at,
-    revoked_by_user_id, revocation_reason
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-RETURNING id`, fixture.workspaceID, fixture.taskID, fixture.runID, fixture.repository,
-		fixture.pullRequestNumber, fixture.forgejoPullRequestNumber, fixture.expectedHeadSHA,
-		fixture.mergeMethod, testUserID, fixture.grantedAt, fixture.expiresAt,
-		fixture.revokedAt, revokedBy, revocationReason).Scan(&id); err != nil {
-		t.Fatalf("insert PR merge delegation: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workload_pr_merge_delegation WHERE id=$1`, id)
-	})
-	return id
-}
-
-func TestPRMergeDelegationOwnerCreateReadReplaceAndRevoke(t *testing.T) {
-	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	configurePRMergeAssertionTest(t, now)
-	issueID := createExternalPRTestIssue(t, "owner PR merge delegation", "todo", "", nil)
-	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
-	agentID := createHandlerTestAgent(t, "owner-pr-merge-delegation-agent", []byte(`{}`))
-	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workload_pr_merge_delegation WHERE task_id=$1`, taskID)
-	})
-
-	create := func() prMergeDelegationResponse {
-		req := newRequest(http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/workload-delegations/pr-merge", map[string]any{
-			"task_id": taskID, "run_id": taskID, "repository": prMergeTestRepository,
-			"pull_request_number": 41, "forgejo_pull_request_number": 52,
-			"expected_head_sha": prMergeTestHead, "merge_method": "fast-forward-only", "ttl_seconds": 600,
-		})
-		req = withDelegationRouteParams(req, testWorkspaceID, "")
-		req.Header.Set("X-User-ID", testUserID)
-		rr := httptest.NewRecorder()
-		testHandler.CreatePRMergeDelegation(rr, req)
-		if rr.Code != http.StatusCreated {
-			t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	for _, value := range []string{"true", " 1", "1 ", "0"} {
+		t.Setenv("MULTICA_DELEGATED_PR_MERGE_ENABLED", value)
+		if delegatedPRMergeEnabled() {
+			t.Fatalf("noncanonical feature flag %q enabled merge", value)
 		}
-		var response prMergeDelegationResponse
-		if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
-			t.Fatal(err)
-		}
-		if response.Schema != prMergeDelegationSchema || response.State != "active" || response.Operation != "pr.merge" || response.TaskID != taskID || response.RunID != taskID || response.AuthorityRevision == "" || response.GrantedByUserID != testUserID {
-			t.Fatalf("create response=%#v", response)
-		}
-		return response
-	}
-	first := create()
-	second := create()
-	if first.ID == second.ID || first.AuthorityRevision == second.AuthorityRevision {
-		t.Fatalf("replacement reused identity: first=%#v second=%#v", first, second)
-	}
-
-	read := func(id string) prMergeDelegationResponse {
-		req := withDelegationRouteParams(newRequest(http.MethodGet, "/", nil), testWorkspaceID, id)
-		req.Header.Set("X-User-ID", testUserID)
-		rr := httptest.NewRecorder()
-		testHandler.GetPRMergeDelegation(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("read status=%d body=%s", rr.Code, rr.Body.String())
-		}
-		var response prMergeDelegationResponse
-		if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
-			t.Fatal(err)
-		}
-		return response
-	}
-	if got := read(first.ID); got.State != "revoked" || got.RevocationReason == nil {
-		t.Fatalf("replaced delegation=%#v", got)
-	}
-
-	unknownRevokeReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", map[string]any{
-		"reason": "operator cancelled merge authority", "authority_revision": second.AuthorityRevision,
-	}), testWorkspaceID, second.ID)
-	unknownRevokeReq.Header.Set("X-User-ID", testUserID)
-	unknownRevoke := httptest.NewRecorder()
-	testHandler.RevokePRMergeDelegation(unknownRevoke, unknownRevokeReq)
-	if unknownRevoke.Code != http.StatusBadRequest || read(second.ID).State != "active" {
-		t.Fatalf("unknown revoke status=%d body=%s", unknownRevoke.Code, unknownRevoke.Body.String())
-	}
-
-	revokeReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", map[string]any{"reason": "operator cancelled merge authority"}), testWorkspaceID, second.ID)
-	revokeReq.Header.Set("X-User-ID", testUserID)
-	revoke := httptest.NewRecorder()
-	testHandler.RevokePRMergeDelegation(revoke, revokeReq)
-	if revoke.Code != http.StatusOK {
-		t.Fatalf("revoke status=%d body=%s", revoke.Code, revoke.Body.String())
-	}
-	if got := read(second.ID); got.State != "revoked" || got.RevokedByUserID == nil || *got.RevokedByUserID != testUserID {
-		t.Fatalf("revoked delegation=%#v", got)
 	}
 }
 
-func TestPRMergeDelegationCreateRejectsMachineUnknownAndCrossWorkspaceInputs(t *testing.T) {
-	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	configurePRMergeAssertionTest(t, now)
-	issueID := createExternalPRTestIssue(t, "PR merge delegation create denials", "todo", "", nil)
-	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
-	agentID := createHandlerTestAgent(t, "pr-merge-delegation-denial-agent", []byte(`{}`))
-	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-	validBody := map[string]any{
-		"task_id": taskID, "run_id": taskID, "repository": prMergeTestRepository,
-		"pull_request_number": 41, "forgejo_pull_request_number": 52,
-		"expected_head_sha": prMergeTestHead, "merge_method": "fast-forward-only", "ttl_seconds": 600,
+func TestNormalizeExternalPRMergeProjectionRequiresCompleteServerFacts(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "imile-win")
+	complete := externalPullRequestLinkRequest{
+		ExternalRepo: "ux/smip", MergeProvider: "forgejo", MergeRepo: "ux/smip", MergeNumber: 2,
+		TargetInstance:          "imile-win",
+		CanonicalRepositoryID:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CanonicalRepository:     "ux/smip",
+		ProviderBindingID:       "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ProviderBindingRevision: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ProviderRepository:      "ux/smip",
+		ExpectedHeadSHA:         "1111111111111111111111111111111111111111",
+		ExpectedBaseSHA:         "2222222222222222222222222222222222222222",
+		BaseRef:                 "main", DelegatedMergeMethod: "rebase",
+		ProjectionFactsRevision: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 	}
-
-	machineReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", validBody), testWorkspaceID, "")
-	machineReq.Header.Set("X-User-ID", testUserID)
-	machineReq.Header.Set("X-Actor-Source", "task_token")
-	machine := httptest.NewRecorder()
-	testHandler.CreatePRMergeDelegation(machine, machineReq)
-	if machine.Code != http.StatusForbidden {
-		t.Fatalf("machine create status=%d body=%s", machine.Code, machine.Body.String())
+	projection, err := normalizeExternalPRMergeProjection(complete, "forgejo")
+	if err != nil || !projection.present {
+		t.Fatalf("complete projection rejected: projection=%#v err=%v", projection, err)
 	}
-
-	unknownBody := make(map[string]any, len(validBody)+1)
-	for key, value := range validBody {
-		unknownBody[key] = value
+	partial := complete
+	partial.ExpectedBaseSHA = ""
+	if _, err := normalizeExternalPRMergeProjection(partial, "forgejo"); err == nil {
+		t.Fatal("partial projection facts accepted")
 	}
-	unknownBody["policy_class"] = workspaceMaintainerPolicyClass
-	unknownReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", unknownBody), testWorkspaceID, "")
-	unknownReq.Header.Set("X-User-ID", testUserID)
-	unknown := httptest.NewRecorder()
-	testHandler.CreatePRMergeDelegation(unknown, unknownReq)
-	if unknown.Code != http.StatusBadRequest {
-		t.Fatalf("unknown create status=%d body=%s", unknown.Code, unknown.Body.String())
+	wrongInstance := complete
+	wrongInstance.TargetInstance = "mini"
+	if _, err := normalizeExternalPRMergeProjection(wrongInstance, "forgejo"); err == nil {
+		t.Fatal("cross-instance projection accepted")
 	}
-
-	wrongRunBody := make(map[string]any, len(validBody))
-	for key, value := range validBody {
-		wrongRunBody[key] = value
-	}
-	wrongRunBody["run_id"] = uuid.NewString()
-	wrongRunReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", wrongRunBody), testWorkspaceID, "")
-	wrongRunReq.Header.Set("X-User-ID", testUserID)
-	wrongRun := httptest.NewRecorder()
-	testHandler.CreatePRMergeDelegation(wrongRun, wrongRunReq)
-	if wrongRun.Code != http.StatusBadRequest {
-		t.Fatalf("wrong-run create status=%d body=%s", wrongRun.Code, wrongRun.Body.String())
-	}
-
-	crossWorkspaceReq := withDelegationRouteParams(newRequest(http.MethodPost, "/", validBody), uuid.NewString(), "")
-	crossWorkspaceReq.Header.Set("X-User-ID", testUserID)
-	crossWorkspace := httptest.NewRecorder()
-	testHandler.CreatePRMergeDelegation(crossWorkspace, crossWorkspaceReq)
-	if crossWorkspace.Code != http.StatusNotFound {
-		t.Fatalf("cross-workspace create status=%d body=%s", crossWorkspace.Code, crossWorkspace.Body.String())
+	alias := complete
+	alias.CanonicalRepository = "ux/smip.git"
+	if _, err := normalizeExternalPRMergeProjection(alias, "forgejo"); err == nil {
+		t.Fatal("repository alias accepted")
 	}
 }
 
-func TestCreateWorkloadAssertionPRMergeRequiresExactActiveDelegation(t *testing.T) {
-	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	configurePRMergeAssertionTest(t, now)
-	issueID := createExternalPRTestIssue(t, "exact PR merge assertion delegation", "todo", "", nil)
-	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
-	agentID := createHandlerTestAgent(t, "exact-pr-merge-assertion-agent", []byte(`{}`))
-	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-	insertPRMergeDelegationFixture(t, prMergeDelegationFixture{
-		workspaceID: testWorkspaceID, taskID: taskID, runID: taskID, repository: prMergeTestRepository,
-		pullRequestNumber: 41, forgejoPullRequestNumber: 52, expectedHeadSHA: prMergeTestHead,
-		mergeMethod: "fast-forward-only", grantedAt: now.Add(-time.Minute), expiresAt: now.Add(2 * time.Minute),
-	})
-
-	req := newPRMergeAssertionRequest(prMergeTestRepository, 41, 52, prMergeTestHead, "fast-forward-only")
-	authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
-	rr := httptest.NewRecorder()
-	testHandler.CreateWorkloadAssertion(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+func TestPRMergeDelegationFactsDigestIsCanonicalAndExecutionBound(t *testing.T) {
+	facts := prMergeDelegationBindingFacts{
+		WorkspaceID:           "11111111-1111-1111-1111-111111111111",
+		IssueID:               "22222222-2222-2222-2222-222222222222",
+		ExternalPRLinkID:      "33333333-3333-3333-3333-333333333333",
+		TaskID:                "44444444-4444-4444-4444-444444444444",
+		ExecutionID:           "55555555-5555-5555-5555-555555555555",
+		RuntimeID:             "66666666-6666-6666-6666-666666666666",
+		TargetInstance:        "imile-win",
+		CanonicalRepositoryID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CanonicalRepository:   "ux/smip", Provider: "forgejo",
+		ProviderBindingID:       "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ProviderBindingRevision: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ProviderRepository:      "ux/smip", AGSPRNumber: 2, ProviderPRNumber: 2,
+		ExpectedHeadSHA: "1111111111111111111111111111111111111111",
+		ExpectedBaseSHA: "2222222222222222222222222222222222222222",
+		BaseRef:         "main", MergeMethod: "rebase",
+		ProjectionFactsRevision: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 	}
-	var response workloadAssertionResponse
-	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
-		t.Fatal(err)
+	first := digestPRMergeDelegationFacts(facts)
+	if first != digestPRMergeDelegationFacts(facts) || !canonicalExternalPRDigestPattern.MatchString(first) {
+		t.Fatalf("facts digest is not stable: %q", first)
 	}
-	if response.Workload.Authority == nil || response.Workload.Authority.PolicyClass != workspaceMaintainerPolicyClass {
-		t.Fatalf("authority=%#v", response.Workload.Authority)
-	}
-	if response.ExpiresAt != now.Add(2*time.Minute).Format(time.RFC3339) {
-		t.Fatalf("assertion expiry=%s want delegation cap=%s", response.ExpiresAt, now.Add(2*time.Minute).Format(time.RFC3339))
+	facts.ExecutionID = "77777777-7777-7777-7777-777777777777"
+	if first == digestPRMergeDelegationFacts(facts) {
+		t.Fatal("execution drift did not change facts digest")
 	}
 }
 
-func TestCreateWorkloadAssertionPRMergeRejectsMissingOrMismatchedDelegation(t *testing.T) {
-	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	configurePRMergeAssertionTest(t, now)
-	issueID := createExternalPRTestIssue(t, "PR merge assertion delegation denials", "todo", "", nil)
-	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
-	agentID := createHandlerTestAgent(t, "pr-merge-assertion-denial-agent", []byte(`{}`))
-
-	tests := []struct {
-		name   string
-		mutate func(*prMergeDelegationFixture, *string)
-		insert bool
-	}{
-		{name: "missing", insert: false},
-		{name: "arbitrary task", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.taskID = uuid.NewString() }},
-		{name: "wrong run", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.runID = uuid.NewString() }},
-		{name: "wrong repository", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.repository = "jackie/other" }},
-		{name: "wrong AGS PR", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.pullRequestNumber = 42 }},
-		{name: "wrong Forgejo PR", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.forgejoPullRequestNumber = 53 }},
-		{name: "wrong head", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) {
-			f.expectedHeadSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-		}},
-		{name: "wrong method", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.mergeMethod = "rebase" }},
-		{name: "revoked", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { revoked := now.Add(-time.Second); f.revokedAt = &revoked }},
-		{name: "expired", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.expiresAt = now.Add(-time.Second) }},
-		{name: "cross workspace", insert: true, mutate: func(f *prMergeDelegationFixture, _ *string) { f.workspaceID = uuid.NewString() }},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-			fixture := prMergeDelegationFixture{
-				workspaceID: testWorkspaceID, taskID: taskID, runID: taskID, repository: prMergeTestRepository,
-				pullRequestNumber: 41, forgejoPullRequestNumber: 52, expectedHeadSHA: prMergeTestHead,
-				mergeMethod: "fast-forward-only", grantedAt: now.Add(-time.Minute), expiresAt: now.Add(5 * time.Minute),
-			}
-			requestRepository := prMergeTestRepository
-			if tc.mutate != nil {
-				tc.mutate(&fixture, &requestRepository)
-			}
-			if tc.insert {
-				insertPRMergeDelegationFixture(t, fixture)
-			}
-			req := newPRMergeAssertionRequest(requestRepository, 41, 52, prMergeTestHead, "fast-forward-only")
-			authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
-			rr := httptest.NewRecorder()
-			testHandler.CreateWorkloadAssertion(rr, req)
-			if rr.Code != http.StatusForbidden {
-				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-			}
-			if json.Valid(rr.Body.Bytes()) && string(rr.Body.Bytes()) != "" {
-				var body map[string]any
-				if err := json.Unmarshal(rr.Body.Bytes(), &body); err == nil {
-					if _, ok := body["assertion"]; ok {
-						t.Fatalf("denial returned assertion: %s", rr.Body.String())
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestLockActivePRMergeDelegationQueryBindsAuthorityRevisionAndActor(t *testing.T) {
-	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	issueID := createExternalPRTestIssue(t, "PR merge delegation query", "todo", "", nil)
-	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
-	agentID := createHandlerTestAgent(t, "pr-merge-delegation-query-agent", []byte(`{}`))
-	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
-	id := insertPRMergeDelegationFixture(t, prMergeDelegationFixture{
-		workspaceID: testWorkspaceID, taskID: taskID, runID: taskID, repository: prMergeTestRepository,
-		pullRequestNumber: 41, forgejoPullRequestNumber: 52, expectedHeadSHA: prMergeTestHead,
-		mergeMethod: "fast-forward-only", grantedAt: now.Add(-time.Minute), expiresAt: now.Add(5 * time.Minute),
-	})
-	row, err := testHandler.Queries.GetPRMergeDelegationInWorkspace(context.Background(), db.GetPRMergeDelegationInWorkspaceParams{
-		ID: parseUUID(id), WorkspaceID: parseUUID(testWorkspaceID),
-	})
+func TestPRMergeDelegationCanonicalWireFixture(t *testing.T) {
+	path := "../../../docs/features/fork/workload-assertions/fixtures/pr-merge-delegation-v2.json"
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read canonical fixture: %v", err)
 	}
-	if !row.AuthorityRevision.Valid || !row.GrantedByUserID.Valid || uuidToString(row.GrantedByUserID) != testUserID || row.Operation != "pr.merge" {
-		t.Fatalf("delegation audit binding=%#v", row)
+	var fixture struct {
+		Schema   string `json:"schema"`
+		Workload struct {
+			MergeDelegation prMergeDelegationFacts `json:"merge_delegation"`
+		} `json:"workload"`
+		Introspect prMergeDelegationServiceRequest `json:"introspect_request"`
+		Consume    prMergeDelegationServiceRequest `json:"consume_request"`
 	}
-	if !row.ExpiresAt.Valid || !row.ExpiresAt.Time.Equal(now.Add(5*time.Minute)) {
-		t.Fatalf("expires_at=%v", row.ExpiresAt)
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode canonical fixture: %v", err)
+	}
+	if fixture.Schema != "multica.ags.pr-merge-delegation-fixture.v2" || fixture.Workload.MergeDelegation.Schema != prMergeDelegationSchema {
+		t.Fatalf("unexpected fixture schema: %#v", fixture)
+	}
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "imile-win")
+	if err := validatePRMergeDelegationServiceRequest(fixture.Introspect, false); err != nil {
+		t.Fatalf("fixture introspect: %v", err)
+	}
+	if err := validatePRMergeDelegationServiceRequest(fixture.Consume, true); err != nil {
+		t.Fatalf("fixture consume: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	if got, want := hex.EncodeToString(sum[:]), "fc6bf25cefe84cb55e2bec9976e94e333543974747de5561a7a9cda50a9a2416"; got != want {
+		t.Fatalf("fixture digest=%s want=%s", got, want)
+	}
+}
+
+func TestValidatePRMergeDelegationServiceRequestRequiresExactInstanceAndIntent(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "imile-win")
+	req := prMergeDelegationServiceRequest{
+		AuthorityRevision:       "11111111-1111-1111-1111-111111111111",
+		FactsDigest:             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetInstance:          "imile-win",
+		CanonicalRepositoryID:   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		CanonicalRepository:     "ux/smip",
+		ProviderBindingID:       "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ProviderBindingRevision: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		ProviderRepository:      "ux/smip", AGSPRNumber: 2, ProviderPRNumber: 2,
+		ExpectedHeadSHA: "1111111111111111111111111111111111111111",
+		ExpectedBaseSHA: "2222222222222222222222222222222222222222",
+		BaseRef:         "main", MergeMethod: "rebase",
+		ProjectionFactsRevision: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		TaskID:                  "22222222-2222-2222-2222-222222222222",
+		RunID:                   "33333333-3333-3333-3333-333333333333",
+		SessionID:               "ags-session-safe", Phase: "exchange",
+	}
+	if err := validatePRMergeDelegationServiceRequest(req, false); err != nil {
+		t.Fatalf("valid introspection rejected: %v", err)
+	}
+	req.Phase = "pre_effect"
+	req.IntentID = "44444444-4444-4444-4444-444444444444"
+	if err := validatePRMergeDelegationServiceRequest(req, true); err != nil {
+		t.Fatalf("valid consume rejected: %v", err)
+	}
+	req.TargetInstance = "mini"
+	if err := validatePRMergeDelegationServiceRequest(req, true); err == nil {
+		t.Fatal("cross-instance consume accepted")
 	}
 }

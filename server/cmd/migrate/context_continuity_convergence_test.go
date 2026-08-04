@@ -200,6 +200,19 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 		}
 	}
 
+	// Delegated merge v2 adds its schema in a transactional migration and keeps
+	// each concurrent index in a separate, recoverable migration.
+	run(realMigrationRange(t, serverRoot, 244, 244))
+	seedPRMergeIndexRecoveryRows(t, ctx, pool)
+	exercisePRMergeIndexWrongDefinitionRecovery(t, ctx, pool)
+	run(realMigrationRange(t, serverRoot, 245, 250))
+	exercisePRMergeIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+	for _, spec := range prMergeDelegationIndexSpecs {
+		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+			t.Fatalf("delegated merge index %s not exact after recovery: exact=%v err=%v", spec.Name, exact, err)
+		}
+	}
+
 	assertContextContinuitySchema(t, ctx, pool, schema, scenario, wantLegacyRow)
 	assertWorkspaceScopedIdempotency(t, ctx, pool)
 	ledgerBefore := migrationLedgerSnapshot(t, ctx, pool, tableFQN)
@@ -313,6 +326,104 @@ func exerciseCleanupIndexInvalidRecovery(
 			}
 			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
 				t.Fatalf("drop migration %d invalid-index fixture function: %v", tc.migration, err)
+			}
+		})
+	}
+}
+
+func seedPRMergeIndexRecoveryRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO workload_pr_merge_delegation (
+    id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id,
+    target_instance, canonical_repository_id, canonical_repository,
+    provider_binding_id, provider_binding_revision, provider_repository,
+    ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha,
+    base_ref, merge_method, projection_facts_revision, facts_digest, state
+) VALUES (
+    '00000000-0000-4000-8000-000000000744',
+    '00000000-0000-4000-8000-000000000049',
+    '00000000-0000-4000-8000-000000000149',
+    '00000000-0000-4000-8000-000000000344',
+    '00000000-0000-4000-8000-000000000444',
+    '00000000-0000-4000-8000-000000000544',
+    '00000000-0000-4000-8000-000000000644',
+    'mini',
+    'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'jackie/agent-kit',
+    'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    'jackie/agent-kit', 41, 52,
+    '1111111111111111111111111111111111111111',
+    '2222222222222222222222222222222222222222',
+    'main', 'rebase',
+    'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    'pending_approval'
+);
+INSERT INTO workload_pr_merge_delegation_event (
+    id, workspace_id, issue_id, delegation_id, event_type, actor_type, actor_id
+) VALUES (
+    '00000000-0000-4000-8000-000000000844',
+    '00000000-0000-4000-8000-000000000049',
+    '00000000-0000-4000-8000-000000000149',
+    '00000000-0000-4000-8000-000000000744',
+    'request_created', 'system', 'migration-recovery-test'
+)`); err != nil {
+		t.Fatalf("seed delegated merge index recovery rows: %v", err)
+	}
+}
+
+func exercisePRMergeIndexWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, spec := range prMergeDelegationIndexSpecs {
+		if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+			t.Fatalf("create wrong delegated merge index fixture %s: %v", spec.Name, err)
+		}
+	}
+}
+
+func exercisePRMergeIndexInvalidRecovery(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	serverRoot, tableFQN, tableName string,
+	lockKey int64,
+) {
+	t.Helper()
+	versions := []string{
+		"245_workload_pr_merge_delegation_id_index",
+		"246_workload_pr_merge_delegation_active_index",
+		"247_workload_pr_merge_delegation_consumer_intent_index",
+		"248_workload_pr_merge_delegation_issue_state_index",
+		"249_workload_pr_merge_delegation_event_id_index",
+		"250_workload_pr_merge_delegation_event_history_index",
+	}
+	for i, spec := range prMergeDelegationIndexSpecs {
+		migration := 245 + i
+		t.Run("delegated_merge_"+strconv.Itoa(migration), func(t *testing.T) {
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", versions[i]); err != nil {
+				t.Fatalf("remove migration %d ledger fixture: %v", migration, err)
+			}
+			schema, _, _, err := inspectMigrationIndex(ctx, pool, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+				t.Fatalf("drop migration %d exact index: %v", migration, err)
+			}
+			failFunction := createFailedConcurrentIndexArtifact(t, ctx, pool, schema, spec)
+			if err := runMigrations(ctx, pool, runOptions{
+				Direction: "up", Files: realMigrationRange(t, serverRoot, migration, migration),
+				SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks,
+			}); err != nil {
+				t.Fatalf("repair migration %d invalid concurrent artifact: %v", migration, err)
+			}
+			if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+				t.Fatalf("migration %d invalid artifact did not recover: exact=%v err=%v", migration, exact, err)
+			}
+			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
+				t.Fatalf("drop migration %d invalid-index fixture function: %v", migration, err)
 			}
 		})
 	}

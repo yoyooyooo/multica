@@ -792,6 +792,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the handler and therefore live outside user/session authentication.
 	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
 	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+	r.Post("/api/integrations/ags/workload-delegations/pr-merge/{delegationId}/introspect", h.IntrospectPRMergeDelegation)
+	r.Post("/api/integrations/ags/workload-delegations/pr-merge/{delegationId}/consume", h.ConsumePRMergeDelegation)
+	r.Post("/api/integrations/ags/workload-delegations/pr-merge/{delegationId}/effects", h.RecordPRMergeDelegationEffect)
 
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
@@ -938,10 +941,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
-					// Exact pr.merge delegations are human owner/operator authority.
-					// Task and cloud credentials are rejected before the handler.
-					r.With(handler.RequireHumanActor).Post("/workload-delegations/pr-merge", h.CreatePRMergeDelegation)
+					// Exact pr.merge delegations are created from authenticated task and
+					// server-projected PR facts. Humans only approve or revoke the derived request.
+					r.With(handler.RequireHumanActor).Get("/workload-delegations/pr-merge", h.ListPRMergeDelegations)
 					r.With(handler.RequireHumanActor).Get("/workload-delegations/pr-merge/{delegationId}", h.GetPRMergeDelegation)
+					r.With(handler.RequireHumanActor).Post("/workload-delegations/pr-merge/{delegationId}/approve", h.ApprovePRMergeDelegation)
 					r.With(handler.RequireHumanActor).Post("/workload-delegations/pr-merge/{delegationId}/revoke", h.RevokePRMergeDelegation)
 					// Custom runtime profile mutations (admin-only).
 					r.Post("/runtime-profiles", h.CreateRuntimeProfile)

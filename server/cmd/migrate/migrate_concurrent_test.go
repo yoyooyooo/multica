@@ -497,3 +497,29 @@ func TestRunMigrationsRejectsInvalidDirection(t *testing.T) {
 		}
 	}
 }
+
+func TestPRMergeDelegationConcurrentIndexesHaveRecoveryHooks(t *testing.T) {
+	versions := []string{
+		"245_workload_pr_merge_delegation_id_index",
+		"246_workload_pr_merge_delegation_active_index",
+		"247_workload_pr_merge_delegation_consumer_intent_index",
+		"248_workload_pr_merge_delegation_issue_state_index",
+		"249_workload_pr_merge_delegation_event_id_index",
+		"250_workload_pr_merge_delegation_event_history_index",
+	}
+	if len(prMergeDelegationIndexSpecs) != len(versions) {
+		t.Fatalf("pr.merge index specs=%d want=%d", len(prMergeDelegationIndexSpecs), len(versions))
+	}
+	for i, version := range versions {
+		if preMigrationHooks[version] == nil {
+			t.Fatalf("missing failed-artifact recovery hook for %s", version)
+		}
+		spec := prMergeDelegationIndexSpecs[i]
+		if spec.Name == "" || spec.Table == "" || len(spec.Columns) == 0 {
+			t.Fatalf("incomplete index spec for %s: %#v", version, spec)
+		}
+		if spec.PredicateNormalized != "" && spec.PredicateSQL == "" {
+			t.Fatalf("partial index %s cannot be reconstructed by recovery hook", spec.Name)
+		}
+	}
+}

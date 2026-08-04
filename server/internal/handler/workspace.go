@@ -810,8 +810,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge delegations intentionally have no FK. Remove their workspace-owned
-	// audit rows inside the same delete transaction before the workspace row.
+	// Merge delegations intentionally have no FK. Remove append-only events first,
+	// then the authority rows inside the same provider-workspace/delete fence.
+	if err := qtx.DeleteWorkspacePRMergeDelegationEvents(r.Context(), requester.WorkspaceID); err != nil {
+		slog.Warn("delete workspace PR merge delegation events failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
 	if err := qtx.DeleteWorkspacePRMergeDelegations(r.Context(), requester.WorkspaceID); err != nil {
 		slog.Warn("delete workspace PR merge delegations failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")

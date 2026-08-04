@@ -202,6 +202,14 @@ WITH target AS (
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_pr_merge_delegation_events AS (
+    DELETE FROM workload_pr_merge_delegation_event
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_pr_merge_delegations AS (
+    DELETE FROM workload_pr_merge_delegation
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
 cleared_external_pr_receipts AS (
     DELETE FROM external_pull_request_receipt
     WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
