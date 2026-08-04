@@ -12,31 +12,33 @@ import (
 )
 
 const approvePRMergeDelegationInWorkspace = `-- name: ApprovePRMergeDelegationInWorkspace :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS approved_at
+)
 UPDATE workload_pr_merge_delegation
 SET state = 'approved',
-    approved_at = $1,
-    approved_by_user_id = $2,
-    not_after = $3,
-    updated_at = $1
-WHERE id = $4
-  AND workspace_id = $5
+    approved_at = authority_time.approved_at,
+    approved_by_user_id = $1,
+    not_after = authority_time.approved_at + make_interval(secs => $2::int),
+    updated_at = authority_time.approved_at
+FROM authority_time
+WHERE id = $3
+  AND workspace_id = $4
   AND state = 'pending_approval'
-RETURNING id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id, operation, target_instance, canonical_repository_id, canonical_repository, provider, provider_binding_id, provider_binding_revision, provider_repository, ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha, base_ref, merge_method, projection_facts_revision, facts_digest, authority_revision, approval_policy_revision, state, requested_at, approved_at, approved_by_user_id, not_after, revoked_at, revoked_by_user_id, revocation_reason, superseded_at, supersede_reason, consumer_instance_id, consumer_intent_id, consume_request_digest, consumption_receipt_id, consumed_at, created_at, updated_at
+RETURNING workload_pr_merge_delegation.id, workload_pr_merge_delegation.workspace_id, workload_pr_merge_delegation.issue_id, workload_pr_merge_delegation.external_pr_link_id, workload_pr_merge_delegation.task_id, workload_pr_merge_delegation.execution_id, workload_pr_merge_delegation.runtime_id, workload_pr_merge_delegation.operation, workload_pr_merge_delegation.target_instance, workload_pr_merge_delegation.canonical_repository_id, workload_pr_merge_delegation.canonical_repository, workload_pr_merge_delegation.provider, workload_pr_merge_delegation.provider_binding_id, workload_pr_merge_delegation.provider_binding_revision, workload_pr_merge_delegation.provider_repository, workload_pr_merge_delegation.ags_pr_number, workload_pr_merge_delegation.provider_pr_number, workload_pr_merge_delegation.expected_head_sha, workload_pr_merge_delegation.expected_base_sha, workload_pr_merge_delegation.base_ref, workload_pr_merge_delegation.merge_method, workload_pr_merge_delegation.projection_facts_revision, workload_pr_merge_delegation.facts_digest, workload_pr_merge_delegation.authority_revision, workload_pr_merge_delegation.approval_policy_revision, workload_pr_merge_delegation.state, workload_pr_merge_delegation.requested_at, workload_pr_merge_delegation.approved_at, workload_pr_merge_delegation.approved_by_user_id, workload_pr_merge_delegation.not_after, workload_pr_merge_delegation.revoked_at, workload_pr_merge_delegation.revoked_by_user_id, workload_pr_merge_delegation.revocation_reason, workload_pr_merge_delegation.superseded_at, workload_pr_merge_delegation.supersede_reason, workload_pr_merge_delegation.consumer_instance_id, workload_pr_merge_delegation.consumer_intent_id, workload_pr_merge_delegation.consume_request_digest, workload_pr_merge_delegation.consumption_receipt_id, workload_pr_merge_delegation.consumed_at, workload_pr_merge_delegation.created_at, workload_pr_merge_delegation.updated_at
 `
 
 type ApprovePRMergeDelegationInWorkspaceParams struct {
-	ApprovedAt       pgtype.Timestamptz `json:"approved_at"`
-	ApprovedByUserID pgtype.UUID        `json:"approved_by_user_id"`
-	NotAfter         pgtype.Timestamptz `json:"not_after"`
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	ApprovedByUserID   pgtype.UUID `json:"approved_by_user_id"`
+	ApprovalTtlSeconds int32       `json:"approval_ttl_seconds"`
+	ID                 pgtype.UUID `json:"id"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
 }
 
 func (q *Queries) ApprovePRMergeDelegationInWorkspace(ctx context.Context, arg ApprovePRMergeDelegationInWorkspaceParams) (WorkloadPrMergeDelegation, error) {
 	row := q.db.QueryRow(ctx, approvePRMergeDelegationInWorkspace,
-		arg.ApprovedAt,
 		arg.ApprovedByUserID,
-		arg.NotAfter,
+		arg.ApprovalTtlSeconds,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -89,27 +91,30 @@ func (q *Queries) ApprovePRMergeDelegationInWorkspace(ctx context.Context, arg A
 }
 
 const consumePRMergeDelegation = `-- name: ConsumePRMergeDelegation :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS consumed_at
+)
 UPDATE workload_pr_merge_delegation
 SET state = 'consumed',
     consumer_instance_id = $1,
     consumer_intent_id = $2,
     consume_request_digest = $3,
     consumption_receipt_id = $4,
-    consumed_at = $5,
-    updated_at = $5
-WHERE id = $6
+    consumed_at = authority_time.consumed_at,
+    updated_at = authority_time.consumed_at
+FROM authority_time
+WHERE id = $5
   AND state = 'approved'
-  AND not_after > $5
-RETURNING id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id, operation, target_instance, canonical_repository_id, canonical_repository, provider, provider_binding_id, provider_binding_revision, provider_repository, ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha, base_ref, merge_method, projection_facts_revision, facts_digest, authority_revision, approval_policy_revision, state, requested_at, approved_at, approved_by_user_id, not_after, revoked_at, revoked_by_user_id, revocation_reason, superseded_at, supersede_reason, consumer_instance_id, consumer_intent_id, consume_request_digest, consumption_receipt_id, consumed_at, created_at, updated_at
+  AND not_after > authority_time.consumed_at
+RETURNING workload_pr_merge_delegation.id, workload_pr_merge_delegation.workspace_id, workload_pr_merge_delegation.issue_id, workload_pr_merge_delegation.external_pr_link_id, workload_pr_merge_delegation.task_id, workload_pr_merge_delegation.execution_id, workload_pr_merge_delegation.runtime_id, workload_pr_merge_delegation.operation, workload_pr_merge_delegation.target_instance, workload_pr_merge_delegation.canonical_repository_id, workload_pr_merge_delegation.canonical_repository, workload_pr_merge_delegation.provider, workload_pr_merge_delegation.provider_binding_id, workload_pr_merge_delegation.provider_binding_revision, workload_pr_merge_delegation.provider_repository, workload_pr_merge_delegation.ags_pr_number, workload_pr_merge_delegation.provider_pr_number, workload_pr_merge_delegation.expected_head_sha, workload_pr_merge_delegation.expected_base_sha, workload_pr_merge_delegation.base_ref, workload_pr_merge_delegation.merge_method, workload_pr_merge_delegation.projection_facts_revision, workload_pr_merge_delegation.facts_digest, workload_pr_merge_delegation.authority_revision, workload_pr_merge_delegation.approval_policy_revision, workload_pr_merge_delegation.state, workload_pr_merge_delegation.requested_at, workload_pr_merge_delegation.approved_at, workload_pr_merge_delegation.approved_by_user_id, workload_pr_merge_delegation.not_after, workload_pr_merge_delegation.revoked_at, workload_pr_merge_delegation.revoked_by_user_id, workload_pr_merge_delegation.revocation_reason, workload_pr_merge_delegation.superseded_at, workload_pr_merge_delegation.supersede_reason, workload_pr_merge_delegation.consumer_instance_id, workload_pr_merge_delegation.consumer_intent_id, workload_pr_merge_delegation.consume_request_digest, workload_pr_merge_delegation.consumption_receipt_id, workload_pr_merge_delegation.consumed_at, workload_pr_merge_delegation.created_at, workload_pr_merge_delegation.updated_at
 `
 
 type ConsumePRMergeDelegationParams struct {
-	ConsumerInstanceID   pgtype.Text        `json:"consumer_instance_id"`
-	ConsumerIntentID     pgtype.UUID        `json:"consumer_intent_id"`
-	ConsumeRequestDigest pgtype.Text        `json:"consume_request_digest"`
-	ConsumptionReceiptID pgtype.UUID        `json:"consumption_receipt_id"`
-	ConsumedAt           pgtype.Timestamptz `json:"consumed_at"`
-	ID                   pgtype.UUID        `json:"id"`
+	ConsumerInstanceID   pgtype.Text `json:"consumer_instance_id"`
+	ConsumerIntentID     pgtype.UUID `json:"consumer_intent_id"`
+	ConsumeRequestDigest pgtype.Text `json:"consume_request_digest"`
+	ConsumptionReceiptID pgtype.UUID `json:"consumption_receipt_id"`
+	ID                   pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) ConsumePRMergeDelegation(ctx context.Context, arg ConsumePRMergeDelegationParams) (WorkloadPrMergeDelegation, error) {
@@ -118,7 +123,6 @@ func (q *Queries) ConsumePRMergeDelegation(ctx context.Context, arg ConsumePRMer
 		arg.ConsumerIntentID,
 		arg.ConsumeRequestDigest,
 		arg.ConsumptionReceiptID,
-		arg.ConsumedAt,
 		arg.ID,
 	)
 	var i WorkloadPrMergeDelegation
@@ -354,19 +358,20 @@ func (q *Queries) DeleteWorkspacePRMergeDelegations(ctx context.Context, workspa
 }
 
 const expirePRMergeDelegationByID = `-- name: ExpirePRMergeDelegationByID :one
+WITH authority_time AS MATERIALIZED (
+    SELECT clock_timestamp() AS expired_at
+)
 UPDATE workload_pr_merge_delegation
-SET state = 'expired', updated_at = $1
-WHERE id = $2 AND state = 'approved' AND not_after <= $1
-RETURNING id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id, operation, target_instance, canonical_repository_id, canonical_repository, provider, provider_binding_id, provider_binding_revision, provider_repository, ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha, base_ref, merge_method, projection_facts_revision, facts_digest, authority_revision, approval_policy_revision, state, requested_at, approved_at, approved_by_user_id, not_after, revoked_at, revoked_by_user_id, revocation_reason, superseded_at, supersede_reason, consumer_instance_id, consumer_intent_id, consume_request_digest, consumption_receipt_id, consumed_at, created_at, updated_at
+SET state = 'expired', updated_at = authority_time.expired_at
+FROM authority_time
+WHERE id = $1
+  AND state = 'approved'
+  AND not_after <= authority_time.expired_at
+RETURNING workload_pr_merge_delegation.id, workload_pr_merge_delegation.workspace_id, workload_pr_merge_delegation.issue_id, workload_pr_merge_delegation.external_pr_link_id, workload_pr_merge_delegation.task_id, workload_pr_merge_delegation.execution_id, workload_pr_merge_delegation.runtime_id, workload_pr_merge_delegation.operation, workload_pr_merge_delegation.target_instance, workload_pr_merge_delegation.canonical_repository_id, workload_pr_merge_delegation.canonical_repository, workload_pr_merge_delegation.provider, workload_pr_merge_delegation.provider_binding_id, workload_pr_merge_delegation.provider_binding_revision, workload_pr_merge_delegation.provider_repository, workload_pr_merge_delegation.ags_pr_number, workload_pr_merge_delegation.provider_pr_number, workload_pr_merge_delegation.expected_head_sha, workload_pr_merge_delegation.expected_base_sha, workload_pr_merge_delegation.base_ref, workload_pr_merge_delegation.merge_method, workload_pr_merge_delegation.projection_facts_revision, workload_pr_merge_delegation.facts_digest, workload_pr_merge_delegation.authority_revision, workload_pr_merge_delegation.approval_policy_revision, workload_pr_merge_delegation.state, workload_pr_merge_delegation.requested_at, workload_pr_merge_delegation.approved_at, workload_pr_merge_delegation.approved_by_user_id, workload_pr_merge_delegation.not_after, workload_pr_merge_delegation.revoked_at, workload_pr_merge_delegation.revoked_by_user_id, workload_pr_merge_delegation.revocation_reason, workload_pr_merge_delegation.superseded_at, workload_pr_merge_delegation.supersede_reason, workload_pr_merge_delegation.consumer_instance_id, workload_pr_merge_delegation.consumer_intent_id, workload_pr_merge_delegation.consume_request_digest, workload_pr_merge_delegation.consumption_receipt_id, workload_pr_merge_delegation.consumed_at, workload_pr_merge_delegation.created_at, workload_pr_merge_delegation.updated_at
 `
 
-type ExpirePRMergeDelegationByIDParams struct {
-	ExpiredAt pgtype.Timestamptz `json:"expired_at"`
-	ID        pgtype.UUID        `json:"id"`
-}
-
-func (q *Queries) ExpirePRMergeDelegationByID(ctx context.Context, arg ExpirePRMergeDelegationByIDParams) (WorkloadPrMergeDelegation, error) {
-	row := q.db.QueryRow(ctx, expirePRMergeDelegationByID, arg.ExpiredAt, arg.ID)
+func (q *Queries) ExpirePRMergeDelegationByID(ctx context.Context, id pgtype.UUID) (WorkloadPrMergeDelegation, error) {
+	row := q.db.QueryRow(ctx, expirePRMergeDelegationByID, id)
 	var i WorkloadPrMergeDelegation
 	err := row.Scan(
 		&i.ID,
@@ -1118,31 +1123,44 @@ func (q *Queries) SupersedePRMergeDelegationByID(ctx context.Context, arg Supers
 }
 
 const supersedePRMergeDelegationsForExternalLink = `-- name: SupersedePRMergeDelegationsForExternalLink :many
-UPDATE workload_pr_merge_delegation
+UPDATE workload_pr_merge_delegation AS delegation
 SET state = 'superseded',
     superseded_at = $1,
     supersede_reason = $2,
     updated_at = $1
-WHERE external_pr_link_id = $3
-  AND state IN ('pending_approval', 'approved')
-  AND projection_facts_revision <> $4
-RETURNING id, workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id, operation, target_instance, canonical_repository_id, canonical_repository, provider, provider_binding_id, provider_binding_revision, provider_repository, ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha, base_ref, merge_method, projection_facts_revision, facts_digest, authority_revision, approval_policy_revision, state, requested_at, approved_at, approved_by_user_id, not_after, revoked_at, revoked_by_user_id, revocation_reason, superseded_at, supersede_reason, consumer_instance_id, consumer_intent_id, consume_request_digest, consumption_receipt_id, consumed_at, created_at, updated_at
+WHERE delegation.external_pr_link_id = $3
+  AND delegation.state IN ('pending_approval', 'approved')
+  AND EXISTS (
+      SELECT 1
+      FROM external_pull_request_link AS link
+      WHERE link.id = delegation.external_pr_link_id
+        AND (
+          delegation.target_instance IS DISTINCT FROM link.target_instance OR
+          delegation.canonical_repository_id IS DISTINCT FROM link.canonical_repository_id OR
+          delegation.canonical_repository IS DISTINCT FROM link.canonical_repository OR
+          delegation.provider_binding_id IS DISTINCT FROM link.provider_binding_id OR
+          delegation.provider_binding_revision IS DISTINCT FROM link.provider_binding_revision OR
+          delegation.provider_repository IS DISTINCT FROM link.provider_repository OR
+          delegation.ags_pr_number IS DISTINCT FROM link.external_number OR
+          delegation.provider_pr_number IS DISTINCT FROM link.merge_number OR
+          delegation.expected_head_sha IS DISTINCT FROM link.expected_head_sha OR
+          delegation.expected_base_sha IS DISTINCT FROM link.expected_base_sha OR
+          delegation.base_ref IS DISTINCT FROM link.base_ref OR
+          delegation.merge_method IS DISTINCT FROM link.delegated_merge_method OR
+          delegation.projection_facts_revision IS DISTINCT FROM link.projection_facts_revision
+        )
+  )
+RETURNING delegation.id, delegation.workspace_id, delegation.issue_id, delegation.external_pr_link_id, delegation.task_id, delegation.execution_id, delegation.runtime_id, delegation.operation, delegation.target_instance, delegation.canonical_repository_id, delegation.canonical_repository, delegation.provider, delegation.provider_binding_id, delegation.provider_binding_revision, delegation.provider_repository, delegation.ags_pr_number, delegation.provider_pr_number, delegation.expected_head_sha, delegation.expected_base_sha, delegation.base_ref, delegation.merge_method, delegation.projection_facts_revision, delegation.facts_digest, delegation.authority_revision, delegation.approval_policy_revision, delegation.state, delegation.requested_at, delegation.approved_at, delegation.approved_by_user_id, delegation.not_after, delegation.revoked_at, delegation.revoked_by_user_id, delegation.revocation_reason, delegation.superseded_at, delegation.supersede_reason, delegation.consumer_instance_id, delegation.consumer_intent_id, delegation.consume_request_digest, delegation.consumption_receipt_id, delegation.consumed_at, delegation.created_at, delegation.updated_at
 `
 
 type SupersedePRMergeDelegationsForExternalLinkParams struct {
-	SupersededAt            pgtype.Timestamptz `json:"superseded_at"`
-	SupersedeReason         pgtype.Text        `json:"supersede_reason"`
-	ExternalPrLinkID        pgtype.UUID        `json:"external_pr_link_id"`
-	ProjectionFactsRevision string             `json:"projection_facts_revision"`
+	SupersededAt     pgtype.Timestamptz `json:"superseded_at"`
+	SupersedeReason  pgtype.Text        `json:"supersede_reason"`
+	ExternalPrLinkID pgtype.UUID        `json:"external_pr_link_id"`
 }
 
 func (q *Queries) SupersedePRMergeDelegationsForExternalLink(ctx context.Context, arg SupersedePRMergeDelegationsForExternalLinkParams) ([]WorkloadPrMergeDelegation, error) {
-	rows, err := q.db.Query(ctx, supersedePRMergeDelegationsForExternalLink,
-		arg.SupersededAt,
-		arg.SupersedeReason,
-		arg.ExternalPrLinkID,
-		arg.ProjectionFactsRevision,
-	)
+	rows, err := q.db.Query(ctx, supersedePRMergeDelegationsForExternalLink, arg.SupersededAt, arg.SupersedeReason, arg.ExternalPrLinkID)
 	if err != nil {
 		return nil, err
 	}
