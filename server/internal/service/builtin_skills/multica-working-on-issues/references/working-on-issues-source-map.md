@@ -41,10 +41,10 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Behavior | Source authority |
 |---|---|
 | Strict request, purpose/audience/TTL signing | `server/internal/handler/workload_assertion.go` (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
-| Default team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
+| Team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizePRMergeConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
 | JWT issuer vs AGS issuer ID separation | same file (`ValidateWorkloadAssertionConfiguration`, `enrichSessionExchangeWorkload`) |
 | Startup and readiness fail closed | `server/cmd/server/main.go` (`main`), `server/cmd/server/health.go` (`newServerHealth`, `computeReadiness`) |
-| Eight-operation signed/normalization matrix | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`) |
+| Nine-operation signed/normalization matrix | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`) |
 | AgentKit Forgejo list/runs/log shapes and negative matrix | same file (`TestNormalizeAgentKitForgejoCommandConstraintFixtures`, `TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix`) |
 | Deferred-operation signer rejection | same file (`TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSigning`) |
 
@@ -56,7 +56,10 @@ AGS `trusted_issuers[].id` and is signed only as
 is limited to `15m`, and remains absent when omitted.
 
 The fixed default team-v4 operations are `repo.read`, `git.read`, `git.push`,
-`pr.create`, `pr.read`, `pr.rebase`, `review.read`, and `ci.read`. Their
+`pr.create`, `pr.read`, `pr.rebase`, `review.read`, and `ci.read`. Exact
+`pr.merge` is the ninth implemented operation, but it switches the signed
+authority to `multica.workspace.maintainer.v1` and requires `repo:read +
+repo:write`; it is never added to the default class. Their
 constraints are operation-specific: the repository/Git operations are exact
 empty; PR create has both required canonical branch refs; PR read has one exact
 number-or-head variant; rebase retains its exact four-key intent; review read
@@ -65,9 +68,10 @@ repository-wide empty shape, a positive safe-integer `run_id`, or those two PR
 numbers with optional lowercase-40 `head_sha`. The Forgejo fixtures pin actual
 PR-list, runs, and log command shapes: state-only PR list, event-only, SHA-only,
 mixed, and unknown variants fail before signing. Unknown/mixed/legacy
-`exact_head`, wrong/null/secret-shaped values also fail. Deferred `pr.merge`,
-`review.submit`, `repo.admin`, and `repo.create` are rejected by the default
-signer even with exact empty constraints.
+`exact_head`, wrong/null/secret-shaped values also fail. `pr.merge` requires exactly the AGS/Forgejo PR numbers, lowercase full expected
+head SHA, and a registered merge method. Missing/extra/wrong-type constraints
+are rejected before signing. Deferred `review.submit`, `repo.admin`, and
+`repo.create` are rejected even with exact empty constraints.
 
 ## Two distinct webhook paths: link vs close-intent
 
