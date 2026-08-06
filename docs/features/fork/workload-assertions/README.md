@@ -6,13 +6,33 @@ This capability is semantically replayed from accepted `fork/v0.4.9` into the of
 
 ## Capability
 
-A running agent task can exchange its task token for a short-lived assertion whose claims are derived from server-owned workload facts rather than caller-supplied identity. The endpoint is:
+A running agent task can first read its provider-neutral current execution snapshot and can separately exchange its task token for a short-lived assertion whose claims are derived from server-owned workload facts rather than caller-supplied identity. The endpoints are:
 
 ```text
+GET  /api/integrations/current-execution-context
 POST /api/integrations/workload-assertions
 ```
 
-Supported purposes are intentionally distinct:
+## Provider-neutral current execution context
+
+`GET /api/integrations/current-execution-context` accepts only the authenticated current task token. It has no request body or selectors: forged workspace、Agent、Task or actor headers are overwritten by task-token authentication, and the handler freshly joins the exact running task/token inside the same transaction used by assertion issuance. The response schema is `multica.current-execution-context.v1` and contains only a bounded server snapshot:
+
+```text
+schema + observed_at
+workspace {id,name,slug}
+agent {id,name,status}
+task {id,status,attempt,max_attempts,timestamps,parent_task_id?}
+run {id,task_id,status,attempt,max_attempts,timestamps}
+issue? {id,key,title,status,timestamps}
+squad? {id,name?,details_available}
+runtime? {id,name?,custom_name?,provider?,status?,details_available}
+trigger? {kind,id,comment_id?,autopilot_run_id?}
+attribution {source,precise,initiator?,originator?,evidence?,lineage?}
+```
+
+The response is emitted with `Cache-Control: no-store`. The Port never signs a JWT、returns a task/session/provider credential、accepts a repository/operation、selects a Policy Class or decides Git/PR permission. Missing optional Runtime/Squad rows remain explicit unresolved refs with `details_available=false` instead of blocking ordinary context capture; missing core workspace/Agent/Issue facts remain an integrity error. Terminal、failed、cancelled、expired、deleted/revoked or cross-Task/workspace token authority returns `401`; a concurrent terminal transition serializes behind the running-token read and later calls are rejected. This makes the response reusable by an external control plane without making that control plane or AGS part of Multica's domain model.
+
+Supported assertion purposes are intentionally distinct:
 
 - `external_pr_link` binds an external PR operation to the exact Multica task, Issue, provider, instance, and normalized repository target;
 - `ags_session_exchange` binds a delegated AGS session exchange to the exact task, actor, AGS instance, repository, and operation set.
@@ -86,7 +106,7 @@ Both purposes include only the common signed claims `ver`, `iss`, `aud`, `sub`, 
 
 ## Security boundary
 
-- The task token authenticates the running workload; callers cannot choose workload, Issue, workspace, or actor claims. Authentication joins the token to an exact `running` task, and issuance locks/freshly rechecks both rows in one transaction. Task completion/failure/cancellation therefore linearizes against issuance: terminalization first rejects issuance; issuance first proves only that the task was running at that signing transaction, not that it remains running for the assertion's full TTL.
+- The task token authenticates the running workload; callers cannot choose workload, Issue, workspace, Task or actor facts. Current-context reads and assertion issuance both join the token to an exact `running` task and lock/freshly recheck both rows in one transaction. Task completion/failure/cancellation therefore linearizes against either operation: terminalization first rejects the call; the context read or issuance first proves only that the task was running at that transaction.
 - Privileged merge scope uses AGS-projected immutable repository and provider-binding digests plus strict canonical owner/name display values; aliases are not accepted as authority.
 - Assertions are short-lived and signed with `MULTICA_WORKLOAD_ASSERTION_SECRET`; raw provider credentials are not returned.
 - Signing configuration is deployment-owned. `MULTICA_WORKLOAD_ASSERTION_ISSUER` is the deployment-unique JWT `iss`. The separate required secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID` must be a canonical safe ID, differ from `iss`, and exactly match AGS `trusted_issuers[].id`; it is the only value written to `workload_context.issuer_instance_id`. Install helpers generate each value once and preserve it, but operators must configure the generated ID explicitly in AGS rather than infer it from a target name. Source presence alone does not prove a usable trust relationship with AGS.
@@ -96,6 +116,8 @@ Both purposes include only the common signed claims `ver`, `iss`, `aud`, `sub`, 
 
 ## Source anchors
 
+- `server/internal/handler/current_execution_context.go`
+- `server/internal/handler/current_execution_context_test.go`
 - `server/internal/handler/workload_assertion.go`
 - `server/internal/handler/workload_assertion_test.go`
 - `server/internal/handler/workload_pr_merge_delegation.go`
@@ -104,6 +126,7 @@ Both purposes include only the common signed claims `ver`, `iss`, `aud`, `sub`, 
 - `server/migrations/244_workload_pr_merge_delegation.up.sql` through `250_workload_pr_merge_delegation_event_history_index.up.sql`
 - `docs/features/fork/workload-assertions/fixtures/pr-merge-delegation-v2.json`
 - `server/cmd/server/router.go`
+- `server/cmd/server/external_pr_routes_integration_test.go`
 - `server/cmd/server/workload_pr_merge_delegation_routes_integration_test.go`
 - `.env.example`
 - `docker-compose.selfhost.yml`

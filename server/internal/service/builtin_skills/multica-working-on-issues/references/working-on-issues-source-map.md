@@ -40,7 +40,9 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 
 | Behavior | Source authority |
 |---|---|
-| Strict request, purpose/audience/TTL signing | `server/internal/handler/workload_assertion.go` (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
+| Provider-neutral task-token current execution context | `server/internal/handler/current_execution_context.go` (`GetCurrentExecutionContext`, `assembleCurrentExecutionContext`) |
+| Shared running task/token and server-fact resolver | `server/internal/handler/workload_assertion.go` (`lockRunningTaskTokenForAssertion`, `resolveTaskWorkload`) |
+| Strict request, purpose/audience/TTL signing | same file (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
 | Team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizePRMergeConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
 | Server-derived one-shot `pr.merge` delegation, approval and AGS effect-time APIs | `server/internal/handler/workload_pr_merge_delegation.go` (`ensureApprovedPRMergeDelegationForAssertion`, `ApprovePRMergeDelegation`, `RevokePRMergeDelegation`, `IntrospectPRMergeDelegation`, `ConsumePRMergeDelegation`, `RecordPRMergeDelegationEffect`) |
 | Durable delegation/events and interrupted-index reconciliation | `server/migrations/244_workload_pr_merge_delegation.up.sql`–`250_workload_pr_merge_delegation_event_history_index.up.sql`, `server/pkg/db/queries/workload_pr_merge_delegation.sql`, `server/cmd/migrate/main.go` |
@@ -49,6 +51,8 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Eight default-class signed operations plus separately gated ninth `pr.merge` shape | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`, `TestPRMergeDelegationV2PendingApproveConsumeLifecycle`) |
 | AgentKit Forgejo list/runs/log shapes and negative matrix | same file (`TestNormalizeAgentKitForgejoCommandConstraintFixtures`, `TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix`) |
 | Deferred-operation signer rejection | same file (`TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSigning`) |
+
+`GET /api/integrations/current-execution-context` has no request selectors and returns schema `multica.current-execution-context.v1`: bounded workspace、Agent、Task/Run、optional Issue/Squad/Runtime/Trigger and attribution facts from the authenticated running task. It never emits assertion、authority、Policy Class、operation、capability、Session or credential fields. Missing optional Runtime/Squad rows are unresolved refs rather than an authorization failure；terminal/revoked/cross-task authority is rejected by the same locked running-token kernel used by assertion issuance.
 
 `MULTICA_WORKLOAD_ASSERTION_ISSUER` owns JWT `iss` only. The distinct required
 secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID` must exactly match
@@ -186,6 +190,7 @@ grep -n 'ListPullRequestsForIssue' cmd/server/router.go internal/handler/github.
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
 grep -n 'evaluatePullRequestCompletion\|CompleteIssueFromPullRequest\|LockIssueCompletionTransition\|LockWorkspaceIssueTopology' internal/handler/{pull_request_completion.go,external_pr_integration.go,github.go,vcs_webhook.go,issue.go} internal/service/issue.go pkg/db/queries/{pull_request_completion.sql,issue.sql}
+grep -n 'GetCurrentExecutionContext\|assembleCurrentExecutionContext\|lockRunningTaskTokenForAssertion\|resolveTaskWorkload' internal/handler/{current_execution_context.go,current_execution_context_test.go,workload_assertion.go}
 grep -n 'normalizeRequestedOperation\|normalizePRCreateConstraints\|normalizePRReadConstraints\|normalizePRRebaseConstraints\|normalizePRMergeConstraints\|normalizeReviewReadConstraints\|normalizeCIReadConstraints' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go
 grep -n 'CreatePRMergeDelegation\|GetPRMergeDelegation\|RevokePRMergeDelegation\|lockActivePRMergeDelegationForAssertion' internal/handler/workload_pr_merge_delegation.go internal/handler/workload_pr_merge_delegation_test.go cmd/server/{router.go,workload_pr_merge_delegation_routes_integration_test.go}
 grep -n 'authority_revision\|granted_by_user_id\|expires_at\|revoked_at' migrations/244_workload_pr_merge_delegation.up.sql pkg/db/queries/workload_pr_merge_delegation.sql

@@ -88,6 +88,45 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 		t.Fatalf("route workload did not use token-bound identity: %#v", assertion)
 	}
 
+	contextReq, err := http.NewRequest(http.MethodGet, testServer.URL+"/api/integrations/current-execution-context", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextReq.Header.Set("Authorization", "Bearer "+rawToken)
+	contextReq.Header.Set("X-Actor-Source", "forged-member")
+	contextReq.Header.Set("X-Agent-ID", "forged-agent")
+	contextReq.Header.Set("X-Workspace-ID", "forged-workspace")
+	contextResp, err := http.DefaultClient.Do(contextReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contextResp.Body.Close()
+	if contextResp.StatusCode != http.StatusOK {
+		t.Fatalf("current execution context route status=%d", contextResp.StatusCode)
+	}
+	var currentContext struct {
+		Schema    string `json:"schema"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
+		Agent struct {
+			ID string `json:"id"`
+		} `json:"agent"`
+		Task struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"task"`
+		Issue *struct {
+			ID string `json:"id"`
+		} `json:"issue"`
+	}
+	if err := json.NewDecoder(contextResp.Body).Decode(&currentContext); err != nil {
+		t.Fatal(err)
+	}
+	if currentContext.Schema != "multica.current-execution-context.v1" || currentContext.Workspace.ID != testWorkspaceID || currentContext.Agent.ID != agentID || currentContext.Task.ID != taskID || currentContext.Task.Status != "running" || currentContext.Issue == nil || currentContext.Issue.ID != issueID {
+		t.Fatalf("context route did not use token-bound identity: %#v", currentContext)
+	}
+
 	// Best-effort token deletion is not authority. Once the task is terminal,
 	// the real Auth middleware must reject the still-unexpired token before the
 	// assertion handler runs.
@@ -107,6 +146,19 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 	terminalResp.Body.Close()
 	if terminalResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("terminal task token route status=%d, want 401", terminalResp.StatusCode)
+	}
+	terminalContextReq, err := http.NewRequest(http.MethodGet, testServer.URL+"/api/integrations/current-execution-context", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalContextReq.Header.Set("Authorization", "Bearer "+rawToken)
+	terminalContextResp, err := http.DefaultClient.Do(terminalContextReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalContextResp.Body.Close()
+	if terminalContextResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("terminal context route status=%d, want 401", terminalContextResp.StatusCode)
 	}
 
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "route-service-token")

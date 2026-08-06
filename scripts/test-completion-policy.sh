@@ -103,7 +103,7 @@ fi
   DATABASE_URL="$dsn" go run ./cmd/migrate up
   DATABASE_URL="$dsn" go test -tags=contextcontinuitydb ./cmd/migrate -run TestContextContinuityMigrationConvergence -count=1
   DATABASE_URL="$dsn" go test ./internal/handler -run 'Test(CompletionPolicy|PullRequestCompletion|ConcurrentTopology|WorkspaceTopology|UpdateIssueRejectsCycle|PublicCompletion|CompleteIssueFromExternalPRPublic|CompleteIssueFromExternalPRCompletes|PublicExternal|ExternalPRPublic|ExternalPRConcurrent|ExternalPRActivity|ExternalPRInfrastructure|ExternalPRCompletionFailure|ExternalPRServiceToken|RegisterExternalTerminalFact|BatchDeleteSerializes|WorkspaceDeleteSerializes|GitHubWebhook(Serializes|Rejects|Returns)|GitHubMultiIssue|GitHubInstallationDelete|DeleteIssueSerializes|Webhook_(MergedPR_(RecordOnly|Advances|Waits|OnlyCloses)|ClosedSibling|LinkOnlySibling|HiddenBody)|VCSWebhook(Transaction|Serializes|_(RecordOnly|ForgejoMirrors|ReferenceOnly|GitlabMergeRequest|StaleEventDoesNotRewriteLink))|VCSConnectionDelete|ValidateWorkloadAssertionIssuer)' -count=1
-  DATABASE_URL="$dsn" go test ./internal/handler -run 'Test(CreateWorkloadAssertion|WorkspaceWorkloadAuthority)' -count=1
+  DATABASE_URL="$dsn" go test ./internal/handler -run 'Test(CreateWorkloadAssertion|GetCurrentExecutionContext|WorkspaceWorkloadAuthority)' -count=1
   DATABASE_URL="$dsn" go test ./cmd/server -run 'Test(WorkloadAndExternalPRRoutesUseRealAuthBoundaries|CompletionStageChainUsesRealHTTPAndPublicReadAPIs|SelfhostWorkloadAssertionIssuerFailsClosed|ActivityIssueUpdated_StatusActivityAlreadyRecorded)' -count=1
 )
 

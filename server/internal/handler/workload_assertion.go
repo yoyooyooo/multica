@@ -173,6 +173,9 @@ type workloadAssertionResponse struct {
 type resolvedTaskWorkload struct {
 	Workload               workloadAssertionWorkload
 	Task                   db.AgentTaskQueue
+	Workspace              db.Workspace
+	Agent                  db.Agent
+	Issue                  *db.Issue
 	WorkspaceID            pgtype.UUID
 	PendingMergeDelegation *db.WorkloadPrMergeDelegation
 }
@@ -482,12 +485,14 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 		Workspace: workspace.Slug, WorkspaceID: uuidToString(workspaceID), AgentID: uuidToString(task.AgentID),
 		AgentName: agent.Name, TaskID: uuidToString(task.ID), RunID: runID,
 	}
+	var resolvedIssue *db.Issue
 	if task.IssueID.Valid {
 		issue, err := queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
 		if err != nil {
 			writeError(w, http.StatusNotFound, "issue not found")
 			return resolvedTaskWorkload{}, false
 		}
+		resolvedIssue = &issue
 		prefix := h.getIssuePrefix(r.Context(), workspaceID)
 		workload.IssueID = uuidToString(issue.ID)
 		workload.IssueKey = fmt.Sprintf("%s-%d", prefix, issue.Number)
@@ -495,7 +500,10 @@ func (h *Handler) resolveTaskWorkload(w http.ResponseWriter, r *http.Request, qu
 			workload.IssueURL = fmt.Sprintf("%s/%s/issues/%s", appURL, workspace.Slug, workload.IssueKey)
 		}
 	}
-	return resolvedTaskWorkload{Workload: workload, Task: task, WorkspaceID: workspaceID}, true
+	return resolvedTaskWorkload{
+		Workload: workload, Task: task, Workspace: workspace, Agent: agent,
+		Issue: resolvedIssue, WorkspaceID: workspaceID,
+	}, true
 }
 
 // enrichSessionExchangeWorkload adds the signed v1 envelope and server-owned

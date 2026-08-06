@@ -879,8 +879,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
 
-		// Task-token-only assertions bind integration scope to server-derived
-		// workload identity. The link-token endpoint keeps the legacy contract.
+		// Task-token-only integration ports bind every fact to the current
+		// server-derived workload. The context read is provider-neutral and does
+		// not mint credentials or choose operation policy; the link-token endpoint
+		// keeps the legacy contract.
+		r.Get("/api/integrations/current-execution-context", h.GetCurrentExecutionContext)
 		r.Post("/api/integrations/workload-assertions", h.CreateWorkloadAssertion)
 		r.Post("/api/integrations/external-pr/link-token", h.CreateExternalPRLinkToken)
 
