@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -28,7 +29,62 @@ var (
 	canonicalExternalPRDigestPattern    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	canonicalExternalPRInstancePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
 	canonicalRepositoryComponentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+	canonicalGitSHA1Pattern             = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	externalPRSecretShapedValuePattern  = regexp.MustCompile(`(?i)(?:mat_[A-Za-z0-9_-]+|ags_sess_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----)`)
 )
+
+func configuredExternalPRServiceInstance() string {
+	return os.Getenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID")
+}
+
+func decodeClosedJSONRequest(w http.ResponseWriter, r *http.Request, target any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
+}
+
+func normalizeCanonicalGitBranchRef(operation, field string, value any) (string, error) {
+	ref, ok := value.(string)
+	if !ok || !isCanonicalGitBranchRef(ref) {
+		return "", fmt.Errorf("requested %s %s must be a canonical branch ref", operation, field)
+	}
+	return ref, nil
+}
+
+func isCanonicalGitBranchRef(ref string) bool {
+	if ref == "" || len(ref) > 2048 || ref != strings.TrimSpace(ref) || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") || externalPRSecretShapedValuePattern.MatchString(ref) {
+		return false
+	}
+	branch := ref
+	if strings.HasPrefix(branch, "refs/") {
+		if !strings.HasPrefix(branch, "refs/heads/") {
+			return false
+		}
+		branch = strings.TrimPrefix(branch, "refs/heads/")
+	}
+	if branch == "" || branch == "@" || strings.HasPrefix(branch, ".") || strings.HasSuffix(branch, ".") || strings.Contains(branch, "//") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, char := range branch {
+		if char < 0x20 || char == 0x7f || strings.ContainsRune(` ~^:?*[\\`, char) {
+			return false
+		}
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
+}
 
 type externalPullRequestLinkRequest struct {
 	Provider                string `json:"provider"`
@@ -90,7 +146,7 @@ func normalizeExternalPRMergeProjection(req externalPullRequestLinkRequest, merg
 		return normalizedExternalPRMergeProjection{}, nil
 	}
 	if present != len(values) || mergeProvider != "forgejo" || req.MergeNumber < 1 {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge projection facts require their exact complete set")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection facts require their exact complete set")
 	}
 	instance := strings.TrimSpace(req.TargetInstance)
 	configuredInstance := configuredExternalPRServiceInstance()
@@ -101,26 +157,26 @@ func normalizeExternalPRMergeProjection(req externalPullRequestLinkRequest, merg
 	providerRepository := strings.TrimSpace(req.ProviderRepository)
 	if !isCanonicalRepositoryName(canonicalRepository) || !isCanonicalRepositoryName(providerRepository) ||
 		strings.TrimSpace(req.ExternalRepo) != canonicalRepository || strings.TrimSpace(req.MergeRepo) != providerRepository {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge repositories are not canonical")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection repositories are not canonical")
 	}
 	if !canonicalExternalPRDigestPattern.MatchString(req.CanonicalRepositoryID) ||
 		!canonicalExternalPRDigestPattern.MatchString(req.ProviderBindingID) ||
 		!canonicalExternalPRDigestPattern.MatchString(req.ProviderBindingRevision) ||
 		!canonicalExternalPRDigestPattern.MatchString(req.ProjectionFactsRevision) {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge binding identities are not canonical")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection binding identities are not canonical")
 	}
 	if !canonicalGitSHA1Pattern.MatchString(req.ExpectedHeadSHA) || !canonicalGitSHA1Pattern.MatchString(req.ExpectedBaseSHA) {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge head and base must be canonical git SHAs")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection head and base must be canonical git SHAs")
 	}
 	baseRef, err := normalizeCanonicalGitBranchRef("pr.merge", "base_ref", req.BaseRef)
 	if err != nil || baseRef != req.BaseRef {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge base_ref is not canonical")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection base_ref is not canonical")
 	}
 	method := strings.TrimSpace(req.DelegatedMergeMethod)
 	switch method {
 	case "merge", "rebase", "rebase-merge", "squash", "fast-forward-only":
 	default:
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("delegated merge method is not registered")
+		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection method is not registered")
 	}
 	return normalizedExternalPRMergeProjection{
 		present: true, targetInstance: instance, canonicalRepositoryID: req.CanonicalRepositoryID,
@@ -710,28 +766,6 @@ WHERE workspace_id=$1 AND issue_id=$2 AND provider=$3 AND external_repo=$4 AND e
 workspace_id, idempotency_key, payload_hash, issue_id, provider, external_repo, external_number
 ) VALUES ($1,$2,$3,$4,$5,$6,$7)`, workspaceID, idempotencyKey, payloadHash, issueID, provider, externalRepo, req.ExternalNumber); err != nil {
 			return out, fmt.Errorf("write idempotency receipt: %w", err)
-		}
-	}
-	if projection.present {
-		var externalLinkID pgtype.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM external_pull_request_link
-WHERE workspace_id=$1 AND issue_id=$2 AND provider=$3 AND external_repo=$4 AND external_number=$5`,
-			workspaceID, issueID, provider, externalRepo, req.ExternalNumber).Scan(&externalLinkID); err != nil {
-			return out, fmt.Errorf("read external pull request projection identity: %w", err)
-		}
-		supersededAt := h.currentWorkloadAssertionTime()
-		superseded, err := qtx.SupersedePRMergeDelegationsForExternalLink(ctx, db.SupersedePRMergeDelegationsForExternalLinkParams{
-			SupersededAt:     pgtype.Timestamptz{Time: supersededAt, Valid: true},
-			SupersedeReason:  pgtype.Text{String: "server-owned projection facts changed", Valid: true},
-			ExternalPrLinkID: externalLinkID,
-		})
-		if err != nil {
-			return out, fmt.Errorf("supersede stale PR merge delegations: %w", err)
-		}
-		for _, delegation := range superseded {
-			if err := createPRMergeDelegationEvent(ctx, qtx, delegation, "superseded", "system", "multica", pgtype.UUID{}, map[string]any{"reason": "server-owned projection facts changed"}); err != nil {
-				return out, fmt.Errorf("record stale PR merge delegation supersession: %w", err)
-			}
 		}
 	}
 	activityWriter := h.ExternalPRActivityWriter

@@ -391,6 +391,17 @@ func TestTaskScopedAuthToken(t *testing.T) {
 	}
 }
 
+func TestTaskCanonicalRunID(t *testing.T) {
+	t.Parallel()
+	if _, err := taskCanonicalRunID(Task{}); err == nil || err.Error() != "server did not provide canonical task execution id" {
+		t.Fatalf("missing execution id err=%v", err)
+	}
+	got, err := taskCanonicalRunID(Task{ID: "task-id", ExecutionID: " execution-id "})
+	if err != nil || got != "execution-id" {
+		t.Fatalf("taskCanonicalRunID()=%q err=%v", got, err)
+	}
+}
+
 // When `brew --prefix` is unavailable but the executable path is under a
 // known Cellar root, triggerRestart must recover the prefix from the
 // known-prefix list and target <prefix>/bin/multica.

@@ -230,12 +230,6 @@ make selfhost
 ```bash
 cd multica
 git pull
-# 기존 배포는 안정적이고 서로 다른 identity 값 2개를 .env에 한 번 추가합니다.
-# deployment-unique JWT iss:
-# MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
-# secret-free authority linkage(AGS trusted_issuers[].id와 정확히 일치, target에서 추측 금지):
-# MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
-bash scripts/validate-workload-issuer.sh .env
 docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
@@ -289,7 +283,7 @@ docker compose -f docker-compose.selfhost.yml logs -f backend
 
 ```bash
 curl -s localhost:8080/readyz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
 HTTP 200이면서 세 검사가 모두 `ok`가 아니라면 새 버전이 migration을 마치지 못한 것입니다. 트래픽을 보내기 전에 백엔드 로그를 확인하세요.
@@ -323,9 +317,7 @@ kubectl -n multica create secret generic multica-secrets \
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-helm install multica deploy/helm/multica -n multica \
-  --set-string 'backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id>' \
-  --set-string 'backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>'
+helm install multica deploy/helm/multica -n multica
 ```
 
 기본값은 호스트네임 `multica.dev.lan`(web)과 `api.multica.dev.lan`(백엔드)을 가정합니다. 이것들을 `/etc/hosts`(또는 로컬 DNS)에 추가해, Ingress에 도달 가능한 임의의 노드 IP를 가리키도록 하세요. 다른 호스트네임을 사용하려면 `deploy/helm/multica/values.yaml`을 복사한 뒤 `ingress.frontend.host` / `ingress.backend.host`와 그에 대응하는 `backend.config.appUrl` / `frontendOrigin` / `localUploadBaseUrl` / `googleRedirectUri`를 편집하고, `-f my-values.yaml`로 설치하세요.
@@ -334,7 +326,7 @@ helm install multica deploy/helm/multica -n multica \
 
 ```bash
 curl -H "Host: api.multica.dev.lan" http://<ingress-ip>/healthz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
 그런 다음 `http://multica.dev.lan`을 열고 위의 [4단계 — 첫 로그인](#4-first-login--create-a-workspace)에서 이어서 진행하세요. CLI를 Ingress 호스트네임으로 연결합니다.

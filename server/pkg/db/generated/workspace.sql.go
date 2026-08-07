@@ -176,9 +176,9 @@ const deleteWorkspaceWorkloadAuthority = `-- name: DeleteWorkspaceWorkloadAuthor
 DELETE FROM workspace_workload_authority WHERE workspace_id = $1
 `
 
-// The authority table intentionally has no FK. Delete it in the same
-// application transaction after the workspace delete, when member lifecycle
-// triggers can no longer recreate the row.
+// Historical workload-authority rows intentionally have no FK. This cleanup
+// remains only so workspace deletion removes retired data in the same
+// application transaction; no live path creates or reads these rows.
 func (q *Queries) DeleteWorkspaceWorkloadAuthority(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceWorkloadAuthority, workspaceID)
 	return err

@@ -2,9 +2,10 @@
 
 The official-tag-derived `fork/v0.4.12` generation owns these additive capabilities:
 
-- [External PR integration](external-pr-integration/README.md)
-- [Purpose-bound workload assertions](workload-assertions/README.md)
+- [External PR integration and current execution context](external-pr-integration/README.md)
 - [Pi process tree supervision](pi-process-tree-supervision/README.md)
+
+The workload-assertion and delegated-merge bridge is retired; AGS authority is Access-Grant-only.
 
 `fork/v0.4.9` remains the accepted previous generation and deployment rollback source. `fork/v0.4.8` remains older donor evidence. Neither branch is overwritten or treated as current source authority.
 

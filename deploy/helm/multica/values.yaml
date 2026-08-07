@@ -129,13 +129,6 @@ backend:
     # MULTICA_VCS_SECRET_KEY through existingSecret before connections work.
     # Set false to hide and reject the integration for this deployment.
     vcsIntegrationEnabled: true
-    # Required JWT `iss`. Set a stable deployment-unique URI such as
-    # urn:multica:deployment:<stable-instance-id> and preserve it on upgrades.
-    workloadAssertionIssuer: ""
-    # Required secret-free authority linkage. Set a canonical safe ID that
-    # differs from the JWT issuer and exactly matches AGS trusted_issuers[].id.
-    # Do not infer this value from an AGS target name.
-    workloadAssertionIssuerInstanceId: ""
     googleClientId: ""
     googleRedirectUri: http://multica.dev.lan/auth/callback
     s3Bucket: ""

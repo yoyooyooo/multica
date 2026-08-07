@@ -229,12 +229,6 @@ make selfhost
 ```bash
 cd multica
 git pull
-# Existing deployments must add both stable, distinct identity values to .env once.
-# JWT iss (deployment-unique):
-# MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
-# Secret-free authority linkage (exact AGS trusted_issuers[].id; do not infer from target):
-# MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
-bash scripts/validate-workload-issuer.sh .env
 docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
@@ -288,7 +282,7 @@ docker compose -f docker-compose.selfhost.yml logs -f backend
 
 ```bash
 curl -s localhost:8080/readyz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
 Anything other than HTTP 200 with all three checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
@@ -322,9 +316,7 @@ Then install the chart:
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-helm install multica deploy/helm/multica -n multica \
-  --set-string 'backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id>' \
-  --set-string 'backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>'
+helm install multica deploy/helm/multica -n multica
 ```
 
 Defaults assume the hostnames `multica.dev.lan` (web) and `api.multica.dev.lan` (backend). Add them to `/etc/hosts` (or local DNS) pointing at any node IP where your Ingress is reachable. To use different hostnames, copy `deploy/helm/multica/values.yaml`, edit `ingress.frontend.host` / `ingress.backend.host` and the matching `backend.config.appUrl` / `frontendOrigin` / `localUploadBaseUrl` / `googleRedirectUri`, then install with `-f my-values.yaml`.
@@ -333,7 +325,7 @@ On a cold cluster the backend can stay `Running` but not `Ready` for a few minut
 
 ```bash
 curl -H "Host: api.multica.dev.lan" http://<ingress-ip>/healthz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
 Then open `http://multica.dev.lan` and continue at [Step 4 — First login](#4-first-login--create-a-workspace) above. Point the CLI at your Ingress hostnames:

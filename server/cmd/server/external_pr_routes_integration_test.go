@@ -11,7 +11,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 )
 
-func TestWorkloadAndExternalPRRoutesUseRealAuthBoundaries(t *testing.T) {
+func TestCurrentExecutionContextAndExternalPRRoutesUseRealAuthBoundaries(t *testing.T) {
 	ctx := context.Background()
 	var agentID, runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT id, runtime_id FROM agent
@@ -22,7 +22,7 @@ WHERE workspace_id=$1 AND runtime_id IS NOT NULL ORDER BY created_at LIMIT 1`, t
 	if err := testPool.QueryRow(ctx, `INSERT INTO issue (
 workspace_id, number, title, status, priority, position, creator_type, creator_id
 ) VALUES ($1, (SELECT issue_counter + 1000 FROM workspace WHERE id=$1),
-'router workload assertion', 'in_progress', 'none', 1, 'member', $2) RETURNING id`,
+'router current execution context', 'in_progress', 'none', 1, 'member', $2) RETURNING id`,
 		testWorkspaceID, testUserID).Scan(&issueID); err != nil {
 		t.Fatalf("create route issue: %v", err)
 	}
@@ -49,43 +49,33 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID)
 	})
 
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_SECRET", "route-workload-secret")
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", "urn:multica:deployment:route-test")
-	t.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", "multica-route-test")
-	assertionBody, _ := json.Marshal(map[string]any{
-		"purpose": "external_pr_link",
-		"target":  map[string]any{"provider": "ags", "instance": "mini", "repository": "jackie/agent-kit"},
-	})
-	req, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/integrations/workload-assertions", bytes.NewReader(assertionBody))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+rawToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Actor-Source", "forged-member")
-	req.Header.Set("X-Workspace-ID", "forged-workspace")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("workload assertion route status=%d", resp.StatusCode)
-	}
-	var assertion struct {
-		Assertion string `json:"assertion"`
-		Workload  struct {
-			WorkspaceID string `json:"workspace_id"`
-			AgentID     string `json:"agent_id"`
-			TaskID      string `json:"task_id"`
-			IssueID     string `json:"issue_id"`
-		} `json:"workload"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&assertion); err != nil {
-		t.Fatal(err)
-	}
-	if assertion.Assertion == "" || assertion.Workload.WorkspaceID != testWorkspaceID || assertion.Workload.AgentID != agentID || assertion.Workload.TaskID != taskID || assertion.Workload.IssueID != issueID {
-		t.Fatalf("route workload did not use token-bound identity: %#v", assertion)
+	delegationID := "00000000-0000-0000-0000-000000000001"
+	for _, retired := range []struct {
+		method, path, authorization string
+	}{
+		{http.MethodPost, "/api/integrations/workload-assertions", "Bearer " + rawToken},
+		{http.MethodGet, "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge", "Bearer " + testToken},
+		{http.MethodGet, "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge/" + delegationID, "Bearer " + testToken},
+		{http.MethodPost, "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge/" + delegationID + "/approve", "Bearer " + testToken},
+		{http.MethodPost, "/api/workspaces/" + testWorkspaceID + "/workload-delegations/pr-merge/" + delegationID + "/revoke", "Bearer " + testToken},
+		{http.MethodPost, "/api/integrations/ags/workload-delegations/pr-merge/" + delegationID + "/introspect", "Bearer retired-service-token"},
+		{http.MethodPost, "/api/integrations/ags/workload-delegations/pr-merge/" + delegationID + "/consume", "Bearer retired-service-token"},
+		{http.MethodPost, "/api/integrations/ags/workload-delegations/pr-merge/" + delegationID + "/effects", "Bearer retired-service-token"},
+	} {
+		retiredReq, err := http.NewRequest(retired.method, testServer.URL+retired.path, bytes.NewReader([]byte(`{}`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retiredReq.Header.Set("Authorization", retired.authorization)
+		retiredReq.Header.Set("Content-Type", "application/json")
+		retiredResp, err := http.DefaultClient.Do(retiredReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retiredResp.Body.Close()
+		if retiredResp.StatusCode != http.StatusNotFound {
+			t.Fatalf("retired route %s %s status=%d, want 404", retired.method, retired.path, retiredResp.StatusCode)
+		}
 	}
 
 	contextReq, err := http.NewRequest(http.MethodGet, testServer.URL+"/api/integrations/current-execution-context", nil)
@@ -127,25 +117,45 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 		t.Fatalf("context route did not use token-bound identity: %#v", currentContext)
 	}
 
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "router-link-token-secret")
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE", "external-pr-link")
+	linkTokenReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/integrations/external-pr/link-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkTokenReq.Header.Set("Authorization", "Bearer "+rawToken)
+	linkTokenReq.Header.Set("X-Actor-Source", "forged-member")
+	linkTokenReq.Header.Set("X-Agent-ID", "forged-agent")
+	linkTokenReq.Header.Set("X-Workspace-ID", "forged-workspace")
+	linkTokenResp, err := http.DefaultClient.Do(linkTokenReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTokenResp.StatusCode != http.StatusOK {
+		linkTokenResp.Body.Close()
+		t.Fatalf("external PR link-token route status=%d", linkTokenResp.StatusCode)
+	}
+	var linkTokenContext struct {
+		WorkspaceID string `json:"workspace_id"`
+		AgentID     string `json:"agent_id"`
+		TaskID      string `json:"task_id"`
+		IssueID     string `json:"issue_id"`
+		LinkToken   string `json:"link_token"`
+	}
+	if err := json.NewDecoder(linkTokenResp.Body).Decode(&linkTokenContext); err != nil {
+		linkTokenResp.Body.Close()
+		t.Fatal(err)
+	}
+	linkTokenResp.Body.Close()
+	if linkTokenContext.WorkspaceID != testWorkspaceID || linkTokenContext.AgentID != agentID || linkTokenContext.TaskID != taskID || linkTokenContext.IssueID != issueID || linkTokenContext.LinkToken == "" {
+		t.Fatalf("link-token route did not use token-bound identity")
+	}
+
 	// Best-effort token deletion is not authority. Once the task is terminal,
 	// the real Auth middleware must reject the still-unexpired token before the
-	// assertion handler runs.
+	// current-context handler runs.
 	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, taskID); err != nil {
 		t.Fatalf("terminalize route task: %v", err)
-	}
-	terminalReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/integrations/workload-assertions", bytes.NewReader(assertionBody))
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminalReq.Header.Set("Authorization", "Bearer "+rawToken)
-	terminalReq.Header.Set("Content-Type", "application/json")
-	terminalResp, err := http.DefaultClient.Do(terminalReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminalResp.Body.Close()
-	if terminalResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("terminal task token route status=%d, want 401", terminalResp.StatusCode)
 	}
 	terminalContextReq, err := http.NewRequest(http.MethodGet, testServer.URL+"/api/integrations/current-execution-context", nil)
 	if err != nil {
@@ -159,6 +169,19 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 	terminalContextResp.Body.Close()
 	if terminalContextResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("terminal context route status=%d, want 401", terminalContextResp.StatusCode)
+	}
+	terminalLinkReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/integrations/external-pr/link-token", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalLinkReq.Header.Set("Authorization", "Bearer "+rawToken)
+	terminalLinkResp, err := http.DefaultClient.Do(terminalLinkReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalLinkResp.Body.Close()
+	if terminalLinkResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("terminal link-token route status=%d, want 401", terminalLinkResp.StatusCode)
 	}
 
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "route-service-token")

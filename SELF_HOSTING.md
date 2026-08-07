@@ -71,7 +71,7 @@ cd multica
 make selfhost
 ```
 
-`make selfhost` automatically creates `.env` from the example, generates random secrets plus a stable deployment-unique JWT `MULTICA_WORKLOAD_ASSERTION_ISSUER` and a distinct stable secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID`, then starts all services via Docker Compose. Keep both values unchanged across upgrades. Configure the generated instance ID exactly as AGS `trusted_issuers[].id`; do not infer it from an AGS target name.
+`make selfhost` automatically creates `.env` from the example, generates random JWT, PostgreSQL, and VCS secrets, then starts all services via Docker Compose.
 
 By default it pulls the latest stable release images from GHCR. To build the backend/web from your current checkout instead, run `make selfhost-build`.
 If the selected GHCR tag has not been published yet, `make selfhost` now tells you to fall back to `make selfhost-build`.
@@ -220,9 +220,7 @@ Leave optional values empty for now — you can fill them in later (see [Step 5 
 ```bash
 helm install multica oci://ghcr.io/multica-ai/charts/multica \
   --version <chart-version> \
-  -n multica \
-  --set-string backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id> \
-  --set-string backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>
+  -n multica
 ```
 
 Released chart versions strip the leading `v` from the Git tag. For example, release tag `v0.3.5` publishes chart version `0.3.5`; the chart defaults the backend and frontend image tags to `v0.3.5`.
@@ -232,9 +230,7 @@ To override defaults, export the chart values, edit them, and pass them with `-f
 ```bash
 helm show values oci://ghcr.io/multica-ai/charts/multica \
   --version <chart-version> > my-values.yaml
-# edit my-values.yaml — set backend.config.workloadAssertionIssuer to one stable,
-# deployment-unique JWT issuer and workloadAssertionIssuerInstanceId to the exact
-# distinct secret-free AGS trusted_issuers[].id; then change other settings
+# edit my-values.yaml with the deployment-specific hosts, storage, and auth settings
 helm install multica oci://ghcr.io/multica-ai/charts/multica \
   --version <chart-version> \
   -n multica \
@@ -244,9 +240,7 @@ helm install multica oci://ghcr.io/multica-ai/charts/multica \
 When developing from a checkout, use the local chart path instead:
 
 ```bash
-helm install multica deploy/helm/multica -n multica \
-  --set-string backend.config.workloadAssertionIssuer=urn:multica:deployment:<stable-instance-id> \
-  --set-string backend.config.workloadAssertionIssuerInstanceId=<ags-trusted-issuer-id>
+helm install multica deploy/helm/multica -n multica
 ```
 
 Watch the pods come up:
@@ -259,7 +253,7 @@ On a cold cluster the backend can sit `Running` but not `Ready` for a few minute
 
 ```bash
 curl -H "Host: api.multica.dev.lan" http://<ingress-ip>/healthz
-# {"status":"ok","checks":{"db":"ok","migrations":"ok","workload_assertion_identity":"ok"}}
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
 Then open http://multica.dev.lan in your browser.
@@ -296,7 +290,7 @@ The chart defaults to `APP_ENV=production` (set in `values.yaml` under `backend.
   kubectl -n multica rollout restart deploy/multica-backend
   ```
 
-`backend.config.workloadAssertionIssuer` and `backend.config.workloadAssertionIssuerInstanceId` are required for every Helm render. Set the first once to a stable deployment-unique JWT `iss` such as `urn:multica:deployment:<stable-instance-id>`. Set the second to a distinct canonical secret-free safe ID that exactly matches AGS `trusted_issuers[].id`; never infer it from the AGS target. Preserve both in `my-values.yaml` across upgrades and rollback; the chart rejects empty, equal, unsafe, and placeholder values. `ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` likewise live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, and `googleClientId`). After `helm upgrade`, the backend pod will roll automatically because the ConfigMap hash changes; the web UI reads all three from `/api/config` at runtime, so no web rebuild is needed.
+`ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, and `googleClientId`). Workload-assertion and delegated-merge values are retired and must not be added to the chart. After `helm upgrade`, the backend pod rolls automatically when the ConfigMap hash changes; the web UI reads these settings from `/api/config` at runtime, so no web rebuild is needed.
 
 > **Warning:** do **not** set `MULTICA_DEV_VERIFICATION_CODE` on a publicly reachable instance — anyone who knows an email address can then log in with that fixed code.
 
@@ -447,17 +441,10 @@ This reconfigures the CLI for multica.ai, re-authenticates, and restarts the dae
 
 ## Upgrading
 
-Before the first upgrade to this generation, add both a stable
-`MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>`
-and a distinct secret-free
-`MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>` to the
-existing `.env`; the second value must exactly match AGS `trusted_issuers[].id`
-and must not be guessed from the target. Keep both unchanged on later upgrades. Compose rejects a
-missing value during rendering; the supported preflight below also rejects the
-non-empty legacy placeholder before startup.
+Review `.env` for any newly documented settings, render the Compose model,
+and then recreate the services:
 
 ```bash
-bash scripts/validate-workload-issuer.sh .env
 docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
@@ -481,26 +468,11 @@ cp .env.example .env
 ```
 
 Edit `.env` before asking Compose to render or start the stack. At minimum,
-set a strong JWT secret and two stable, distinct workload identity values:
+set a strong `JWT_SECRET`, a strong `POSTGRES_PASSWORD`, and the same database
+password inside `DATABASE_URL`. `make selfhost-env` can generate these values.
+Then render and start everything:
 
 ```bash
-JWT_SECRET=$(openssl rand -hex 32)
-MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:deployment:<stable-instance-id>
-MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID=<ags-trusted-issuer-id>
-```
-
-Neither identity value is a secret. The first is JWT `iss`; the second is the
-canonical safe authority linkage and must exactly match AGS
-`trusted_issuers[].id`, not a guessed target name. Keep both across upgrades and
-rollback. Missing, equal, unsafe, or placeholder values fail startup and
-readiness closed.
-
-Validate the completed file, then start everything. Compose rejects a missing
-value during rendering; the explicit preflight rejects `multica`, which Compose
-interpolation cannot distinguish from another non-empty value:
-
-```bash
-bash scripts/validate-workload-issuer.sh .env
 docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d

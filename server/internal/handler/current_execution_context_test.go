@@ -11,10 +11,32 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func newCurrentExecutionContextRequest() *http.Request {
 	return httptest.NewRequest(http.MethodGet, "/api/integrations/current-execution-context", nil)
+}
+
+func authorizeCurrentExecutionContextTestTask(t *testing.T, req *http.Request, agentID, taskID string) string {
+	t.Helper()
+	tokenHash := uuid.NewString()
+	if _, err := testHandler.Queries.CreateTaskToken(context.Background(), db.CreateTaskTokenParams{
+		TokenHash: tokenHash,
+		TaskID:    parseUUID(taskID), AgentID: parseUUID(agentID),
+		WorkspaceID: parseUUID(testWorkspaceID), UserID: parseUUID(testUserID),
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	}); err != nil {
+		t.Fatalf("create current execution context task token: %v", err)
+	}
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	req.Header.Set("X-Task-Token-Hash", tokenHash)
+	return tokenHash
 }
 
 func sortedJSONKeys(value map[string]any) []string {
@@ -53,7 +75,7 @@ func TestGetCurrentExecutionContextReturnsOnlyTokenBoundServerFacts(t *testing.T
 
 	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 	req := newCurrentExecutionContextRequest()
-	tokenHash := authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+	tokenHash := authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 	executionID := uuid.NewString()
 	var triggerID string
 	if err := testPool.QueryRow(context.Background(), `
@@ -178,7 +200,7 @@ func TestGetCurrentExecutionContextOmitsUnavailableOptionalLineage(t *testing.T)
 	agentID := createHandlerTestAgent(t, "minimal-current-execution-context-agent", []byte(`{}`))
 	taskID := createHandlerTestTaskForAgent(t, agentID)
 	req := newCurrentExecutionContextRequest()
-	authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+	authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 	rr := httptest.NewRecorder()
 	testHandler.GetCurrentExecutionContext(rr, req)
 	if rr.Code != http.StatusOK {
@@ -202,6 +224,51 @@ func TestGetCurrentExecutionContextOmitsUnavailableOptionalLineage(t *testing.T)
 	}
 	if _, present := attribution["originator"]; present {
 		t.Fatalf("unexpected originator=%#v", attribution["originator"])
+	}
+}
+
+func TestCurrentExecutionContextAndLinkTokenStayOnSingleTransactionConnection(t *testing.T) {
+	const linkSecret = "single-connection-link-token-secret"
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", linkSecret)
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE", "external-pr-link")
+	issueID := createExternalPRTestIssue(t, "single connection current context", "todo", "", nil)
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
+	agentID := createHandlerTestAgent(t, "single-connection-current-context-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+
+	cfg := testPool.Config()
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	singlePool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(singlePool.Close)
+	singleHandler := *testHandler
+	singleHandler.Queries = db.New(singlePool)
+	singleHandler.TxStarter = singlePool
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		call   func(http.ResponseWriter, *http.Request)
+	}{
+		{name: "current context", method: http.MethodGet, path: "/api/integrations/current-execution-context", call: singleHandler.GetCurrentExecutionContext},
+		{name: "external PR link token", method: http.MethodPost, path: "/api/integrations/external-pr/link-token", call: singleHandler.CreateExternalPRLinkToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
+			ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+			defer cancel()
+			req = req.WithContext(ctx)
+			rr := httptest.NewRecorder()
+			tc.call(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -246,7 +313,7 @@ func TestGetCurrentExecutionContextKeepsUnavailableOptionalRuntimeAndSquadAsUnre
 	})
 
 	req := newCurrentExecutionContextRequest()
-	authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+	authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 	rr := httptest.NewRecorder()
 	testHandler.GetCurrentExecutionContext(rr, req)
 	if rr.Code != http.StatusOK {
@@ -270,17 +337,17 @@ func TestGetCurrentExecutionContextLinearizesBeforeTaskCompletion(t *testing.T) 
 	agentID := createHandlerTestAgent(t, "linearized-current-execution-context-agent", []byte(`{}`))
 	taskID := createHandlerTestTaskForAgent(t, agentID)
 	req := newCurrentExecutionContextRequest()
-	authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+	authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 
 	locked := make(chan struct{})
 	release := make(chan struct{})
-	testHandler.WorkloadAssertionHook = func(stage string) {
+	testHandler.CurrentExecutionContextHook = func(stage string) {
 		if stage == "current_execution_context_locked" {
 			close(locked)
 			<-release
 		}
 	}
-	t.Cleanup(func() { testHandler.WorkloadAssertionHook = nil })
+	t.Cleanup(func() { testHandler.CurrentExecutionContextHook = nil })
 
 	rr := httptest.NewRecorder()
 	contextDone := make(chan struct{})
@@ -321,7 +388,7 @@ func TestGetCurrentExecutionContextLinearizesBeforeTaskCompletion(t *testing.T) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("completion did not resume after context read")
 	}
-	testHandler.WorkloadAssertionHook = nil
+	testHandler.CurrentExecutionContextHook = nil
 
 	retry := httptest.NewRecorder()
 	retryReq := newCurrentExecutionContextRequest()
@@ -342,7 +409,7 @@ func TestGetCurrentExecutionContextRejectsTerminalRevokedAndCrossTaskAuthority(t
 		taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 		otherTaskID := createHandlerTestTaskForAgentOnIssue(t, otherAgentID, issueID)
 		req := newCurrentExecutionContextRequest()
-		authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+		authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 		req.Header.Set("X-Task-ID", otherTaskID)
 		req.Header.Set("X-Agent-ID", otherAgentID)
 		rr := httptest.NewRecorder()
@@ -355,7 +422,7 @@ func TestGetCurrentExecutionContextRejectsTerminalRevokedAndCrossTaskAuthority(t
 	t.Run("cross workspace", func(t *testing.T) {
 		taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 		req := newCurrentExecutionContextRequest()
-		authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+		authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 		req.Header.Set("X-Workspace-ID", uuid.NewString())
 		rr := httptest.NewRecorder()
 		testHandler.GetCurrentExecutionContext(rr, req)
@@ -368,7 +435,7 @@ func TestGetCurrentExecutionContextRejectsTerminalRevokedAndCrossTaskAuthority(t
 		t.Run("terminal "+status, func(t *testing.T) {
 			taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 			req := newCurrentExecutionContextRequest()
-			authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+			authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 			if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status=$2, completed_at=now() WHERE id=$1`, taskID, status); err != nil {
 				t.Fatal(err)
 			}
@@ -383,7 +450,7 @@ func TestGetCurrentExecutionContextRejectsTerminalRevokedAndCrossTaskAuthority(t
 	t.Run("revoked token", func(t *testing.T) {
 		taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
 		req := newCurrentExecutionContextRequest()
-		tokenHash := authorizeWorkloadAssertionTestTask(t, req, agentID, taskID)
+		tokenHash := authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 		if _, err := testPool.Exec(context.Background(), `DELETE FROM task_token WHERE token_hash=$1`, tokenHash); err != nil {
 			t.Fatal(err)
 		}
