@@ -14,11 +14,11 @@ WHERE tt.token_hash = $1
   AND atq.status = 'running'
   AND tt.execution_id IS NOT DISTINCT FROM atq.execution_id;
 
--- name: LockRunningTaskTokenForAssertion :one
--- Linearization point for assertion issuance versus task terminalization.
+-- name: LockRunningTaskTokenForExecutionContext :one
+-- Linearization point for execution-context reads versus task terminalization.
 -- Complete/fail/cancel updates the same agent_task_queue row and therefore
--- waits if assertion issuance locked it first; if terminalization commits first,
--- this query returns no row and no assertion is minted.
+-- waits if a context read locked it first; if terminalization commits first,
+-- this query returns no row and no context is emitted.
 SELECT tt.* FROM task_token tt
 JOIN agent_task_queue atq ON atq.id = tt.task_id
 WHERE tt.token_hash = sqlc.arg('token_hash')

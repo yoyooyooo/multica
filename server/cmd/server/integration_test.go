@@ -35,11 +35,9 @@ var (
 // the JWT_SECRET env var (set in .env) and stays in sync with the server.
 
 const (
-	integrationTestEmail                             = "integration-test@multica.ai"
-	integrationTestName                              = "Integration Tester"
-	integrationTestWorkspaceSlug                     = "integration-tests"
-	integrationTestWorkloadAssertionIssuer           = "urn:multica:deployment:cmd-server-integration-test"
-	integrationTestWorkloadAssertionIssuerInstanceID = "multica-cmd-server-integration-test"
+	integrationTestEmail         = "integration-test@multica.ai"
+	integrationTestName          = "Integration Tester"
+	integrationTestWorkspaceSlug = "integration-tests"
 )
 
 func TestMain(m *testing.M) {
@@ -47,17 +45,6 @@ func TestMain(m *testing.M) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		fmt.Println("DATABASE_URL is required for cmd/server integration tests")
-		os.Exit(1)
-	}
-
-	originalIssuer, issuerWasSet := os.LookupEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER")
-	originalIssuerInstanceID, issuerInstanceIDWasSet := os.LookupEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID")
-	if err := os.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER", integrationTestWorkloadAssertionIssuer); err != nil {
-		fmt.Printf("Failed to configure integration test workload assertion issuer: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", integrationTestWorkloadAssertionIssuerInstanceID); err != nil {
-		fmt.Printf("Failed to configure integration test workload assertion issuer instance ID: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -99,15 +86,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	if err := restoreIntegrationTestEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER", originalIssuer, issuerWasSet); err != nil {
-		fmt.Printf("Failed to restore integration test workload assertion issuer: %v\n", err)
-		code = 1
-	}
-	if err := restoreIntegrationTestEnv("MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID", originalIssuerInstanceID, issuerInstanceIDWasSet); err != nil {
-		fmt.Printf("Failed to restore integration test workload assertion issuer instance ID: %v\n", err)
-		code = 1
-	}
-
 	if err := cleanupIntegrationTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up integration test fixture: %v\n", err)
 		if code == 0 {
@@ -117,13 +95,6 @@ func TestMain(m *testing.M) {
 	testServer.Close()
 	pool.Close()
 	os.Exit(code)
-}
-
-func restoreIntegrationTestEnv(name, value string, wasSet bool) error {
-	if wasSet {
-		return os.Setenv(name, value)
-	}
-	return os.Unsetenv(name)
 }
 
 func setupIntegrationTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
@@ -268,9 +239,8 @@ func TestReadinessEndpoints(t *testing.T) {
 			var result struct {
 				Status string `json:"status"`
 				Checks struct {
-					DB                        string `json:"db"`
-					Migrations                string `json:"migrations"`
-					WorkloadAssertionIdentity string `json:"workload_assertion_identity"`
+					DB         string `json:"db"`
+					Migrations string `json:"migrations"`
 				} `json:"checks"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -284,9 +254,6 @@ func TestReadinessEndpoints(t *testing.T) {
 			}
 			if result.Checks.Migrations != "ok" {
 				t.Fatalf("expected migrations check ok, got %s", result.Checks.Migrations)
-			}
-			if result.Checks.WorkloadAssertionIdentity != "ok" {
-				t.Fatalf("expected workload assertion identity check ok, got %s", result.Checks.WorkloadAssertionIdentity)
 			}
 		})
 	}

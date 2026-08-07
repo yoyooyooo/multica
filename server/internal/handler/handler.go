@@ -261,17 +261,16 @@ type Handler struct {
 	// trigger is a no-op) when GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY are unset,
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
-	PRRefresh                *ghsnapshot.Manager
-	CompletionActivityWriter completionActivityWriter
-	ExternalPRActivityWriter externalPRActivityWriter
-	PullRequestFactHook      func(provider, stage string)
-	PullRequestFactErrorHook func(provider, stage string) error
-	TopologyFactHook         func(stage string)
-	WorkloadAssertionHook    func(stage string)
-	workloadAssertionNow     func() time.Time
-	workloadAssertionID      func() string
-	IssueDeleteHook          func(stage string)
-	cfg                      Config
+	PRRefresh                   *ghsnapshot.Manager
+	CompletionActivityWriter    completionActivityWriter
+	ExternalPRActivityWriter    externalPRActivityWriter
+	PullRequestFactHook         func(provider, stage string)
+	PullRequestFactErrorHook    func(provider, stage string) error
+	TopologyFactHook            func(stage string)
+	CurrentExecutionContextHook func(stage string)
+	ExternalPRLinkTokenHook     func(stage string)
+	IssueDeleteHook             func(stage string)
+	cfg                         Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

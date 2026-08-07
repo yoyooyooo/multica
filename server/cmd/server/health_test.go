@@ -44,27 +44,6 @@ func (r stubRow) Scan(dest ...any) error {
 	return nil
 }
 
-func TestServerHealthReadyHandlerWorkloadAssertionIdentityFailure(t *testing.T) {
-	h := &serverHealth{
-		workloadAssertionConfigErr: errors.New("invalid workload assertion identity"),
-		cacheTTL:                   time.Minute,
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	h.readyHandler(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-	var resp readinessResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Checks.WorkloadAssertionIdentity != "error" || resp.Checks.DB != "unknown" || resp.Checks.Migrations != "unknown" {
-		t.Fatalf("readiness checks = %#v", resp.Checks)
-	}
-}
-
 func TestServerHealthReadyHandlerDBPingFailure(t *testing.T) {
 	db := &stubReadinessDB{pingErr: errors.New("db unavailable")}
 	h := &serverHealth{

@@ -36,54 +36,28 @@ list endpoint returns that state. Current-head snapshot availability is decided
 by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 `aggregateChecksConclusion`.
 
-## AGS workload assertion bridge
+## Current execution context and retired AGS bridge
 
 | Behavior | Source authority |
 |---|---|
 | Provider-neutral task-token current execution context | `server/internal/handler/current_execution_context.go` (`GetCurrentExecutionContext`, `assembleCurrentExecutionContext`) |
-| Shared running task/token and server-fact resolver | `server/internal/handler/workload_assertion.go` (`lockRunningTaskTokenForAssertion`, `resolveTaskWorkload`) |
-| Strict request, purpose/audience/TTL signing | same file (`CreateWorkloadAssertion`, `normalizeRequestedTTL`) |
-| Team-v4 operation constraints | same file (`normalizeRequestedOperation`, `normalizePRCreateConstraints`, `normalizePRReadConstraints`, `normalizePRRebaseConstraints`, `normalizePRMergeConstraints`, `normalizeReviewReadConstraints`, `normalizeCIReadConstraints`) |
-| Server-derived one-shot `pr.merge` delegation, approval and AGS effect-time APIs | `server/internal/handler/workload_pr_merge_delegation.go` (`ensureApprovedPRMergeDelegationForAssertion`, `ApprovePRMergeDelegation`, `RevokePRMergeDelegation`, `IntrospectPRMergeDelegation`, `ConsumePRMergeDelegation`, `RecordPRMergeDelegationEffect`) |
-| Durable delegation/events and interrupted-index reconciliation | `server/migrations/244_workload_pr_merge_delegation.up.sql`–`250_workload_pr_merge_delegation_event_history_index.up.sql`, `server/pkg/db/queries/workload_pr_merge_delegation.sql`, `server/cmd/migrate/main.go` |
-| JWT issuer vs AGS issuer ID separation | `server/internal/handler/workload_assertion.go` (`ValidateWorkloadAssertionConfiguration`, `enrichSessionExchangeWorkload`) |
-| Startup and readiness fail closed | `server/cmd/server/main.go` (`main`), `server/cmd/server/health.go` (`newServerHealth`, `computeReadiness`) |
-| Eight default-class signed operations plus separately gated ninth `pr.merge` shape | `server/internal/handler/workload_assertion_test.go` (`TestCreateWorkloadAssertionSessionExchangeSignsAgentKitProductionConstraintFixtures`, `TestNormalizeSessionExchangeScopeMatchesDefaultTeamV4AgentKitOperations`, `TestPRMergeDelegationV2PendingApproveConsumeLifecycle`) |
-| AgentKit Forgejo list/runs/log shapes and negative matrix | same file (`TestNormalizeAgentKitForgejoCommandConstraintFixtures`, `TestNormalizeRequestedOperationDefaultTeamV4NegativeMatrix`) |
-| Deferred-operation signer rejection | same file (`TestCreateWorkloadAssertionSessionExchangeRejectsDeferredOperationsBeforeSigning`) |
+| External PR link token | `server/internal/handler/external_pr_link_token.go` (`CreateExternalPRLinkToken`) |
+| Canonical Run propagation into Agent env | `server/internal/handler/agent.go` (`AgentTaskResponse.ExecutionID`, `taskToResponse`), `server/internal/daemon/types.go` (`Task.ExecutionID`), `server/internal/daemon/daemon.go` (`taskCanonicalRunID`, `MULTICA_RUN_ID`) |
+| Route wiring and retired-route `404` contract | `server/cmd/server/router.go`, `server/cmd/server/external_pr_routes_integration_test.go` |
+| Historical assertion-authority / merge-delegation rows and cleanup | migrations plus deletion-only queries under `server/pkg/db/queries/workspace.sql` and `workload_pr_merge_delegation.sql`; no generated read/create/approve/consume API remains |
 
-`GET /api/integrations/current-execution-context` has no request selectors and returns schema `multica.current-execution-context.v1`: bounded workspace、Agent、Task/Run、optional Issue/Squad/Runtime/Trigger and attribution facts from the authenticated running task. It never emits assertion、authority、Policy Class、operation、capability、Session or credential fields. Missing optional Runtime/Squad rows are unresolved refs rather than an authorization failure；terminal/revoked/cross-task authority is rejected by the same locked running-token kernel used by assertion issuance.
+`GET /api/integrations/current-execution-context` has no request selectors and
+returns schema `multica.current-execution-context.v1`: bounded Workspace, Agent,
+Task/Run, optional Issue/Squad/Runtime/Trigger, and attribution facts from the
+authenticated running task. It never emits assertions, Policy Classes,
+operations, capabilities, Sessions, Grants, or credentials. Terminal, revoked,
+or cross-task authority is rejected by the locked running-token check. Claim always projects a canonical `execution_id` (falling back to Task ID only when no separate execution exists), and the daemon fails closed unless it can inject that value as `MULTICA_RUN_ID` beside `MULTICA_TASK_ID`.
 
-`MULTICA_WORKLOAD_ASSERTION_ISSUER` owns JWT `iss` only. The distinct required
-secret-free `MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID` must exactly match
-AGS `trusted_issuers[].id` and is signed only as
-`workload.workload_context.issuer_instance_id`. Optional canonical
-`requested_ttl` is copied to the JWT top level only for AGS session exchange,
-is limited to `15m`, and remains absent when omitted.
-
-The fixed default team-v4 operations are `repo.read`, `git.read`, `git.push`,
-`pr.create`, `pr.read`, `pr.rebase`, `review.read`, and `ci.read`. Exact
-`pr.merge` is the ninth implemented operation, but exact request shape alone
-does not select authority. It switches the signed authority to
-`multica.workspace.maintainer.v1` and requires `repo:read + repo:write` only
-after the signer finds an approved, server-derived delegation for the exact
-workspace, Task/execution, immutable repository/provider binding, both PRs,
-head/base and method. Human approval takes only an Issue/delegation locator;
-AGS must introspect and atomically consume the one-shot authority immediately
-before provider effect. It is never added to the default class. Their constraints are
-operation-specific: the repository/Git operations are exact
-empty; PR create has both required canonical branch refs; PR read has one exact
-number-or-head variant; rebase retains its exact four-key intent; review read
-has both positive safe-integer PR numbers; and CI read accepts exactly a
-repository-wide empty shape, a positive safe-integer `run_id`, or those two PR
-numbers with optional lowercase-40 `head_sha`. The Forgejo fixtures pin actual
-PR-list, runs, and log command shapes: state-only PR list, event-only, SHA-only,
-mixed, and unknown variants fail before signing. Unknown/mixed/legacy
-`exact_head`, wrong/null/secret-shaped values also fail. `pr.merge` requires
-exactly the AGS/Forgejo PR numbers, lowercase full expected head SHA, and a
-registered merge method. Missing/extra/wrong-type constraints are rejected before signing. Missing or mismatched canonical projection facts return 403 and no assertion; absent, revoked, expired, or superseded authority requires a fresh pending approval and returns typed 409 without signing. The assertion expiry is capped by the delegation expiry. Deferred
-`review.submit`, `repo.admin`, and `repo.create` are rejected even with exact
-empty constraints.
+Multica no longer issues AGS workload assertions or `pr.merge` delegations. The
+former assertion, human delegation, AGS introspection/consume/effect, and CLI
+`issue merge` routes are absent and must return `404`. AGS repository authority
+comes only from AGS canonical Access Grants and live native repository grants;
+Multica current-context facts are not authorization.
 
 ## Two distinct webhook paths: link vs close-intent
 
@@ -190,11 +164,13 @@ grep -n 'ListPullRequestsForIssue' cmd/server/router.go internal/handler/github.
 grep -n 'func issuePullRequestRowToResponse\|type GitHubPullRequestResponse struct\|func derivePRState\|func extractIdentifiers\|func extractClosingIdentifiers\|closingIdentifierRe' internal/handler/github.go
 grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/github.go pkg/db/queries/github.sql
 grep -n 'evaluatePullRequestCompletion\|CompleteIssueFromPullRequest\|LockIssueCompletionTransition\|LockWorkspaceIssueTopology' internal/handler/{pull_request_completion.go,external_pr_integration.go,github.go,vcs_webhook.go,issue.go} internal/service/issue.go pkg/db/queries/{pull_request_completion.sql,issue.sql}
-grep -n 'GetCurrentExecutionContext\|assembleCurrentExecutionContext\|lockRunningTaskTokenForAssertion\|resolveTaskWorkload' internal/handler/{current_execution_context.go,current_execution_context_test.go,workload_assertion.go}
-grep -n 'normalizeRequestedOperation\|normalizePRCreateConstraints\|normalizePRReadConstraints\|normalizePRRebaseConstraints\|normalizePRMergeConstraints\|normalizeReviewReadConstraints\|normalizeCIReadConstraints' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go
-grep -n 'CreatePRMergeDelegation\|GetPRMergeDelegation\|RevokePRMergeDelegation\|lockActivePRMergeDelegationForAssertion' internal/handler/workload_pr_merge_delegation.go internal/handler/workload_pr_merge_delegation_test.go cmd/server/{router.go,workload_pr_merge_delegation_routes_integration_test.go}
-grep -n 'authority_revision\|granted_by_user_id\|expires_at\|revoked_at' migrations/244_workload_pr_merge_delegation.up.sql pkg/db/queries/workload_pr_merge_delegation.sql
-grep -n 'ValidateWorkloadAssertionConfiguration\|normalizeRequestedTTL\|issuer_instance_id\|requested_ttl' internal/handler/workload_assertion.go internal/handler/workload_assertion_test.go cmd/server/{main.go,health.go}
+grep -n 'GetCurrentExecutionContext\|assembleCurrentExecutionContext\|lockRunningTaskTokenForExecutionContext\|resolveCurrentExecutionWorkload' internal/handler/{current_execution_context.go,current_execution_context_test.go}
+grep -n 'CreateExternalPRLinkToken\|resolvedCurrentExecutionWorkload' internal/handler/{external_pr_link_token.go,external_pr_link_token_test.go,current_execution_context.go}
+grep -n 'workload-assertions\|workload-delegations/pr-merge' cmd/server/external_pr_routes_integration_test.go
+grep -n 'DeleteWorkspacePRMergeDelegationEvents\|DeleteWorkspacePRMergeDelegations' pkg/db/queries/workload_pr_merge_delegation.sql pkg/db/generated/workload_pr_merge_delegation.sql.go
+grep -n 'DeleteWorkspaceWorkloadAuthority' pkg/db/queries/workspace.sql pkg/db/generated/workspace.sql.go
+! test -e pkg/db/queries/workload_authority.sql && ! test -e pkg/db/generated/workload_authority.sql.go
+grep -n 'db\|migrations' cmd/server/{health.go,health_test.go}
 grep -n 'func (h \*Handler) notifyParentOfChildDone\|func stageBarrierClosed\|func stageProgressSummary' internal/handler/issue_child_done.go
 grep -n 'func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go
 ```

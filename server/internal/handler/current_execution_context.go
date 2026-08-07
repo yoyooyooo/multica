@@ -3,7 +3,9 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -98,8 +100,8 @@ type currentExecutionTrigger struct {
 // GetCurrentExecutionContext returns a task-token-bound, provider-neutral
 // snapshot of the currently running execution. It does not mint credentials,
 // choose a policy class, normalize an operation, or authorize an external
-// effect. The running task/token lock is shared with assertion issuance so a
-// terminal or revoked task cannot keep reading this port.
+// effect. The running task/token lock ensures a terminal or revoked task cannot
+// keep reading this port or mint a separate external-PR correlation token.
 func (h *Handler) GetCurrentExecutionContext(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Header.Get("X-Actor-Source") != "task_token" {
@@ -113,17 +115,17 @@ func (h *Handler) GetCurrentExecutionContext(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(r.Context())
 	queries := h.Queries.WithTx(tx)
-	if !lockRunningTaskTokenForAssertion(w, r, queries) {
+	if !lockRunningTaskTokenForExecutionContext(w, r, queries) {
 		return
 	}
-	if h.WorkloadAssertionHook != nil {
-		h.WorkloadAssertionHook("current_execution_context_locked")
+	if h.CurrentExecutionContextHook != nil {
+		h.CurrentExecutionContextHook("current_execution_context_locked")
 	}
-	resolved, ok := h.resolveTaskWorkload(w, r, queries, false)
+	resolved, ok := h.resolveCurrentExecutionWorkload(w, r, queries)
 	if !ok {
 		return
 	}
-	response, err := assembleCurrentExecutionContext(r.Context(), queries, resolved, h.currentWorkloadAssertionTime())
+	response, err := assembleCurrentExecutionContext(r.Context(), queries, resolved, time.Now().UTC())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read current execution context")
 		return
@@ -135,7 +137,87 @@ func (h *Handler) GetCurrentExecutionContext(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, response)
 }
 
-func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, resolved resolvedTaskWorkload, observedAt time.Time) (currentExecutionContextResponse, error) {
+type resolvedCurrentExecutionWorkload struct {
+	Task        db.AgentTaskQueue
+	Workspace   db.Workspace
+	Agent       db.Agent
+	Issue       *db.Issue
+	WorkspaceID pgtype.UUID
+	RunID       string
+	IssueKey    string
+}
+
+func lockRunningTaskTokenForExecutionContext(w http.ResponseWriter, r *http.Request, queries *db.Queries) bool {
+	taskID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Task-ID"), "task id")
+	if !ok {
+		return false
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Workspace-ID"), "workspace id")
+	if !ok {
+		return false
+	}
+	tokenHash := strings.TrimSpace(r.Header.Get("X-Task-Token-Hash"))
+	if tokenHash == "" {
+		writeError(w, http.StatusUnauthorized, "task token is no longer executable")
+		return false
+	}
+	if _, err := queries.LockRunningTaskTokenForExecutionContext(r.Context(), db.LockRunningTaskTokenForExecutionContextParams{
+		TokenHash: tokenHash, TaskID: taskID, WorkspaceID: workspaceID,
+	}); err != nil {
+		writeError(w, http.StatusUnauthorized, "task token is no longer executable")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) resolveCurrentExecutionWorkload(w http.ResponseWriter, r *http.Request, queries *db.Queries) (resolvedCurrentExecutionWorkload, bool) {
+	taskID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Task-ID"), "task id")
+	if !ok {
+		return resolvedCurrentExecutionWorkload{}, false
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, r.Header.Get("X-Workspace-ID"), "workspace id")
+	if !ok {
+		return resolvedCurrentExecutionWorkload{}, false
+	}
+	task, err := queries.GetAgentTaskInWorkspace(r.Context(), db.GetAgentTaskInWorkspaceParams{ID: taskID, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return resolvedCurrentExecutionWorkload{}, false
+	}
+	workspace, err := queries.GetWorkspace(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return resolvedCurrentExecutionWorkload{}, false
+	}
+	agent, err := queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: task.AgentID, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return resolvedCurrentExecutionWorkload{}, false
+	}
+	resolved := resolvedCurrentExecutionWorkload{
+		Task: task, Workspace: workspace, Agent: agent, WorkspaceID: workspaceID,
+		RunID: uuidToString(task.ID),
+	}
+	if task.ExecutionID.Valid {
+		resolved.RunID = uuidToString(task.ExecutionID)
+	}
+	if task.IssueID.Valid {
+		issue, err := queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: task.IssueID, WorkspaceID: workspaceID})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "issue not found")
+			return resolvedCurrentExecutionWorkload{}, false
+		}
+		resolved.Issue = &issue
+		issuePrefix := workspace.IssuePrefix
+		if issuePrefix == "" {
+			issuePrefix = generateIssuePrefix(workspace.Name)
+		}
+		resolved.IssueKey = fmt.Sprintf("%s-%d", issuePrefix, issue.Number)
+	}
+	return resolved, true
+}
+
+func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, resolved resolvedCurrentExecutionWorkload, observedAt time.Time) (currentExecutionContextResponse, error) {
 	task := resolved.Task
 	response := currentExecutionContextResponse{
 		Schema:     currentExecutionContextSchema,
@@ -153,7 +235,7 @@ func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, r
 			ParentTaskID: uuidToString(task.ParentTaskID),
 		},
 		Run: currentExecutionRun{
-			ID: resolved.Workload.RunID, TaskID: uuidToString(task.ID), Status: task.Status,
+			ID: resolved.RunID, TaskID: uuidToString(task.ID), Status: task.Status,
 			Attempt: task.Attempt, MaxAttempts: task.MaxAttempts,
 			CreatedAt: timestampString(task.CreatedAt), DispatchedAt: timestampString(task.DispatchedAt),
 			StartedAt: timestampString(task.StartedAt), CompletedAt: timestampString(task.CompletedAt),
@@ -163,7 +245,7 @@ func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, r
 
 	if resolved.Issue != nil {
 		response.Issue = &currentExecutionIssue{
-			ID: uuidToString(resolved.Issue.ID), Key: resolved.Workload.IssueKey,
+			ID: uuidToString(resolved.Issue.ID), Key: resolved.IssueKey,
 			Title: resolved.Issue.Title, Status: resolved.Issue.Status,
 			CreatedAt: timestampString(resolved.Issue.CreatedAt), UpdatedAt: timestampString(resolved.Issue.UpdatedAt),
 		}

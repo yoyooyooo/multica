@@ -99,7 +99,7 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 	return i, err
 }
 
-const lockRunningTaskTokenForAssertion = `-- name: LockRunningTaskTokenForAssertion :one
+const lockRunningTaskTokenForExecutionContext = `-- name: LockRunningTaskTokenForExecutionContext :one
 SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at, tt.execution_id FROM task_token tt
 JOIN agent_task_queue atq ON atq.id = tt.task_id
 WHERE tt.token_hash = $1
@@ -111,18 +111,18 @@ WHERE tt.token_hash = $1
 FOR UPDATE OF tt, atq
 `
 
-type LockRunningTaskTokenForAssertionParams struct {
+type LockRunningTaskTokenForExecutionContextParams struct {
 	TokenHash   string      `json:"token_hash"`
 	TaskID      pgtype.UUID `json:"task_id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// Linearization point for assertion issuance versus task terminalization.
+// Linearization point for execution-context reads versus task terminalization.
 // Complete/fail/cancel updates the same agent_task_queue row and therefore
-// waits if assertion issuance locked it first; if terminalization commits first,
-// this query returns no row and no assertion is minted.
-func (q *Queries) LockRunningTaskTokenForAssertion(ctx context.Context, arg LockRunningTaskTokenForAssertionParams) (TaskToken, error) {
-	row := q.db.QueryRow(ctx, lockRunningTaskTokenForAssertion, arg.TokenHash, arg.TaskID, arg.WorkspaceID)
+// waits if a context read locked it first; if terminalization commits first,
+// this query returns no row and no context is emitted.
+func (q *Queries) LockRunningTaskTokenForExecutionContext(ctx context.Context, arg LockRunningTaskTokenForExecutionContextParams) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, lockRunningTaskTokenForExecutionContext, arg.TokenHash, arg.TaskID, arg.WorkspaceID)
 	var i TaskToken
 	err := row.Scan(
 		&i.ID,

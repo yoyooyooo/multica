@@ -76,7 +76,7 @@ makehelp: help ## Alias for `make help`
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
 
-selfhost-env: ## Create or upgrade .env with secrets and a deployment-unique issuer
+selfhost-env: ## Create or upgrade .env with generated self-host secrets
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
 		cp .env.example .env; \
@@ -96,8 +96,6 @@ selfhost-env: ## Create or upgrade .env with secrets and a deployment-unique iss
 		fi; \
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
-	@bash scripts/ensure-workload-issuer.sh .env deployment
-	@bash scripts/validate-workload-issuer.sh .env
 
 selfhost-migrate-uploads: selfhost-env ## Copy any legacy named-volume uploads into the bind-owned path
 	$(REQUIRE_COMPOSE)

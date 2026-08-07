@@ -30,19 +30,8 @@ else
   if [ ! -f "$ENV_FILE" ]; then
     echo "==> Creating $ENV_FILE from .env.example..."
     cp .env.example "$ENV_FILE"
-    issuer_id="$(printf '%s' "$PWD:$(date +%s):$$" | cksum | awk '{print $1}')"
-    if [ "$(uname -s)" = "Darwin" ]; then
-      sed -i '' "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:development:${issuer_id}#" "$ENV_FILE"
-    else
-      sed -i "s#^MULTICA_WORKLOAD_ASSERTION_ISSUER=.*#MULTICA_WORKLOAD_ASSERTION_ISSUER=urn:multica:development:${issuer_id}#" "$ENV_FILE"
-    fi
   fi
 fi
-
-# Upgrade missing, blank (including whitespace-only), and legacy placeholder
-# MULTICA_WORKLOAD_ASSERTION_ISSUER / MULTICA_WORKLOAD_ASSERTION_ISSUER_INSTANCE_ID
-# values exactly once. Accepted values are never rotated.
-bash scripts/ensure-workload-issuer.sh "$ENV_FILE" development
 
 echo "==> Using $ENV_FILE"
 if [ "${MULTICA_ENV_ONLY:-0}" = "1" ]; then

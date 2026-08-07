@@ -319,6 +319,7 @@ func writeLeaderManagedEnvProvenance(t *testing.T, workDir, workspaceID, issueID
 func leaderReuseTestTask(id string) Task {
 	return Task{
 		ID:           id,
+		ExecutionID:  id,
 		WorkspaceID:  "ws-leader",
 		RuntimeID:    "rt-leader",
 		IssueID:      "issue-leader",
