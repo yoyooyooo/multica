@@ -145,7 +145,17 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := validateIssueMetadataValue(req.Value); err != nil {
+	if key == "external_pr_completion_policy" {
+		// This policy is a fail-closed boundary: legacy/imported callers may
+		// submit any valid JSON value, and the shared parser treats every
+		// non-string value as unsupported. Keeping the write on the supported
+		// metadata endpoint lets acceptance exercise null/object/array without
+		// bypassing the API or weakening ordinary flat-KV metadata.
+		if len(req.Value) == 0 || !json.Valid(req.Value) {
+			writeError(w, http.StatusBadRequest, "value must be valid JSON")
+			return
+		}
+	} else if err := validateIssueMetadataValue(req.Value); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

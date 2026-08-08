@@ -115,6 +115,33 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 	return err
 }
 
+const getGitHubInstallationBinding = `-- name: GetGitHubInstallationBinding :one
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
+WHERE workspace_id = $1 AND installation_id = $2
+`
+
+type GetGitHubInstallationBindingParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	InstallationID int64       `json:"installation_id"`
+}
+
+func (q *Queries) GetGitHubInstallationBinding(ctx context.Context, arg GetGitHubInstallationBindingParams) (GithubInstallation, error) {
+	row := q.db.QueryRow(ctx, getGitHubInstallationBinding, arg.WorkspaceID, arg.InstallationID)
+	var i GithubInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstallationID,
+		&i.AccountLogin,
+		&i.AccountType,
+		&i.AccountAvatarUrl,
+		&i.ConnectedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getGitHubInstallationByID = `-- name: GetGitHubInstallationByID :one
 SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
 WHERE id = $1
@@ -678,26 +705,27 @@ INSERT INTO github_pull_request (
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
-    installation_id = EXCLUDED.installation_id,
-    title = EXCLUDED.title,
-    state = EXCLUDED.state,
-    html_url = EXCLUDED.html_url,
-    branch = EXCLUDED.branch,
-    author_login = EXCLUDED.author_login,
-    author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = EXCLUDED.merged_at,
-    closed_at = EXCLUDED.closed_at,
-    pr_updated_at = EXCLUDED.pr_updated_at,
-    head_sha = EXCLUDED.head_sha,
+    installation_id = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.installation_id ELSE github_pull_request.installation_id END,
+    title = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.title ELSE github_pull_request.title END,
+    state = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.state ELSE github_pull_request.state END,
+    html_url = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.html_url ELSE github_pull_request.html_url END,
+    branch = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.branch ELSE github_pull_request.branch END,
+    author_login = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_login ELSE github_pull_request.author_login END,
+    author_avatar_url = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_avatar_url ELSE github_pull_request.author_avatar_url END,
+    merged_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.merged_at ELSE github_pull_request.merged_at END,
+    closed_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.closed_at ELSE github_pull_request.closed_at END,
+    pr_updated_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.pr_updated_at ELSE github_pull_request.pr_updated_at END,
+    head_sha = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.head_sha ELSE github_pull_request.head_sha END,
     mergeable_state = CASE
+        WHEN NOT (EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged')) THEN github_pull_request.mergeable_state
         WHEN COALESCE($21::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
-    additions     = EXCLUDED.additions,
-    deletions     = EXCLUDED.deletions,
-    changed_files = EXCLUDED.changed_files,
-    updated_at = now()
+    additions = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.additions ELSE github_pull_request.additions END,
+    deletions = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.deletions ELSE github_pull_request.deletions END,
+    changed_files = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.changed_files ELSE github_pull_request.changed_files END,
+    updated_at = CASE WHEN EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at AND (github_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN now() ELSE github_pull_request.updated_at END
 RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at
 `
 

@@ -30,6 +30,7 @@ import {
   applyWorkspaceUpdatedToCache,
   handleInboxNew,
   invalidateChatMessageQueries,
+  invalidatePullRequestProjections,
   refetchPendingChatAggregate,
   resolveInboxSourceSlug,
 } from "./use-realtime-sync";
@@ -299,6 +300,19 @@ describe("applyChatSessionUpdatedToCache", () => {
     expect(row.status).toBe("active");
     expect(row.unread_count).toBe(2);
     expect(row.has_unread).toBe(true);
+  });
+});
+
+describe("invalidatePullRequestProjections", () => {
+  it("invalidates native and External PR projections from one provider event", () => {
+    const qc = createQueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    invalidatePullRequestProjections(qc, "issue-1");
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["github", "pull-requests"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["external-prs"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: issueKeys.timeline("issue-1") });
   });
 });
 

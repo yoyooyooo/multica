@@ -159,6 +159,13 @@ cleared_issue_properties AS (
 cleared_quick_actions AS (
     DELETE FROM quick_action WHERE workspace_id = $1
 ),
+cleared_external_pr_receipts AS (
+    DELETE FROM external_pull_request_receipt WHERE workspace_id = $1
+),
+cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link WHERE workspace_id = $1
+
+),
 deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),
@@ -200,3 +207,9 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
+
+-- name: DeleteWorkspaceWorkloadAuthority :exec
+-- Historical workload-authority rows intentionally have no FK. This cleanup
+-- remains only so workspace deletion removes retired data in the same
+-- application transaction; no live path creates or reads these rows.
+DELETE FROM workspace_workload_authority WHERE workspace_id = $1;

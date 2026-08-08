@@ -133,6 +133,14 @@ func taskScopedAuthToken(task Task) (string, error) {
 	return token, nil
 }
 
+func taskCanonicalRunID(task Task) (string, error) {
+	runID := strings.TrimSpace(task.ExecutionID)
+	if runID == "" {
+		return "", errors.New("server did not provide canonical task execution id")
+	}
+	return runID, nil
+}
+
 // taskRunner executes a single agent task and returns the result.
 // Extracted as an interface so tests can inject a fake without spawning real
 // agent processes, while keeping test scaffolding out of the production struct.
@@ -5990,6 +5998,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskLog.Error("task auth token invalid; refusing to start agent", "error", err)
 		return TaskResult{}, err
 	}
+	runID, err := taskCanonicalRunID(task)
+	if err != nil {
+		taskLog.Error("task execution id invalid; refusing to start agent", "error", err)
+		return TaskResult{}, err
+	}
 	agentEnv := map[string]string{
 		"MULTICA_TOKEN":        agentToken,
 		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
@@ -5998,6 +6011,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"MULTICA_AGENT_NAME":   agentName,
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
+		"MULTICA_RUN_ID":       runID,
 		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
 		"TMPDIR":               taskTempDir,
 		"TMP":                  taskTempDir,

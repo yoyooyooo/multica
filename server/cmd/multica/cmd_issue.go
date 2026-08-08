@@ -188,6 +188,13 @@ var issuePullRequestsCmd = &cobra.Command{
 	RunE:    runIssuePullRequests,
 }
 
+var issueExternalPRsCmd = &cobra.Command{
+	Use:   "external-prs <id>",
+	Short: "List provider-neutral external PRs linked to an issue",
+	Args:  exactArgs(1),
+	RunE:  runIssueExternalPRs,
+}
+
 var issueChildrenCmd = &cobra.Command{
 	Use:     "children <id>",
 	Aliases: []string{"subissues"},
@@ -336,7 +343,7 @@ var issueUsageCmd = &cobra.Command{
 
 var issueRerunCmd = &cobra.Command{
 	Use:   "rerun <id>",
-	Short: "Re-enqueue an issue's current agent assignment as a fresh task",
+	Short: "Re-enqueue an issue agent task",
 	Args:  exactArgs(1),
 	RunE:  runIssueRerun,
 }
@@ -419,6 +426,7 @@ func init() {
 	issueCmd.AddCommand(issueListCmd)
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
+	issueCmd.AddCommand(issueExternalPRsCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
@@ -463,6 +471,9 @@ func init() {
 
 	// issue pull-requests
 	issuePullRequestsCmd.Flags().String("output", "table", "Output format: table or json")
+
+	// issue external-prs
+	issueExternalPRsCmd.Flags().String("output", "table", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
@@ -539,6 +550,7 @@ func init() {
 
 	// issue rerun
 	issueRerunCmd.Flags().String("output", "json", "Output format: table or json")
+	issueRerunCmd.Flags().String("task-id", "", "Historical task UUID to rerun (defaults to the issue's current agent assignment)")
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
@@ -767,6 +779,35 @@ func runIssuePullRequests(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runIssueExternalPRs(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	var result map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/external-prs", &result); err != nil {
+		return fmt.Errorf("list issue external PRs: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+
+	prs, _ := result["external_pull_requests"].([]any)
+	printIssueExternalPRsTable(normalizePullRequestList(prs))
+	return nil
+}
+
 func normalizePullRequestList(raw []any) []map[string]any {
 	prs := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
@@ -798,6 +839,23 @@ func pullRequestURL(pr map[string]any) string {
 		return url
 	}
 	return strVal(pr, "html_url")
+}
+
+func printIssueExternalPRsTable(prs []map[string]any) {
+	headers := []string{"PROVIDER", "REPO", "NUMBER", "STATE", "CONFIDENCE", "MERGED_SHA", "URL"}
+	rows := make([][]string, 0, len(prs))
+	for _, pr := range prs {
+		rows = append(rows, []string{
+			strVal(pr, "provider"),
+			strVal(pr, "external_repo"),
+			strVal(pr, "external_number"),
+			strVal(pr, "state"),
+			strVal(pr, "link_confidence"),
+			strVal(pr, "merged_sha"),
+			strVal(pr, "external_url"),
+		})
+	}
+	cli.PrintTable(os.Stdout, headers, rows)
 }
 
 func runIssueGet(cmd *cobra.Command, args []string) error {
@@ -2226,6 +2284,16 @@ func runIssueRunMessages(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 
 func runIssueRerun(cmd *cobra.Command, args []string) error {
+	body := map[string]any{}
+	if cmd.Flags().Changed("task-id") {
+		taskID, _ := cmd.Flags().GetString("task-id")
+		taskID = strings.TrimSpace(taskID)
+		if !uuidRegexp.MatchString(taskID) {
+			return errors.New("--task-id must be a canonical UUID")
+		}
+		body["task_id"] = taskID
+	}
+
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -2240,7 +2308,7 @@ func runIssueRerun(cmd *cobra.Command, args []string) error {
 	}
 
 	var task map[string]any
-	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", map[string]any{}, &task); err != nil {
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/rerun", body, &task); err != nil {
 		return fmt.Errorf("rerun issue: %w", err)
 	}
 

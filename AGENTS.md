@@ -44,6 +44,14 @@ Go backend + monorepo frontend (pnpm workspaces + Turborepo) with shared package
 - Never add database foreign keys or cascading actions. Enforce relationships and perform dependent cleanup explicitly in the application layer, using transactions when the operation must be atomic.
 - Every index created by a migration, including unique indexes and indexes on new tables, must use `CREATE [UNIQUE] INDEX CONCURRENTLY`. Keep each concurrent index build in its own single-statement migration file.
 
+### Fork Development (critical)
+
+- `main` mirrors `upstream/main`; fork-only PRs target the active `fork/v<official-release>` generation.
+- Create each generation from the exact official release tag and inventory all prior/donor deltas at commit/file granularity.
+- Integration is fast-forward only; no merge commits, force updates, or movable `fork/latest`.
+- Build/deployment evidence uses exact source, clean parser-compatible version, immutable tag, image digests, runtime readback, and rollback evidence.
+- Read [Fork Development Standard](docs/standards/fork-development.md) before creating, merging, building, or deploying fork work.
+
 ### Commands
 
 ```bash

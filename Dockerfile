@@ -1,6 +1,9 @@
 # --- Build stage ---
 FROM golang:1.26-alpine AS builder
 
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
 RUN apk add --no-cache git
 
 WORKDIR /src

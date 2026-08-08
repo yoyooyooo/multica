@@ -37,14 +37,16 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// X-Actor-Source is server-set only — any value supplied by
-			// the client is untrusted and discarded before the auth
-			// branches run. Only the mat_ branch below re-sets it. This
+			// X-Actor-Source and X-Task-Token-Hash are server-set only — any
+			// values supplied by the client are untrusted and discarded before
+			// the auth branches run. Only the mat_ branch below re-sets them. This
 			// is what prevents a client from sending a normal mul_ PAT
 			// plus a forged `X-Actor-Source: member` (or anything else)
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Task-Token-Hash")
+			r.Header.Del("X-Run-ID")
 
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
@@ -86,6 +88,10 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
+				r.Header.Set("X-Task-Token-Hash", hash)
+				if tt.ExecutionID.Valid {
+					r.Header.Set("X-Run-ID", uuidToString(tt.ExecutionID))
+				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table. The value "task_token" is the only signal

@@ -1,6 +1,6 @@
 ---
 title: Self-hosted Git providers
-description: Connect a self-hosted Forgejo, Gitea, or GitLab instance per workspace so pull/merge requests that reference an issue identifier auto-attach to that issue, move it to Done on merge, and show CI status.
+description: Connect Forgejo, Gitea, or GitLab to mirror issue-linked pull requests and complete only eligible leaf child issues after all provider links leave open/draft.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -14,7 +14,7 @@ and set `MULTICA_VCS_SECRET_KEY`; until then the section does not appear in
 Settings → Integrations.
 </Callout>
 
-Multica connects to a self-hosted Git provider per workspace: **Forgejo**, **Gitea**, or **GitLab**. Once connected, any pull request (GitLab: merge request) whose branch name, title, or body contains an issue identifier (for example `MUL-123`) is **auto-linked** to that [issue](/issues), appears under **Pull requests** in the issue sidebar, and — when merged with a closing keyword — moves the issue to **Done**. CI for the head commit shows as a checks bar on the card.
+Multica connects to a self-hosted Git provider per workspace: **Forgejo**, **Gitea**, or **GitLab**. Once connected, a pull request (GitLab: merge request) whose branch or title references an issue identifier is authoritatively linked; an adjacent closing keyword in the body also grants authority, while a body-only bare identifier is only an inferred audit reference. A merge with close intent can move only an eligible **leaf child** issue to **Done**, and only after no authoritative GitHub, native VCS, or external-provider link remains `open` or `draft`. CI for the head commit shows as a checks bar on the card.
 
 These providers run alongside GitHub: a workspace can use any combination.
 
@@ -81,7 +81,7 @@ Multica authenticates every delivery against the stored secret, so a webhook wit
 ## What gets mirrored
 
 - **Pull / merge requests** — open, closed, merged, and draft state, author, branch, and (where the provider supplies them) diff stats.
-- **Issue links** — identifiers in the title, body, or branch link the PR to the issue. A closing keyword (`Closes`/`Fixes`/`Resolves MUL-123`) on a merged PR moves the issue to **Done** once no linked PR is still open.
+- **Issue links** — branch/title matches and body references beside `Closes` / `Fixes` / `Resolves` are authoritative. Body-only bare identifiers are inferred audit references and do not block completion. A merged authoritative PR can complete only a non-terminal leaf child with no child issues and no authoritative `open`/`draft` link across GitHub, native VCS, or external providers. The policy must be absent, exact empty, or exact `leaf_child_only`; exact `record_only` mirrors facts without changing issue status or the parent Stage, and every other value fails closed.
 - **CI** — Forgejo/Gitea commit statuses and GitLab pipelines aggregate into a passed/failed/pending checks bar for the head commit.
 
 ## Agents opening pull requests

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY workload_pr_merge_delegation_current_execution_uidx;

@@ -47,8 +47,21 @@ Fix login MUL-2759                                 # links only — keyword not 
 
 Consequence: a bare title prefix or a branch reference links the PR but does not
 close the issue on merge. A closing keyword immediately adjacent to the issue key
-records close intent; on merge, that close intent can move the linked issue to
-`done`.
+records close intent; on merge, that close intent can move the linked Issue to
+`done` only when it is a leaf child (has a parent and no children) and the exact
+completion policy allows it.
+
+**Record-only completion.** If the linked issue metadata contains
+`external_pr_completion_policy=record_only`, GitHub, Forgejo, Gitea, and GitLab
+webhooks still update the provider PR mirror and link row, but they never
+auto-advance the issue to `done`. A child therefore cannot close its Stage
+barrier or wake its parent from the provider merge alone. The workflow that owns
+the additional completion gate must perform an explicit terminal transition
+after its independent evidence is accepted. Missing policy, the exact empty
+string, or exact `leaf_child_only` retains normal leaf-child close-intent
+behavior. Every other value—including unknown strings, null/non-string legacy
+rows, case variants, and values with whitespace—fails closed and requires policy
+repair or an explicit terminal transition.
 
 **Reference-only links (hidden from the PR list).** A key that appears **only**
 as a bare mention in the body — no closing keyword, and not in the title or
@@ -85,6 +98,22 @@ Closes MUL-2759                     # links and records close intent
 In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
+
+## Delegated AGS operation scope is exact
+
+When the AGS CLI uses a Multica task token, Multica signs only the current
+operation-specific team-v4 shape. Do not substitute generic metadata or old
+constraint names: repository/Git read/push scopes are exact empty; PR creation
+binds both base and head canonical branch refs; PR read binds exactly one numbered-PR
+or head-ref variant; review reads bind both AGS and Forgejo PR numbers; CI read
+binds exactly one of repository-wide `{}`, a positive safe-integer `run_id`, or
+the same two PR numbers with an optional lowercase 40-hex head SHA; and PR rebase
+binds its existing exact four-key intent. State-only PR lists, event-only or
+SHA-only CI requests, mixed variants, unknown keys, `exact_head`, wrong/null
+types, and secret-shaped values are rejected before signing. Merge,
+review-submit, repo-admin, and repo-create remain deferred and the default signer
+rejects them directly, including empty constraints. Use the production CLI path
+rather than handcrafting the assertion request.
 
 ## Reading a linked PR's real state
 
@@ -136,6 +165,13 @@ whatever your workflow needs — the platform curates no vocabulary; pick short
 snake_case names and reuse them consistently within your workspace.
 
 Never store secrets, tokens, or API keys in metadata.
+
+`external_pr_completion_policy=record_only` is a special lifecycle policy, not
+an ordinary status note: set it before PR linkage when the workflow requires
+provider merge facts without provider-driven terminal completion. Removing it,
+setting the exact empty string, or setting exact `leaf_child_only` restores normal
+close-intent auto-completion for future events; no other value does.
+
 Not metadata: logs or summaries; runtime bookkeeping such as timestamps,
 attempt counts, or agent IDs; or other single-run details such as
 files touched and investigation notes — those belong in the result comment.
@@ -192,8 +228,13 @@ on it. These are the contracts, not advice:
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
-  carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
-  itself on merge — you do not also need to flip it manually.
+  carries close intent (`Closes MUL-XXXX`), it advances a leaf-child Issue to
+  `done` itself on merge — you do not also need to flip that leaf manually. A
+  top-level Issue or an Issue with children never auto-completes from a provider.
+  The
+  exception is `external_pr_completion_policy=record_only`: the provider merge
+  is recorded, but the issue and Stage remain active until an explicit terminal
+  transition.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going (MUL-4465). To stop a running task,
@@ -282,10 +323,11 @@ multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --s
 
 ## References
 
-`references/working-on-issues-source-map.md` — accurate `file:line` for every
-contract above: the `pull-requests` CLI and route, the PR response field list,
+`references/working-on-issues-source-map.md` — current file + symbol/query
+authority for every contract above: the `pull-requests` CLI and route, the PR response field list,
 `derivePRState`, the two-path link (`extractIdentifiers`) vs close-intent
 (`extractClosingIdentifiers`) proof, the backlog enqueue lines, child-done
 notify, the stage column / `stageBarrierClosed` barrier and the `--stage` /
-`issue children` CLI, and the metadata CLI. Re-derive before depending on an
-exact line.
+`issue children` CLI, and the metadata CLI. Re-run its verification commands
+before depending on a symbol after a refactor; exact line offsets are not part
+of the contract.

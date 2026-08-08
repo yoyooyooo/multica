@@ -632,10 +632,187 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	}
 }
 
+func TestRunIssueExternalPRsListsProviderNeutralFactsAsJSON(t *testing.T) {
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/issues/MINI-800":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "issue-uuid", "identifier": "MINI-800", "title": "External PR lookup",
+			})
+		case "/api/issues/issue-uuid/external-prs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"external_pull_requests": []map[string]any{{
+					"provider": "ags", "external_repo": "jackie/agent-kit",
+					"external_number": float64(49), "state": "merged",
+					"link_confidence": "authoritative",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := &cobra.Command{Use: "external-prs"}
+	cmd.Flags().String("output", "table", "")
+	_ = cmd.Flags().Set("output", "json")
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runIssueExternalPRs(cmd, []string{"MINI-800"})
+	_ = w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("runIssueExternalPRs: %v", err)
+	}
+	if want := []string{"/api/issues/MINI-800", "/api/issues/issue-uuid/external-prs"}; fmt.Sprint(gotPaths) != fmt.Sprint(want) {
+		t.Fatalf("paths = %v, want %v", gotPaths, want)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	prs, _ := payload["external_pull_requests"].([]any)
+	if len(prs) != 1 {
+		t.Fatalf("external_pull_requests length = %d, want 1", len(prs))
+	}
+}
+
 func newIssueUsageTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "usage"}
 	cmd.Flags().String("output", "table", "")
 	return cmd
+}
+
+// runPublicIssueRerunCommand exercises the registered `multica issue rerun`
+// command and restores its package-global flag state afterwards. Using the
+// public command object (rather than a test-only copy of its flags) ensures a
+// missing or misnamed --task-id flag fails at the CLI boundary.
+func runPublicIssueRerunCommand(t *testing.T, issueRef string, taskID *string) error {
+	t.Helper()
+	taskIDFlag := issueRerunCmd.Flags().Lookup("task-id")
+	if taskIDFlag == nil {
+		t.Fatal("multica issue rerun: expected --task-id flag to be registered")
+	}
+	oldTaskID := taskIDFlag.Value.String()
+	oldTaskIDChanged := taskIDFlag.Changed
+	outputFlag := issueRerunCmd.Flags().Lookup("output")
+	oldOutput := outputFlag.Value.String()
+	oldOutputChanged := outputFlag.Changed
+	t.Cleanup(func() {
+		_ = taskIDFlag.Value.Set(oldTaskID)
+		taskIDFlag.Changed = oldTaskIDChanged
+		_ = outputFlag.Value.Set(oldOutput)
+		outputFlag.Changed = oldOutputChanged
+	})
+
+	_ = taskIDFlag.Value.Set("")
+	taskIDFlag.Changed = false
+	if taskID != nil {
+		if err := issueRerunCmd.Flags().Set("task-id", *taskID); err != nil {
+			t.Fatalf("set --task-id: %v", err)
+		}
+	}
+	_ = outputFlag.Value.Set("json")
+	outputFlag.Changed = true
+
+	_, err := captureStdout(t, func() error {
+		return issueRerunCmd.RunE(issueRerunCmd, []string{issueRef})
+	})
+	return err
+}
+
+func issueRerunTaskID(value string) *string {
+	return &value
+}
+
+func TestIssueRerunCLIRequestBody(t *testing.T) {
+	const (
+		issueKey  = "FED-397"
+		issueID   = "11111111-1111-4111-8111-111111111111"
+		sourceID  = "22222222-2222-4222-8222-222222222222"
+		createdID = "33333333-3333-4333-8333-333333333333"
+	)
+
+	requests := make(chan string, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueKey:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": issueKey})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/rerun":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read rerun body: %v", err)
+			}
+			requests <- strings.TrimSpace(string(body))
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": createdID})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	t.Run("task id is forwarded exactly", func(t *testing.T) {
+		if err := runPublicIssueRerunCommand(t, issueKey, issueRerunTaskID(sourceID)); err != nil {
+			t.Fatalf("multica issue rerun --task-id: %v", err)
+		}
+		if got := <-requests; got != `{"task_id":"`+sourceID+`"}` {
+			t.Fatalf("rerun request body = %s, want exact task_id", got)
+		}
+	})
+
+	t.Run("omitted task id preserves empty object", func(t *testing.T) {
+		if err := runPublicIssueRerunCommand(t, issueKey, nil); err != nil {
+			t.Fatalf("multica issue rerun: %v", err)
+		}
+		if got := <-requests; got != `{}` {
+			t.Fatalf("rerun request body = %s, want {}", got)
+		}
+	})
+}
+
+func TestIssueRerunCLIRejectsInvalidTaskIDBeforeRequest(t *testing.T) {
+	const sensitiveMarker = "FED397_SENSITIVE_TASK_ID_MARKER_DO_NOT_DISCLOSE"
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	tests := []struct {
+		name      string
+		taskID    string
+		sensitive bool
+	}{
+		{name: "non UUID", taskID: "not-a-uuid"},
+		{name: "empty", taskID: ""},
+		{name: "sensitive value", taskID: sensitiveMarker, sensitive: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runPublicIssueRerunCommand(t, "FED-397", issueRerunTaskID(tc.taskID))
+			if err == nil || !strings.Contains(err.Error(), "canonical UUID") {
+				t.Fatalf("error = %v, want canonical UUID validation error", err)
+			}
+			if tc.sensitive && strings.Contains(err.Error(), sensitiveMarker) {
+				t.Fatal("canonical UUID validation error disclosed the caller-supplied task ID")
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("invalid --task-id made %d HTTP requests, want 0", requests)
+	}
 }
 
 func TestRunIssueUsageReturnsTokenSummaryAsJSON(t *testing.T) {

@@ -34,8 +34,9 @@ type IssueService struct {
 	// cmd/server/router.go after construction; nil in tests / self-hosted
 	// without the metrics listener — obsmetrics.RecordEvent treats a nil
 	// Metrics as "PostHog only", so leaving it unset is safe.
-	Metrics     *obsmetrics.BusinessMetrics
-	TaskService *TaskService
+	Metrics          *obsmetrics.BusinessMetrics
+	TaskService      *TaskService
+	TopologyFactHook func(stage string)
 }
 
 func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.Client, ts *TaskService) *IssueService {
@@ -134,6 +135,11 @@ var ErrActiveDuplicate = errors.New("active duplicate issue exists")
 // their transport's 400 / Lark card error.
 var ErrParentIssueNotFound = errors.New("parent issue not found in this workspace")
 
+// ErrParentIssueTerminal prevents a child from arriving after its parent has
+// committed a terminal transition. Parent completion and topology writes share
+// the same Issue advisory lock, so this check is stable until Create commits.
+var ErrParentIssueTerminal = errors.New("cannot add a child to a terminal parent issue")
+
 // ErrProjectNotFound signals that the supplied ProjectID does not exist
 // in the issue's workspace. Cross-workspace project IDs are rejected
 // here so every create entry (HTTP `POST /issues`, Lark `/issue`, future
@@ -206,12 +212,24 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// foreign workspace.
 	projectID := p.ProjectID
 	if p.ParentIssueID.Valid {
+		if err := qtx.LockWorkspaceIssueTopology(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("lock workspace topology: %w", err)
+		}
+		if err := qtx.LockIssueCompletionTransition(ctx, p.ParentIssueID); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("lock parent topology: %w", err)
+		}
 		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
 			ID:          p.ParentIssueID,
 			WorkspaceID: p.WorkspaceID,
 		})
 		if err != nil || !parent.ID.Valid {
 			return IssueCreateResult{}, ErrParentIssueNotFound
+		}
+		if parent.Status == "done" || parent.Status == "cancelled" {
+			return IssueCreateResult{}, ErrParentIssueTerminal
+		}
+		if s.TopologyFactHook != nil {
+			s.TopologyFactHook("locked_before_write")
 		}
 		// Back-fill project from parent when the caller did not pin
 		// one explicitly. Matches the long-standing HTTP behavior: a
