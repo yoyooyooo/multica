@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, fork/upstream-main-20260808]
+    branches: [main, fork/v0.4.12, fork/upstream-main-20260808]
   pull_request:
-    branches: [main, fork/upstream-main-20260808]
+    branches: [main, fork/v0.4.12, fork/upstream-main-20260808]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -63,6 +63,16 @@ jobs:
               - 'docker-compose.selfhost.yml'
               - 'docker-compose.selfhost.build.yml'
               - 'Makefile'
+              - 'Dockerfile'
+              - 'deploy/helm/**'
+              - 'apps/docs/content/docs/self-host-quickstart.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.zh.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ja.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ko.mdx'
+              - 'scripts/copy-legacy-uploads.sh'
+              - 'scripts/migrate-selfhost-uploads.sh'
+              - 'scripts/validate-cli-build-version.sh'
+              - 'scripts/validate-cli-build-version.test.sh'
 
       - name: Decide
         id: decide
@@ -145,7 +155,11 @@ jobs:
           restore-keys: |
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
-      - name: Test self-host env derivation
+      - name: Setup Helm
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
+        uses: azure/setup-helm@v4
+
+      - name: Test self-host Compose and Helm config
         if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: bash scripts/selfhost-config.test.sh
 
@@ -292,6 +306,9 @@ jobs:
 
       - name: Test Helm chart
         run: bash scripts/helm-config.test.sh
+
+      - name: Test CLI build version admission
+        run: bash scripts/validate-cli-build-version.test.sh
 
       - name: Build
         run: cd server && go build ./...

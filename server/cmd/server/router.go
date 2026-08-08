@@ -981,6 +981,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HandleCloudBillingStripeWebhook for the rationale).
 	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
+	// Service-peer external PR callbacks use a dedicated bearer token inside
+	// the handler and therefore live outside user/session authentication.
+	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
+	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
 	// flow, and the cookie session is frequently absent (expired session,
@@ -1063,6 +1068,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
+
+		// The task-token integration port exposes only provider-neutral current
+		// execution context. It does not mint credentials or choose operation
+		// policy. External PR link tokens remain a separate task-bound correlation integration.
+		r.Get("/api/integrations/current-execution-context", h.GetCurrentExecutionContext)
+		r.Post("/api/integrations/external-pr/link-token", h.CreateExternalPRLinkToken)
 
 		// Note (MUL-4309): the generic OpenAI-compatible passthrough endpoints
 		// (POST /api/llm/v1/chat/completions[/stream]) were intentionally
@@ -1342,6 +1353,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
+					r.Get("/external-prs", h.ListExternalPullRequestsForIssue)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})

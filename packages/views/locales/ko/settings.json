@@ -109,25 +109,82 @@
       "navigation": "탐색"
     },
     "actions": {
-      "openSearch": { "label": "검색 열기", "description": "어디서나 검색하고 명령을 실행합니다." },
-      "createIssue": { "label": "태스크 만들기", "description": "선호하는 태스크 만들기 흐름을 엽니다." },
-      "toggleSidebar": { "label": "사이드바 전환", "description": "기본 사이드바를 표시하거나 숨깁니다." },
-      "toggleChat": { "label": "채팅 창 전환", "description": "플로팅 채팅 창을 열거나 닫습니다. 열면 메시지 입력란에 포커스합니다." },
-      "findInIssue": { "label": "태스크에서 찾기", "description": "열린 태스크 상세 내용에서 검색합니다." },
-      "openThreadNav": { "label": "스레드 내비게이터 열기", "description": "열린 태스크의 댓글 스레드를 나열하고 검색해 이동합니다." },
-      "send": { "label": "보내기", "description": "채팅, 댓글, 답글, 피드백 및 프롬프트를 보내고, 생성 대화상자에서 태스크를 만듭니다." },
-      "goInbox": { "label": "받은 편지함으로 이동", "description": "워크스페이스 받은 편지함을 엽니다." },
-      "goChat": { "label": "채팅으로 이동", "description": "워크스페이스 채팅을 엽니다." },
-      "goMyIssues": { "label": "내 태스크로 이동", "description": "나에게 할당된 태스크를 엽니다." },
-      "goIssues": { "label": "태스크로 이동", "description": "태스크 목록을 엽니다." },
-      "goProjects": { "label": "프로젝트로 이동", "description": "프로젝트 목록을 엽니다." },
-      "goAutopilots": { "label": "자동화로 이동", "description": "워크스페이스 자동화를 엽니다." },
-      "goAgents": { "label": "에이전트로 이동", "description": "에이전트 목록을 엽니다." },
-      "goSquads": { "label": "스쿼드로 이동", "description": "스쿼드 목록을 엽니다." },
-      "goUsage": { "label": "사용량으로 이동", "description": "사용량 분석을 엽니다." },
-      "goRuntimes": { "label": "런타임으로 이동", "description": "런타임 설정을 엽니다." },
-      "goSkills": { "label": "Skills로 이동", "description": "Skill 라이브러리를 엽니다." },
-      "goSettings": { "label": "설정으로 이동", "description": "워크스페이스 설정을 엽니다." }
+      "openSearch": {
+        "label": "검색 열기",
+        "description": "어디서나 검색하고 명령을 실행합니다."
+      },
+      "createIssue": {
+        "label": "태스크 만들기",
+        "description": "선호하는 태스크 만들기 흐름을 엽니다."
+      },
+      "toggleSidebar": {
+        "label": "사이드바 전환",
+        "description": "기본 사이드바를 표시하거나 숨깁니다."
+      },
+      "toggleChat": {
+        "label": "채팅 창 전환",
+        "description": "플로팅 채팅 창을 열거나 닫습니다. 열면 메시지 입력란에 포커스합니다."
+      },
+      "findInIssue": {
+        "label": "태스크에서 찾기",
+        "description": "열린 태스크 상세 내용에서 검색합니다."
+      },
+      "openThreadNav": {
+        "label": "스레드 내비게이터 열기",
+        "description": "열린 태스크의 댓글 스레드를 나열하고 검색해 이동합니다."
+      },
+      "send": {
+        "label": "보내기",
+        "description": "채팅, 댓글, 답글, 피드백 및 프롬프트를 보내고, 생성 대화상자에서 태스크를 만듭니다."
+      },
+      "goInbox": {
+        "label": "받은 편지함으로 이동",
+        "description": "워크스페이스 받은 편지함을 엽니다."
+      },
+      "goChat": {
+        "label": "채팅으로 이동",
+        "description": "워크스페이스 채팅을 엽니다."
+      },
+      "goMyIssues": {
+        "label": "내 태스크로 이동",
+        "description": "나에게 할당된 태스크를 엽니다."
+      },
+      "goIssues": {
+        "label": "태스크로 이동",
+        "description": "태스크 목록을 엽니다."
+      },
+      "goProjects": {
+        "label": "프로젝트로 이동",
+        "description": "프로젝트 목록을 엽니다."
+      },
+      "goAutopilots": {
+        "label": "자동화로 이동",
+        "description": "워크스페이스 자동화를 엽니다."
+      },
+      "goAgents": {
+        "label": "에이전트로 이동",
+        "description": "에이전트 목록을 엽니다."
+      },
+      "goSquads": {
+        "label": "스쿼드로 이동",
+        "description": "스쿼드 목록을 엽니다."
+      },
+      "goUsage": {
+        "label": "사용량으로 이동",
+        "description": "사용량 분석을 엽니다."
+      },
+      "goRuntimes": {
+        "label": "런타임으로 이동",
+        "description": "런타임 설정을 엽니다."
+      },
+      "goSkills": {
+        "label": "Skills로 이동",
+        "description": "Skill 라이브러리를 엽니다."
+      },
+      "goSettings": {
+        "label": "설정으로 이동",
+        "description": "워크스페이스 설정을 엽니다."
+      }
     },
     "fixed": {
       "title": "고정 시스템 단축키",
@@ -459,8 +516,8 @@
     "master_description_off": "GitHub 기능이 꺼져 있습니다. PR 사이드바, Co-authored-by 트레일러, 자동 연결이 일시 중지됩니다. 백엔드 데이터는 삭제되지 않습니다.",
     "section_connection": "연결",
     "connection_title": "GitHub App",
-    "connection_description_prefix": "태스크를 Pull request에 자동으로 연결합니다. 브랜치, 제목 또는 본문에",
-    "connection_description_suffix": "이(가) 있는 PR이 병합되면 해당 태스크가",
+    "connection_description_prefix": "PR 브랜치, 제목 또는 인접한 closing keyword에서 authority가 있는 연결을 만듭니다.",
+    "connection_description_suffix": "에 연결된 적격 leaf child는 completion policy가 허용하고 authoritative provider 연결에 open 또는 draft가 없으며 merged close-intent 연결이 하나 이상 있을 때만",
     "connection_description_done": "완료",
     "connection_identifier_example": "MUL-123",
     "connected_to": "{{login}}에 연결됨",
@@ -489,7 +546,7 @@
     "feature_co_author_description_prefix": "에이전트가 작성한 커밋에",
     "feature_co_author_description_suffix": "을(를) 추가합니다.",
     "feature_auto_link_label": "태스크와 PR 자동 연결",
-    "feature_auto_link_description": "PR 제목, 본문, 브랜치 이름을 태스크 식별자와 대조해 자동으로 연결합니다.",
+    "feature_auto_link_description": "PR 제목, 브랜치, 인접한 closing keyword에서 authority가 있는 연결을 만듭니다. 본문에만 있는 bare 식별자는 inferred 감사 참조이며 완료를 차단하지 않습니다.",
     "section_repositories": "저장소",
     "repositories_shortcut_label": "저장소 URL은 저장소 탭에 있습니다",
     "repositories_shortcut_link": "저장소 관리 →",

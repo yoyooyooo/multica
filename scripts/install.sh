@@ -357,7 +357,9 @@ setup_server() {
     cd "$INSTALL_DIR"
   fi
 
-  checkout_server_ref "$server_ref"
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" != "1" ]; then
+    checkout_server_ref "$server_ref"
+  fi
 
   ok "Repository ready at $INSTALL_DIR ($server_ref)"
 
@@ -377,9 +379,12 @@ setup_server() {
       sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$pgpass/" .env
       sed -i -E "s#^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)#\1$pgpass\2#" .env
     fi
-    ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
+    ok "Generated .env with random secrets"
   else
     ok "Using existing .env"
+  fi
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" = "1" ]; then
+    return
   fi
 
   # Start Docker Compose
@@ -459,6 +464,9 @@ run_with_server() {
   detect_os
   check_docker
   setup_server
+  if [ "${MULTICA_SELFHOST_ENV_ONLY:-0}" = "1" ]; then
+    return
+  fi
   install_cli
 
   printf "\n"

@@ -165,6 +165,18 @@ UPDATE issue SET
 WHERE id = $1 AND workspace_id = $3
 RETURNING *;
 
+-- name: LockIssueCompletionTransition :exec
+-- All provider fact writers and explicit issue status writers share this
+-- transaction-scoped lock. Call it in its own statement before reading the PR
+-- aggregate so READ COMMITTED takes a fresh snapshot after any prior writer.
+SELECT pg_advisory_xact_lock(hashtextextended((sqlc.arg('issue_id')::uuid)::text, 88492131));
+
+-- name: LockWorkspaceIssueTopology :exec
+-- All child create/reparent writers in one workspace serialize before reading
+-- topology. This closes write-skew cycles whose moved issue/parent lock sets do
+-- not overlap; unrelated workspaces retain independent concurrency.
+SELECT pg_advisory_xact_lock(hashtextextended((sqlc.arg('workspace_id')::uuid)::text, 88492132));
+
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
     workspace_id, title, description, status, priority,
@@ -208,6 +220,9 @@ WHERE i.workspace_id = $1
 ORDER BY i.created_at ASC
 LIMIT 1;
 
+-- name: ListIssueIDsByWorkspaceForCompletionLock :many
+SELECT id FROM issue WHERE workspace_id = $1 ORDER BY id;
+
 -- name: DeleteIssue :exec
 -- Defense-in-depth: the workspace_id predicate makes the tenant invariant a
 -- SQL-layer guarantee rather than a handler-layer one. Handler loaders
@@ -230,6 +245,22 @@ WITH target AS (
 ),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_pr_merge_delegation_events AS (
+    DELETE FROM workload_pr_merge_delegation_event
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_pr_merge_delegations AS (
+    DELETE FROM workload_pr_merge_delegation
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_receipts AS (
+    DELETE FROM external_pull_request_receipt
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_links AS (
+    DELETE FROM external_pull_request_link
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 

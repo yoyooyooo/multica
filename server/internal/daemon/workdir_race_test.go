@@ -138,6 +138,7 @@ func TestRunTask_StartTaskCalledAfterWorkdirOnDisk(t *testing.T) {
 
 	task := Task{
 		ID:          taskID,
+		ExecutionID: taskID,
 		WorkspaceID: workspaceID,
 		RuntimeID:   "rt-1",
 		IssueID:     "issue-runtask",
@@ -212,6 +213,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
 
 	task := Task{
 		ID:          taskID,
+		ExecutionID: taskID,
 		WorkspaceID: workspaceID,
 		RuntimeID:   "rt-1",
 		IssueID:     "issue-private-temp",
@@ -330,6 +332,7 @@ func TestRunTask_ExtendsPrepareLeaseDuringStartTask(t *testing.T) {
 
 	task := Task{
 		ID:          taskID,
+		ExecutionID: taskID,
 		WorkspaceID: workspaceID,
 		RuntimeID:   "rt-1",
 		IssueID:     "issue-runtask-start-lease",
@@ -420,6 +423,7 @@ func TestRunTask_PrepareTimeoutStopsLeaseDuringBlockedStartTask(t *testing.T) {
 
 	task := Task{
 		ID:          "task-runtask-start-timeout",
+		ExecutionID: "task-runtask-start-timeout",
 		WorkspaceID: "ws-runtask-start-timeout",
 		RuntimeID:   "rt-1",
 		IssueID:     "issue-runtask-start-timeout",

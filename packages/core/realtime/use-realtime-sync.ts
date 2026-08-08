@@ -123,6 +123,21 @@ export function invalidateChatMessageQueries(
   qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
 }
 
+export function invalidatePullRequestProjections(
+  qc: QueryClient,
+  issueId?: string,
+) {
+  // Both projections are keyed by Issue rather than workspace. One provider
+  // event marks every cached Issue PR view stale; only mounted views refetch.
+  qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
+  qc.invalidateQueries({ queryKey: ["external-prs"] });
+  // External PR facts write timeline activities in the same transaction. The
+  // provider event carries issue_id so an open Issue refetches those rows too.
+  if (issueId) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
+  }
+}
+
 // refetchPendingChatAggregate marks the current user's cross-session pending
 // aggregate stale so it is refetched from the permission-filtering endpoint
 // (/api/chat/pending-tasks[/has-any]).
@@ -834,9 +849,7 @@ export function useRealtimeSync(
         if (wsId) qc.invalidateQueries({ queryKey: wecomKeys.installations(wsId) });
       },
       pull_request: () => {
-        // PR list is keyed by issue id, not workspace, so we invalidate all
-        // PR queries — the open issue detail page will refetch its own list.
-        qc.invalidateQueries({ queryKey: ["github", "pull-requests"] });
+        invalidatePullRequestProjections(qc);
       },
       // Powers the agent presence cache: any task lifecycle change
       // (dispatch / completed / failed / cancelled) refreshes the
@@ -916,6 +929,7 @@ export function useRealtimeSync(
       "comment:created", "comment:updated", "comment:deleted",
       "comment:resolved", "comment:unresolved",
       "activity:created",
+      "pull_request:linked", "pull_request:updated", "pull_request:unlinked",
       "reaction:added", "reaction:removed",
       "issue_reaction:added", "issue_reaction:removed",
       "subscriber:added", "subscriber:removed",
@@ -944,6 +958,20 @@ export function useRealtimeSync(
 
     // --- Specific event handlers (granular cache updates) ---
     // No self-event filtering: actor_id identifies the USER, not the TAB.
+
+    const refreshPullRequestProjection = (payload: unknown) => {
+      const issueId =
+        typeof payload === "object" && payload !== null && "issue_id" in payload
+          ? (payload as { issue_id?: unknown }).issue_id
+          : undefined;
+      invalidatePullRequestProjections(
+        qc,
+        typeof issueId === "string" ? issueId : undefined,
+      );
+    };
+    const unsubPullRequestLinked = ws.on("pull_request:linked", refreshPullRequestProjection);
+    const unsubPullRequestUpdated = ws.on("pull_request:updated", refreshPullRequestProjection);
+    const unsubPullRequestUnlinked = ws.on("pull_request:unlinked", refreshPullRequestProjection);
     // Filtering by actor_id would block other tabs of the same user.
     // Instead, both mutations and WS handlers use dedup checks to be idempotent.
 
@@ -1544,6 +1572,9 @@ export function useRealtimeSync(
 
     return () => {
       unsubAny();
+      unsubPullRequestLinked();
+      unsubPullRequestUpdated();
+      unsubPullRequestUnlinked();
       unsubIssueUpdated();
       unsubIssueCreated();
       unsubIssueDeleted();

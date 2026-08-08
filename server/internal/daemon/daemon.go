@@ -133,6 +133,17 @@ func taskScopedAuthToken(task Task) (string, error) {
 	return token, nil
 }
 
+// taskCanonicalRunID returns the best-effort Multica Run coordinate for agent env.
+// Prefer a server-provided ExecutionID when present; otherwise fall back to Task ID.
+// Missing ExecutionID must not block task start: ags-cli treats MULTICA_RUN_ID as
+// optional and Multica current-execution-context already falls back the same way.
+func taskCanonicalRunID(task Task) string {
+	if runID := strings.TrimSpace(task.ExecutionID); runID != "" {
+		return runID
+	}
+	return strings.TrimSpace(task.ID)
+}
+
 func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesRoot, serverURL string, healthPort, slot int, tempDir string) map[string]string {
 	return map[string]string{
 		"MULTICA_TOKEN":        token,
@@ -144,6 +155,8 @@ func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesR
 		"MULTICA_AGENT_NAME":   agentName,
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
+		// Best-effort provenance. Absence of a distinct ExecutionID falls back to Task ID.
+		"MULTICA_RUN_ID":       taskCanonicalRunID(task),
 		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
 		"TMPDIR":               tempDir,
 		"TMP":                  tempDir,

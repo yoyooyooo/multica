@@ -255,10 +255,40 @@ func (h *Handler) DeleteVCSConnection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Queries.DeleteVCSConnection(r.Context(), db.DeleteVCSConnectionParams{
-		ID:          idUUID,
-		WorkspaceID: wsUUID,
-	}); err != nil {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := lockProviderWorkspaces(r.Context(), tx, []pgtype.UUID{wsUUID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	// Freeze the workspace membership of the affected Issue set, then lock all
+	// its Issues in UUID order. This covers links committed while deletion was
+	// waiting and prevents trigger cleanup from acquiring a late advisory lock.
+	_, err = qtx.LockWorkspaceForDelete(r.Context(), wsUUID)
+	var issueIDs []pgtype.UUID
+	if err == nil {
+		issueIDs, err = qtx.ListIssueIDsByWorkspaceForCompletionLock(r.Context(), wsUUID)
+	}
+	if err == nil {
+		err = lockCompletionIssues(r.Context(), qtx, issueIDs)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	if h.IssueDeleteHook != nil {
+		h.IssueDeleteHook("vcs_connection_completion_locks_acquired")
+	}
+	if err := qtx.DeleteVCSConnection(r.Context(), db.DeleteVCSConnectionParams{ID: idUUID, WorkspaceID: wsUUID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove connection")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove connection")
 		return
 	}

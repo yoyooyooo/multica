@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS workload_pr_merge_delegation_id_uidx;

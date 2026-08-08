@@ -292,6 +292,8 @@ const mockApiObj = vi.hoisted(() => ({
   getWorkspaceWorkingAgents: vi.fn().mockResolvedValue([]),
   listProperties: vi.fn().mockResolvedValue({ properties: [], total: 0 }),
   listIssues: vi.fn().mockResolvedValue({ issues: [], total: 0 }),
+  listIssuePullRequests: vi.fn().mockResolvedValue({ pull_requests: [] }),
+  listIssueExternalPullRequests: vi.fn().mockResolvedValue({ external_pull_requests: [] }),
   uploadFile: vi.fn(),
   listIssueReactions: vi.fn().mockResolvedValue([]),
   addIssueReaction: vi.fn(),
@@ -651,6 +653,8 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.getWorkspaceWorkingAgents.mockResolvedValue([]);
     mockApiObj.listProperties.mockResolvedValue({ properties: [], total: 0 });
     mockApiObj.listIssues.mockResolvedValue({ issues: [], total: 0 });
+    mockApiObj.listIssuePullRequests.mockResolvedValue({ pull_requests: [] });
+    mockApiObj.listIssueExternalPullRequests.mockResolvedValue({ external_pull_requests: [] });
     mockApiObj.getActiveTasksForIssue.mockResolvedValue({ tasks: [] });
     mockApiObj.listTasksByIssue.mockResolvedValue([]);
     mockApiObj.rerunIssue.mockResolvedValue({ id: "task-rerun" });
@@ -1068,6 +1072,88 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Activity").length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+  it("renders External PRs independently from the GitHub PR sidebar", async () => {
+    mockApiObj.listIssueExternalPullRequests.mockResolvedValue({
+      external_pull_requests: [
+        {
+          id: "external-pr-1",
+          workspace_id: "ws-1",
+          issue_id: "issue-1",
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: 279,
+          external_url: "http://mini:6666/jackie/agent-kit/pull/279",
+          state: "closed",
+          link_confidence: "authoritative",
+          completion_intent: true,
+          merge_provider: "forgejo",
+          merge_repo: "jackie/agent-kit",
+          merge_number: 266,
+          merge_url: "http://forgejo.local/jackie/agent-kit/pulls/266",
+          merged_sha: null,
+          created_at: "2026-07-28T11:14:00Z",
+          updated_at: "2026-07-28T11:18:35Z",
+        },
+      ],
+    });
+
+    renderIssueDetail();
+
+    expect(await screen.findByRole("button", { name: "External PRs" })).toBeInTheDocument();
+    expect(await screen.findByTestId("external-pull-request-link")).toHaveTextContent(
+      "ags:jackie/agent-kit#279",
+    );
+  });
+
+  it("renders External PR lifecycle activities", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "external-pr-activity",
+        actor_type: "system",
+        actor_id: "system",
+        action: "external_pr_linked",
+        details: {
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: "279",
+        },
+        created_at: "2026-07-28T11:14:00Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(
+      await screen.findByText(/linked external PR ags:jackie\/agent-kit#279/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders malformed External PR merge SHA details fail-closed", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity",
+        id: "external-pr-merged-activity",
+        actor_type: "system",
+        actor_id: "system",
+        action: "external_pr_merged",
+        details: {
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: "279",
+          merged_sha: 12345,
+        },
+        created_at: "2026-07-28T11:18:35Z",
+      },
+    ] as TimelineEntry[]);
+
+    renderIssueDetail();
+
+    expect(
+      await screen.findByText(/merged external PR ags:jackie\/agent-kit#279 \(—\)/i),
+    ).toBeInTheDocument();
   });
 
   it("renders comments from timeline", async () => {
