@@ -99,7 +99,7 @@ mention is reference-only. A closing keyword both links and records intent.
   `server/pkg/db/queries/pull_request_completion.sql`
   (`CompleteIssueFromPullRequest`);
 - transaction serialization authority: migration
-  `231_external_pr_integration_reconcile` plus
+  `265_external_pr_integration_reconcile` plus
   `LockIssueCompletionTransition` in `server/pkg/db/queries/issue.sql`.
 
 Absent, exact empty string, and exact `leaf_child_only` allow provider-driven
