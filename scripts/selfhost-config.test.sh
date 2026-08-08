@@ -485,6 +485,16 @@ for shadowed_alias in BACKEND_PORT API_PORT SERVER_PORT; do
 done
 
 
+# Every self-host Make command documented for operators must resolve to a real
+# target. This keeps secret initialization on the tested `make selfhost` path
+# instead of drifting back to an invented helper.
+while IFS= read -r documented_target; do
+  if ! grep -Eq "^${documented_target}:" Makefile; then
+    echo "SELF_HOSTING.md references missing Make target: make $documented_target"
+    exit 1
+  fi
+done < <(grep -oE 'make selfhost(-[a-z]+)*' SELF_HOSTING.md | awk '{print $2}' | sort -u)
+
 # Fork runtime contracts retained across the one-time upstream/main replay.
 if grep -Eq 'MULTICA_(WORKLOAD_ASSERTION|DELEGATED_PR_MERGE)' <<<"$config" || grep -Eq 'MULTICA_(WORKLOAD_ASSERTION|DELEGATED_PR_MERGE)' .env.example; then
   echo "retired workload assertion or delegated merge configuration is still exposed"

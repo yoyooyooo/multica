@@ -467,18 +467,22 @@ If the selected GHCR tag has not been published yet, fall back to `make selfhost
 
 ## Manual Docker Compose Setup
 
-If you prefer running Docker Compose steps manually instead of `make selfhost`:
+For a secret-safe first initialization, start from a checkout that does not yet
+have `.env` and use the supported Makefile path:
 
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-cp .env.example .env
+make selfhost
 ```
 
-Edit `.env` before asking Compose to render or start the stack. At minimum,
-set a strong `JWT_SECRET`, a strong `POSTGRES_PASSWORD`, and the same database
-password inside `DATABASE_URL`. `make selfhost-env` can generate these values.
-Then render and start everything:
+On its first run, `make selfhost` creates `.env`, generates the JWT, PostgreSQL,
+and VCS secrets without printing their values, keeps the PostgreSQL password in
+`POSTGRES_PASSWORD` and `DATABASE_URL` consistent, and starts the Compose stack.
+Review `.env` for deployment-specific non-secret settings and optional service
+credentials before exposing the instance publicly.
+
+For subsequent starts, you can render, pull, and start the stack directly:
 
 ```bash
 docker compose -f docker-compose.selfhost.yml config >/dev/null

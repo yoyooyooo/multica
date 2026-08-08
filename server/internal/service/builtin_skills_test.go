@@ -233,6 +233,10 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"Use a routable issue key in the PR title, body, or branch",
 		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
+		"does not authorize repository operations",
+		"canonical actor",
+		"short-lived Access Grant",
+		"live native repository grant",
 		"--status backlog",
 		// The only sanctioned pr_url reference is the negative compatibility
 		// warning about pre-existing data — not a write recommendation
@@ -288,8 +292,35 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		}
 	}
 
-	if !skillHasFile(skill, "references/working-on-issues-source-map.md") {
-		t.Errorf("working-on-issues skill missing supporting file references/working-on-issues-source-map.md")
+	lowerBody := strings.ToLower(body)
+	for _, retired := range []string{
+		"team-v4",
+		"assertion request",
+		"multica signs",
+		"workload assertion",
+	} {
+		if strings.Contains(lowerBody, retired) {
+			t.Errorf("working-on-issues skill restores retired authorization narration %q", retired)
+		}
+	}
+
+	const sourceMapPath = "references/working-on-issues-source-map.md"
+	var sourceMap string
+	for _, file := range skill.Files {
+		if file.Path == sourceMapPath {
+			sourceMap = file.Content
+			break
+		}
+	}
+	if sourceMap == "" {
+		t.Errorf("working-on-issues skill missing supporting file %s", sourceMapPath)
+	} else {
+		if !strings.Contains(sourceMap, "`265_external_pr_integration_reconcile`") {
+			t.Errorf("working-on-issues source map must cite current migration 265")
+		}
+		if strings.Contains(sourceMap, "`231_external_pr_integration_reconcile`") {
+			t.Errorf("working-on-issues source map cites retired-generation migration 231")
+		}
 	}
 }
 

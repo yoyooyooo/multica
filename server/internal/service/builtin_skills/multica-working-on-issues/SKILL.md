@@ -99,21 +99,15 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
-## Delegated AGS operation scope is exact
+## Repository authorization comes from AGS
 
-When the AGS CLI uses a Multica task token, Multica signs only the current
-operation-specific team-v4 shape. Do not substitute generic metadata or old
-constraint names: repository/Git read/push scopes are exact empty; PR creation
-binds both base and head canonical branch refs; PR read binds exactly one numbered-PR
-or head-ref variant; review reads bind both AGS and Forgejo PR numbers; CI read
-binds exactly one of repository-wide `{}`, a positive safe-integer `run_id`, or
-the same two PR numbers with an optional lowercase 40-hex head SHA; and PR rebase
-binds its existing exact four-key intent. State-only PR lists, event-only or
-SHA-only CI requests, mixed variants, unknown keys, `exact_head`, wrong/null
-types, and secret-shaped values are rejected before signing. Merge,
-review-submit, repo-admin, and repo-create remain deferred and the default signer
-rejects them directly, including empty constraints. Use the production CLI path
-rather than handcrafting the assertion request.
+Multica current execution context provides authenticated Task and Run facts
+only; it does not authorize repository operations. AGS independently resolves
+the canonical actor and issues a short-lived Access Grant. At use time, AGS
+must validate that canonical grant again together with the live native repository grant.
+Do not treat Multica context facts, task tokens, metadata, or
+link tokens as repository authority, and do not route repository operations
+through retired delegation or legacy gateway paths.
 
 ## Reading a linked PR's real state
 
