@@ -285,7 +285,7 @@ curl -s localhost:8080/readyz
 # {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
-Anything other than HTTP 200 with all three checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
+Anything other than HTTP 200 with both the `db` and `migrations` checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
 
 ### Kubernetes
 

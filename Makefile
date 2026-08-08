@@ -76,7 +76,7 @@ makehelp: help ## Alias for `make help`
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
 
-selfhost-env: ## Create or upgrade .env with generated self-host secrets
+selfhost-env: ## Create .env with generated self-host secrets
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
 		cp .env.example .env; \

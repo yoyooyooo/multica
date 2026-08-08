@@ -12,8 +12,20 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestCreateExternalPRLinkTokenRejectsWeakSigningSecret(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "too-short")
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/link-token", nil)
+	req.Header.Set("X-Actor-Source", "task_token")
+	rr := httptest.NewRecorder()
+
+	testHandler.CreateExternalPRLinkToken(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestCreateExternalPRLinkTokenUsesServerBoundTaskContext(t *testing.T) {
-	const secret = "external-pr-link-test-secret"
+	const secret = "external-pr-link-test-secret-at-least-32-bytes"
 	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", secret)
 	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE", "external-pr-link")
 
@@ -72,7 +84,7 @@ func TestCreateExternalPRLinkTokenUsesServerBoundTaskContext(t *testing.T) {
 }
 
 func TestCreateExternalPRLinkTokenRejectsTerminalRevokedExpiredAndCrossScopeAuthority(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "link-token-authority-test-secret")
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "link-token-authority-test-secret-at-least-32-bytes")
 	issueID := createExternalPRTestIssue(t, "external PR link token authority", "todo", "", nil)
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
 	agentID := createHandlerTestAgent(t, "external-pr-link-authority-agent", []byte(`{}`))
@@ -147,7 +159,7 @@ func TestCreateExternalPRLinkTokenRejectsTerminalRevokedExpiredAndCrossScopeAuth
 }
 
 func TestCreateExternalPRLinkTokenLinearizesBeforeTaskCompletion(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "linearized-link-token-secret")
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "linearized-link-token-secret-at-least-32-bytes")
 	issueID := createExternalPRTestIssue(t, "linearized external PR link token", "todo", "", nil)
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID) })
 	agentID := createHandlerTestAgent(t, "linearized-external-pr-link-agent", []byte(`{}`))

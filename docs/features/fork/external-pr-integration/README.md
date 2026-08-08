@@ -37,8 +37,9 @@ Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context �
 Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为required Run坐标交给daemon；daemon必须以`MULTICA_RUN_ID`注入Agent进程，并与`MULTICA_TASK_ID`同时存在。该响应可作为 AGS 绑定 Task/Run 的输入，但不是授权证明。AGS 必须独立签发并在使用时复核 Access Grant、executor、operation、repository 与原生仓库授权；同一Task的新Run不得复用旧Run cache。
 
 External-PR link token 与授权链独立：audience 必须精确匹配配置，`source=task_token`，
-有效期最长五分钟，并且不携带 assertion `kid` 或 `purpose`。它只能关联回调，不能选择
-Policy Class、operation、capability、Session、Grant 或 provider credential。
+有效期最长五分钟，并且不携带 assertion `kid` 或 `purpose`。签名 secret 必须是至少
+32 字节的密码学随机值；空值或过短值均 fail closed。它只能关联回调，不能选择 Policy
+Class、operation、capability、Session、Grant 或 provider credential。
 
 ## External PR 数据与完成规则
 
@@ -86,7 +87,7 @@ MULTICA_DELEGATED_PR_MERGE_ENABLED
 
 | 变量 | 用途 |
 |---|---|
-| `MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET` | Task-bound external PR link token 签名 |
+| `MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET` | Task-bound external PR link token 签名；至少 32 字节的密码学随机值 |
 | `MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE` | link token audience；默认 `external-pr-link` |
 | `MULTICA_EXTERNAL_PR_SERVICE_TOKEN` | service callback 的 exact Bearer token |
 | `MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID` | service peer 的 secret-free instance identity |

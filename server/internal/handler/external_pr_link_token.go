@@ -22,7 +22,7 @@ func (h *Handler) CreateExternalPRLinkToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	secret := strings.TrimSpace(os.Getenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET"))
-	if secret == "" {
+	if len(secret) < 32 {
 		writeError(w, http.StatusServiceUnavailable, "external PR link token signing is not configured")
 		return
 	}

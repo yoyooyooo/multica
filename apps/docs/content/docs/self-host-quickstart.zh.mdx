@@ -286,7 +286,7 @@ curl -s localhost:8080/readyz
 # {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
-只要不是 HTTP 200 且三项都是 `ok`，就说明新版本没把 migration 跑完，先去看 backend 日志，别急着放流量进来。
+只要不是 HTTP 200 且 `db`、`migrations` 两项都是 `ok`，就说明新版本没把 migration 跑完，先去看 backend 日志，别急着放流量进来。
 
 ### Kubernetes
 

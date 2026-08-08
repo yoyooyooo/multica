@@ -117,7 +117,7 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 		t.Fatalf("context route did not use token-bound identity: %#v", currentContext)
 	}
 
-	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "router-link-token-secret")
+	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "router-link-token-secret-at-least-32-bytes")
 	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE", "external-pr-link")
 	linkTokenReq, err := http.NewRequest(http.MethodPost, testServer.URL+"/api/integrations/external-pr/link-token", nil)
 	if err != nil {
