@@ -2,17 +2,31 @@
 
 ## Status and authority
 
-This generation is a one-time owner-authorized exception to the normal official-tag-derived policy.
-It does not change `docs/standards/fork-development.md` and is not precedent for future generations.
+**Current formal/live generation** under the rule “formal = latest upstream version this fork has synchronized.”
+
+It began as an owner-authorized freeze of a post-`v0.4.21` upstream tip rather than an exact official tag tip. Future generations should prefer pure `vX.Y.Z` freezes when possible, still replaying so fork-only commits sit at the tip.
 
 - generation branch: `fork/upstream-main-20260808`
+- integration/work branch (not deploy authority by itself): `feature/upstream-main-20260808-fork-replay`
 - frozen upstream base: `upstream/main@2b35f8017ab3b773e0356e562ecb04e55a7a9bd7`
 - nearest official release: `v0.4.21@0dfaac266eed3b7ac710de33d8207e4f71cfb20b`
-- unreleased upstream delta: 10 commits after `v0.4.21`
-- prior accepted fork: `fork/v0.4.12@d5ec9569ede6e48e3caced031254259f48b83f41`
+- unreleased upstream delta at freeze: 10 commits after `v0.4.21`
+- prior accepted fork (rollback): `fork/v0.4.12@d5ec9569ede6e48e3caced031254259f48b83f41`
 - prior fork base: `v0.4.12@e52b50658a66d09bffed126e34116ad826c03623`
 
-The old generation and its deployment artifacts remain immutable rollback authority. The new branch is created at the frozen upstream commit and may advance only by exact fast-forward; the old branch is never force-updated or repurposed.
+History shape (origin head `b3118a340`):
+
+```text
+...upstream through 2b35f8017...
+4ca4d619f jackie  ci(fork): bootstrap upstream-main generation checks
+9955cc07f jackie  feat(fork): replay generation on upstream main
+28dc443eb jackie  ci(mobile): verify upstream-main generation
+b3118a340 jackie  fix(fork): remediate access grant review findings   <-- tip is fork-owned
+```
+
+Local deploy tip may advance by fast-forward only (example: `5354e11c0` best-effort `MULTICA_RUN_ID` daemon fix). The previous generation and its deployment artifacts remain immutable rollback authority; that branch is never force-updated or repurposed.
+
+**Not latest forever:** as of 2026-08-10, official upstream has **`v0.4.22`** and a newer `upstream/main`. The next clean generation should replay onto that newer synced base rather than keep extending this freeze indefinitely.
 
 ## Replay method
 

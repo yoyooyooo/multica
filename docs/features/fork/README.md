@@ -1,12 +1,21 @@
 # Fork capabilities
 
-The official-tag-derived `fork/v0.4.12` generation owns these additive capabilities:
+The active generation is the fork line frozen on the **latest synced upstream version** this fork tracks. See [fork generations](../../releases/fork-generations/README.md).
+
+## Current active generation
+
+**`upstream-main-20260808`** (nearest official tag **`v0.4.21`**, generation branch `fork/upstream-main-20260808`) owns these additive capabilities:
 
 - [External PR integration and current execution context](external-pr-integration/README.md)
 - [Pi process tree supervision](pi-process-tree-supervision/README.md)
+- Access-Grant-only Multica/AGS authority cutover (no Workload Assertion / public Session / legacy merge gateway)
 
-The workload-assertion and delegated-merge bridge is retired; AGS authority is Access-Grant-only.
+Clean history expectation: upstream base first; **fork-only commits always at the tip**.
 
-`fork/v0.4.9` remains the accepted previous generation and deployment rollback source. `fork/v0.4.8` remains older donor evidence. Neither branch is overwritten or treated as current source authority.
+## Previous generation
 
-Generation inventory and acceptance limits are recorded in [`docs/releases/fork-generations/v0.4.12.md`](../../releases/fork-generations/v0.4.12.md). Branch/build/deployment procedure is owned by the [Fork Development Standard](../../standards/fork-development.md).
+`fork/v0.4.12` remains the previous accepted generation and primary rollback source. `fork/v0.4.9` / `fork/v0.4.8` remain older donor evidence. They are not current deploy authority.
+
+## Procedure
+
+Branch/build/deployment procedure is owned by the [Fork Development Standard](../../standards/fork-development.md). Generation inventory and claim limits live under [`docs/releases/fork-generations/`](../../releases/fork-generations/README.md).

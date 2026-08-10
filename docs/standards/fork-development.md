@@ -9,31 +9,45 @@ Capability docs, source, CI, artifacts, provider state, and runtime receipts ret
 ## Operating model
 
 ```text
-official release tag vX.Y.Z
-  -> fork/vX.Y.Z
-     -> bounded feature/fix branch
-     -> fast-forward source acceptance
-     -> immutable deployment tag and artifact receipts
+latest synced upstream version (prefer official tag vX.Y.Z; otherwise frozen upstream tip)
+  -> new clean fork/* generation branch created from that base
+     -> replay net fork deltas so fork-only commits sit at the tip
+     -> bounded feature/fix PR into that generation (fast-forward only)
+     -> source acceptance
+     -> immutable deployment tag + artifact receipts
 ```
 
-Production generations start from official stable tags, not moving `upstream/main`.
+**Formal generation authority is always the fork generation built on the latest upstream version this fork has already synchronized.** Deploy only that generation. Do not deploy from long-lived `feature/*` as if it were the generation branch.
+
+Shape of a clean generation history:
+
+```text
+[upstream base at frozen version/commit]
+  ... upstream commits only ...
+  [first fork-only commit]
+  ... more fork-only commits ...
+  [generation head]   <-- last commits are always fork-owned
+```
+
+When upstream advances, open a **new** generation by replaying onto the new base rather than merging or force-rewriting the previous generation branch.
 
 ## Branch roles
 
 | Ref | Purpose |
 | --- | --- |
 | `main` | Exact upstream mirror; no fork-only changes. |
-| `fork/vX.Y.Z` | Canonical source authority for one official-tag-derived generation. |
-| `feature/*`, `fix/*`, `docs/*` | Short-lived bounded changes targeting the active generation. |
+| `fork/vX.Y.Z` or `fork/<frozen-upstream-label>` | Canonical source authority for one generation frozen on a synced upstream base. |
+| `feature/*`, `fix/*`, `docs/*` | Short-lived bounded changes targeting the active generation only. |
 | immutable deployment tag | Exact source used to build one accepted target deployment. |
 
 Rules:
 
 1. Fork-only PRs never target `main`.
-2. The GitHub default branch identifies the active generation; no movable `fork/latest` exists.
+2. The active generation branch (and GitHub default when switched) identifies formal authority; no movable `fork/latest` exists.
 3. Generation branches advance by fast-forward only; merge commits and force updates are forbidden.
 4. Previous generation branches, images, tags, backups, and receipts remain immutable rollback evidence.
 5. Required workflows must listen to `main` and the active generation, including path-specific mobile checks.
+6. Production deploy uses the active generation head (or its immutable deploy tag), never an unintegrated feature tip unless that tip has already been fast-forwarded into the generation.
 
 ## Fork delta model
 
@@ -43,16 +57,17 @@ Current capability narratives live at `docs/features/fork/<capability>/README.md
 
 ## Creating or repairing a generation
 
-1. Freeze the official tag and exact commit.
-2. Create `fork/vX.Y.Z` directly from that tag.
+1. Freeze the latest **already-synced** upstream version: prefer official tag `vX.Y.Z`; if the generation intentionally includes a small post-tag upstream tip, freeze that exact commit and record the nearest tag.
+2. Create a new clean `fork/*` generation branch **from that frozen base** (not by rewriting the previous generation).
 3. Inventory **every prior generation and donor delta at commit/file granularity**. A prior squash or accepted generation is not sufficient evidence that an older donor capability was absorbed.
 4. Classify every delta as `keep`, `rework`, `superseded`, `retire`, or `blocked`, with a source/test observation supporting the classification.
 5. Compare old user-visible surfaces, process/runtime fixes, build/deploy contracts, and docs/CI gates separately; backend replay does not imply frontend replay.
 6. Allocate non-overlapping forward-only migration numbers. Never rename or rewrite historical ledger entries.
-7. Replay accepted semantics through bounded PRs; do not mechanically cherry-pick an old squash.
+7. Replay accepted fork semantics so the resulting history is upstream base + fork-only tip; do not mechanically cherry-pick an old squash when structure has diverged.
 8. Run capability-specific tests, full source gates, exact-head CI, and review.
 9. Build backend and frontend from the same exact deployment source.
 10. Switch source/default branch or runtime only after the corresponding acceptance evidence exists.
+11. After upstream releases a newer version the fork intends to track, start a **new** generation from that base rather than accumulating unbounded mid-generation upstream merges.
 
 A newly discovered omitted `keep` delta reopens generation convergence. Preserve the deployed generation as rollback evidence, repair through a new revision, and lower prior completion claims instead of rewriting history.
 
@@ -70,7 +85,9 @@ Source acceptance, deployment acceptance, and browser/provider proof are separat
 
 ## Upstream refresh policy
 
-Normal upgrades use official stable tags. An unreleased upstream commit enters an active generation only for a documented blocking or security fix with exact source, focused evidence, and a retirement condition.
+Normal upgrades freeze the latest official stable tag the fork chooses to track, then open a new generation and replay. A post-tag unreleased upstream tip may enter a generation only when owner-authorized, with exact frozen commit, nearest tag, focused evidence, and a retirement condition when the next official tag is adopted.
+
+Do not treat “whatever is currently running in production” as generation authority when it diverges from the recorded active `fork/*` head; either promote the generation docs/receipts to match live, or redeploy from the formal generation.
 
 ## Source-built version contract
 
