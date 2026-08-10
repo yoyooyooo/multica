@@ -91,12 +91,15 @@ func taskScopedAuthToken(task Task) (string, error) {
 	return token, nil
 }
 
-func taskCanonicalRunID(task Task) (string, error) {
-	runID := strings.TrimSpace(task.ExecutionID)
-	if runID == "" {
-		return "", errors.New("server did not provide canonical task execution id")
+// taskCanonicalRunID returns the best-effort Multica Run coordinate for agent env.
+// Prefer a server-provided ExecutionID when present; otherwise fall back to Task ID.
+// Missing ExecutionID must not block task start: ags-cli treats MULTICA_RUN_ID as
+// optional and Multica current-execution-context already falls back the same way.
+func taskCanonicalRunID(task Task) string {
+	if runID := strings.TrimSpace(task.ExecutionID); runID != "" {
+		return runID
 	}
-	return runID, nil
+	return strings.TrimSpace(task.ID)
 }
 
 // taskRunner executes a single agent task and returns the result.
@@ -4539,11 +4542,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskLog.Error("task auth token invalid; refusing to start agent", "error", err)
 		return TaskResult{}, err
 	}
-	runID, err := taskCanonicalRunID(task)
-	if err != nil {
-		taskLog.Error("task execution id invalid; refusing to start agent", "error", err)
-		return TaskResult{}, err
-	}
+	runID := taskCanonicalRunID(task)
 	agentEnv := map[string]string{
 		"MULTICA_TOKEN":        agentToken,
 		"MULTICA_SERVER_URL":   d.cfg.ServerBaseURL,
@@ -4552,6 +4551,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"MULTICA_AGENT_NAME":   agentName,
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
+		// Best-effort provenance for consumers (ags-cli, etc.). Absence of a distinct
+		// ExecutionID falls back to Task ID and must never refuse task start.
 		"MULTICA_RUN_ID":       runID,
 		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
 		"TMPDIR":               taskTempDir,

@@ -393,12 +393,14 @@ func TestTaskScopedAuthToken(t *testing.T) {
 
 func TestTaskCanonicalRunID(t *testing.T) {
 	t.Parallel()
-	if _, err := taskCanonicalRunID(Task{}); err == nil || err.Error() != "server did not provide canonical task execution id" {
-		t.Fatalf("missing execution id err=%v", err)
+	if got := taskCanonicalRunID(Task{}); got != "" {
+		t.Fatalf("empty task got %q", got)
 	}
-	got, err := taskCanonicalRunID(Task{ID: "task-id", ExecutionID: " execution-id "})
-	if err != nil || got != "execution-id" {
-		t.Fatalf("taskCanonicalRunID()=%q err=%v", got, err)
+	if got := taskCanonicalRunID(Task{ID: "task-id"}); got != "task-id" {
+		t.Fatalf("missing execution id fallback got %q", got)
+	}
+	if got := taskCanonicalRunID(Task{ID: "task-id", ExecutionID: " execution-id "}); got != "execution-id" {
+		t.Fatalf("taskCanonicalRunID()=%q", got)
 	}
 }
 
