@@ -1,21 +1,27 @@
 # Fork capabilities
 
-The active generation is the fork line frozen on the **latest synced upstream version** this fork tracks. See [fork generations](../../releases/fork-generations/README.md).
+The active generation is **`fork/v0.4.22`**, frozen on official upstream **`v0.4.22`**.
+
+See [fork generations](../../releases/fork-generations/README.md).
 
 ## Current active generation
 
-**`upstream-main-20260808`** (nearest official tag **`v0.4.21`**, generation branch `fork/upstream-main-20260808`) owns these additive capabilities:
+**`fork/v0.4.22`** owns these additive capabilities:
 
 - [External PR integration and current execution context](external-pr-integration/README.md)
 - [Pi process tree supervision](pi-process-tree-supervision/README.md)
 - Access-Grant-only Multica/AGS authority cutover (no Workload Assertion / public Session / legacy merge gateway)
+- Best-effort Multica daemon `MULTICA_RUN_ID` injection (ExecutionID or Task ID; never blocks task start)
 
 Clean history expectation: upstream base first; **fork-only commits always at the tip**.
 
-## Previous generation
+## Previous generations
 
-`fork/v0.4.12` remains the previous accepted generation and primary rollback source. `fork/v0.4.9` / `fork/v0.4.8` remain older donor evidence. They are not current deploy authority.
+- `fork/upstream-main-20260808` (v0.4.21-era freeze)
+- `fork/v0.4.12` and older
+
+They remain immutable rollback/donor evidence, not current deploy authority.
 
 ## Procedure
 
-Branch/build/deployment procedure is owned by the [Fork Development Standard](../../standards/fork-development.md). Generation inventory and claim limits live under [`docs/releases/fork-generations/`](../../releases/fork-generations/README.md).
+Branch/build/deployment procedure is owned by the [Fork Development Standard](../../standards/fork-development.md).
