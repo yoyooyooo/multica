@@ -34,7 +34,9 @@ Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context �
 - operation、capability 或 merge method；
 - AGS Session、Access Grant、provider token 或其他凭据。
 
-Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为 claim generation / dual-read `run.id` 坐标交给daemon；daemon best-effort 注入 `MULTICA_RUN_ID`，缺失不得阻断普通 Agent 启动。该响应可作为 AGS 绑定 Task/claim generation 的输入，但不是授权证明。AGS 必须独立签发并在使用时复核 Access Grant、executor、operation、repository 与原生仓库授权。
+Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为 claim generation / dual-read `run.id` 坐标交给daemon；daemon best-effort 注入 `MULTICA_RUN_ID`，缺失不得阻断普通 Agent 启动。该响应可作为 AGS 内部绑定 Task/claim generation 的输入，但不是授权证明，也不是 Agent 命令面。
+
+**普通 Agent 协作面（与 Program A / ags-cli 0.2.0 对齐）：** 只使用 `git` 与 `gh`（Runtime shim → `ags-cli gh`）。Access Grant 由 launcher/服务自动 issue/reuse，**禁止**要求 Agent 先跑 grant/session/access。Multica External PR association / link-token 为 best-effort 关联；关联失败可 warn，**不得**单独阻断合法 PR create。真拒绝来自 AGS 仓库权限、protected 与 exact effect（如 merge）。
 
 External-PR link token 与授权链独立：audience 必须精确匹配配置，`source=task_token`，
 有效期最长五分钟，并且不携带 assertion `kid` 或 `purpose`。签名 secret 必须是至少

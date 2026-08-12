@@ -55,9 +55,14 @@ or cross-task authority is rejected by the locked running-token check. Claim alw
 
 Multica no longer issues AGS workload assertions or `pr.merge` delegations. The
 former assertion, human delegation, AGS introspection/consume/effect, and CLI
-`issue merge` routes are absent and must return `404`. AGS repository authority
-comes only from AGS canonical Access Grants and live native repository grants;
-Multica current-context facts are not authorization.
+`issue merge` routes are absent and must return `404`.
+
+**Agent-facing surface (Program A 0.2.0 alignment):** ordinary `git` + `gh`
+only. Access Grant is internal to ags-cli launcher / AGS service—not an Agent
+command tree. External PR association / link-token is best-effort provenance
+and must not hard-block legitimate PR create. Real denials are AGS repository
+permission / protected / exact effect. Multica current-context facts are not
+authorization.
 
 ## Two distinct webhook paths: link vs close-intent
 

@@ -99,15 +99,31 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
-## Repository authorization comes from AGS
+## Repository work uses ordinary git / gh; AGS is the real gate
 
-Multica current execution context provides authenticated Task and Run facts
-only; it does not authorize repository operations. AGS independently resolves
-the canonical actor and issues a short-lived Access Grant. At use time, AGS
-must validate that canonical grant again together with the live native repository grant.
-Do not treat Multica context facts, task tokens, metadata, or
-link tokens as repository authority, and do not route repository operations
-through retired delegation or legacy gateway paths.
+For code-changing issue work, use ordinary tools only:
+
+```bash
+git status / add / commit / push
+gh pr create --fill          # Runtime shim → ags-cli gh → AGS engine
+gh pr view --json ...
+gh pr checks
+gh pr comment ...
+```
+
+Do **not** call `ags-cli grant|session|access|pr` (or similar) as an Agent
+workflow. Access Grant issue/reuse is an **internal** launcher/service material,
+not a command surface. Multica current-execution-context, task tokens, metadata,
+and external-PR link tokens are **not** repository authority.
+
+Multica ↔ AGS association (Issue linkage / link-token) is **best-effort
+provenance**: association failure may warn but must not block a legitimate
+`git push` / `gh pr create` when AGS repository write permission exists.
+True denials come from AGS repository permission, protected branch, or exact
+effects (for example merge)—not from missing Multica link-token or Grant CLI.
+
+Do not route repository operations through retired Multica workload assertion
+or `pr.merge` delegation paths (those routes return 404).
 
 ## Reading a linked PR's real state
 
