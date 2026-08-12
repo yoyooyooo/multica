@@ -81,6 +81,31 @@ func sortedJSONKeys(value map[string]any) []string {
 	return keys
 }
 
+func TestGetCurrentExecutionContextRejectsStaleGenerationToken(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "stale-generation-context-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgent(t, agentID)
+	executionID := uuid.NewString()
+	staleGeneration := uuid.NewString()
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET execution_id=$2 WHERE id=$1`, taskID, executionID); err != nil {
+		t.Fatal(err)
+	}
+	// Bind token to a different generation than the running task row.
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE task_token SET execution_id=$2
+		WHERE token_hash=(SELECT token_hash FROM task_token WHERE task_id=$1 ORDER BY created_at DESC LIMIT 1)
+	`, taskID, staleGeneration); err != nil {
+		t.Fatal(err)
+	}
+	req := newCurrentExecutionContextRequest()
+	authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
+	rr := httptest.NewRecorder()
+	testHandler.GetCurrentExecutionContext(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s, want 401 for generation mismatch", rr.Code, rr.Body.String())
+	}
+}
+
+
 func TestGetCurrentExecutionContextRequiresTaskTokenActor(t *testing.T) {
 	req := newCurrentExecutionContextRequest()
 	req.Header.Set("X-Actor-Source", "member")
