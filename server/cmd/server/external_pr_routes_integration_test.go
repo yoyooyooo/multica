@@ -106,6 +106,14 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 			ID     string `json:"id"`
 			Status string `json:"status"`
 		} `json:"task"`
+		Claim *struct {
+			Generation string `json:"generation"`
+			TaskID     string `json:"task_id"`
+		} `json:"claim"`
+		Run struct {
+			ID     string `json:"id"`
+			TaskID string `json:"task_id"`
+		} `json:"run"`
 		Issue *struct {
 			ID string `json:"id"`
 		} `json:"issue"`
@@ -113,8 +121,11 @@ token_hash, task_id, agent_id, workspace_id, user_id, expires_at
 	if err := json.NewDecoder(contextResp.Body).Decode(&currentContext); err != nil {
 		t.Fatal(err)
 	}
-	if currentContext.Schema != "multica.current-execution-context.v1" || currentContext.Workspace.ID != testWorkspaceID || currentContext.Agent.ID != agentID || currentContext.Task.ID != taskID || currentContext.Task.Status != "running" || currentContext.Issue == nil || currentContext.Issue.ID != issueID {
+	if currentContext.Schema != "multica.current-execution-context.v2" || currentContext.Workspace.ID != testWorkspaceID || currentContext.Agent.ID != agentID || currentContext.Task.ID != taskID || currentContext.Task.Status != "running" || currentContext.Issue == nil || currentContext.Issue.ID != issueID {
 		t.Fatalf("context route did not use token-bound identity: %#v", currentContext)
+	}
+	if currentContext.Claim == nil || currentContext.Claim.TaskID != taskID || currentContext.Claim.Generation == "" || currentContext.Run.ID != currentContext.Claim.Generation || currentContext.Run.TaskID != taskID {
+		t.Fatalf("claim/run dual-read missing: %#v", currentContext)
 	}
 
 	t.Setenv("MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET", "router-link-token-secret-at-least-32-bytes")

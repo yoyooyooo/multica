@@ -47,7 +47,7 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Historical assertion-authority / merge-delegation schema | retired by forward migrations `292`–`299` (T016); no live tables, sqlc queries, or workspace/issue cleanup paths remain; roll back only via pre-299 DB restore |
 
 `GET /api/integrations/current-execution-context` has no request selectors and
-returns schema `multica.current-execution-context.v1`: bounded Workspace, Agent,
+returns schema `multica.current-execution-context.v2`: minimal Workspace/Agent/Task ids, claim.generation (run.id dual-read), optional Issue/Squad/Runtime/Trigger ids without display enrichment. Formerly: bounded Workspace, Agent,
 Task/Run, optional Issue/Squad/Runtime/Trigger, and attribution facts from the
 authenticated running task. It never emits assertions, Policy Classes,
 operations, capabilities, Sessions, Grants, or credentials. Terminal, revoked,

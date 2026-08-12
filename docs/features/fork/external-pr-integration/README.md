@@ -15,7 +15,7 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 
 | 路由 | 调用方与认证 | 作用 |
 |---|---|---|
-| `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v1`；身份全部来自服务端绑定的 Workspace、Agent、Task/Run 和可选 Issue/Squad/Runtime/Trigger |
+| `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v2` 最小事实：Workspace/Agent/Task ids、`claim.generation`（`run.id` dual-read 别名）和可选 Issue/Squad/Runtime/Trigger ids；无 display enrichment |
 | `POST /api/integrations/external-pr/link-token` | still-running Task token | **兼容入口（T017 residual）**：签发 task-bound correlation token；不授予仓库操作权限；owner=Multica fork maintainer；目标退役：完整 404 + AGS verify/assertion 字段同代清理（登记于 evidence `external-pr-link-token-census.md`） |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
 | `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 依据已登记投影与 completion intent 请求完成 Issue |

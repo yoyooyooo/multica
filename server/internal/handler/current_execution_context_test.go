@@ -20,6 +20,39 @@ func newCurrentExecutionContextRequest() *http.Request {
 	return httptest.NewRequest(http.MethodGet, "/api/integrations/current-execution-context", nil)
 }
 
+func TestGetCurrentExecutionContextFallsBackGenerationToTaskID(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "fallback-generation-agent", []byte(`{}`))
+	taskID := createHandlerTestTaskForAgent(t, agentID)
+	// Ensure execution_id is NULL so generation falls back to task id.
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET execution_id=NULL WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE task_token SET execution_id=NULL
+		WHERE token_hash=(SELECT token_hash FROM task_token WHERE task_id=$1 ORDER BY created_at DESC LIMIT 1)
+	`, taskID); err != nil {
+		// best-effort; lock path may not require token generation when null
+		t.Logf("token execution_id clear: %v", err)
+	}
+	req := newCurrentExecutionContextRequest()
+	authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
+	rr := httptest.NewRecorder()
+	testHandler.GetCurrentExecutionContext(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	claim := response["claim"].(map[string]any)
+	run := response["run"].(map[string]any)
+	if claim["generation"] != taskID || claim["task_id"] != taskID || run["id"] != taskID || run["task_id"] != taskID {
+		t.Fatalf("fallback generation claim=%#v run=%#v", claim, run)
+	}
+}
+
+
 func authorizeCurrentExecutionContextTestTask(t *testing.T, req *http.Request, agentID, taskID string) string {
 	t.Helper()
 	tokenHash := uuid.NewString()
