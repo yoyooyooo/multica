@@ -44,7 +44,7 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | External PR link token | `server/internal/handler/external_pr_link_token.go` (`CreateExternalPRLinkToken`) |
 | Canonical Run propagation into Agent env | `server/internal/handler/agent.go` (`AgentTaskResponse.ExecutionID`, `taskToResponse`), `server/internal/daemon/types.go` (`Task.ExecutionID`), `server/internal/daemon/daemon.go` (`taskCanonicalRunID`, `MULTICA_RUN_ID`) |
 | Route wiring and retired-route `404` contract | `server/cmd/server/router.go`, `server/cmd/server/external_pr_routes_integration_test.go` |
-| Historical assertion-authority / merge-delegation rows and cleanup | migrations plus deletion-only queries under `server/pkg/db/queries/workspace.sql` and `workload_pr_merge_delegation.sql`; no generated read/create/approve/consume API remains |
+| Historical assertion-authority / merge-delegation schema | retired by forward migrations `292`–`299` (T016); no live tables, sqlc queries, or workspace/issue cleanup paths remain; roll back only via pre-299 DB restore |
 
 `GET /api/integrations/current-execution-context` has no request selectors and
 returns schema `multica.current-execution-context.v1`: bounded Workspace, Agent,
@@ -167,9 +167,9 @@ grep -n 'evaluatePullRequestCompletion\|CompleteIssueFromPullRequest\|LockIssueC
 grep -n 'GetCurrentExecutionContext\|assembleCurrentExecutionContext\|lockRunningTaskTokenForExecutionContext\|resolveCurrentExecutionWorkload' internal/handler/{current_execution_context.go,current_execution_context_test.go}
 grep -n 'CreateExternalPRLinkToken\|resolvedCurrentExecutionWorkload' internal/handler/{external_pr_link_token.go,external_pr_link_token_test.go,current_execution_context.go}
 grep -n 'workload-assertions\|workload-delegations/pr-merge' cmd/server/external_pr_routes_integration_test.go
-grep -n 'DeleteWorkspacePRMergeDelegationEvents\|DeleteWorkspacePRMergeDelegations' pkg/db/queries/workload_pr_merge_delegation.sql pkg/db/generated/workload_pr_merge_delegation.sql.go
-grep -n 'DeleteWorkspaceWorkloadAuthority' pkg/db/queries/workspace.sql pkg/db/generated/workspace.sql.go
-! test -e pkg/db/queries/workload_authority.sql && ! test -e pkg/db/generated/workload_authority.sql.go
+! test -e pkg/db/queries/workload_pr_merge_delegation.sql && ! test -e pkg/db/generated/workload_pr_merge_delegation.sql.go
+! grep -n 'DeleteWorkspaceWorkloadAuthority\|DeleteWorkspacePRMerge' pkg/db/queries/workspace.sql pkg/db/queries/issue.sql
+ls migrations/292_drop_workload_pr_merge_delegation_event_history_idx.up.sql migrations/299_retire_dead_workload_authority_tables.up.sql
 grep -n 'db\|migrations' cmd/server/{health.go,health_test.go}
 grep -n 'func (h \*Handler) notifyParentOfChildDone\|func stageBarrierClosed\|func stageProgressSummary' internal/handler/issue_child_done.go
 grep -n 'func (s \*IssueService) WillEnqueueRun' internal/service/issue_trigger.go
