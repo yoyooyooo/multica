@@ -499,6 +499,7 @@ func TestRunMigrationsRejectsInvalidDirection(t *testing.T) {
 }
 
 func TestPRMergeDelegationConcurrentIndexesHaveRecoveryHooks(t *testing.T) {
+	// Historical dual-ledger names and formal renumbered names both need hooks.
 	versions := []string{
 		"279_workload_pr_merge_delegation_id_index",
 		"280_workload_pr_merge_delegation_active_index",
@@ -506,17 +507,24 @@ func TestPRMergeDelegationConcurrentIndexesHaveRecoveryHooks(t *testing.T) {
 		"282_workload_pr_merge_delegation_issue_state_index",
 		"283_workload_pr_merge_delegation_event_id_index",
 		"284_workload_pr_merge_delegation_event_history_index",
+		"286_workload_pr_merge_delegation_id_index",
+		"287_workload_pr_merge_delegation_active_index",
+		"288_workload_pr_merge_delegation_consumer_intent_index",
+		"289_workload_pr_merge_delegation_issue_state_index",
+		"290_workload_pr_merge_delegation_event_id_index",
+		"291_workload_pr_merge_delegation_event_history_index",
 	}
-	if len(prMergeDelegationIndexSpecs) != len(versions) {
-		t.Fatalf("pr.merge index specs=%d want=%d", len(prMergeDelegationIndexSpecs), len(versions))
+	if len(prMergeDelegationIndexSpecs) != 6 {
+		t.Fatalf("pr.merge index specs=%d want 6", len(prMergeDelegationIndexSpecs))
 	}
-	for i, version := range versions {
+	for _, version := range versions {
 		if preMigrationHooks[version] == nil {
 			t.Fatalf("missing failed-artifact recovery hook for %s", version)
 		}
-		spec := prMergeDelegationIndexSpecs[i]
+	}
+	for _, spec := range prMergeDelegationIndexSpecs {
 		if spec.Name == "" || spec.Table == "" || len(spec.Columns) == 0 {
-			t.Fatalf("incomplete index spec for %s: %#v", version, spec)
+			t.Fatalf("incomplete index spec: %#v", spec)
 		}
 		if spec.PredicateNormalized != "" && spec.PredicateSQL == "" {
 			t.Fatalf("partial index %s cannot be reconstructed by recovery hook", spec.Name)

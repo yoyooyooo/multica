@@ -155,17 +155,21 @@ func testContextContinuityMigrationScenario(t *testing.T, dbURL, scenario string
 		t.Fatalf("unknown scenario %q", scenario)
 	}
 
-	// Split the reconciliation at the concurrent index boundary. A membership
-	// mutation after 270 and before 271/272 must be retained by the temporary
-	// trigger installed while the member table was still locked.
-	run(realMigrationRange(t, serverRoot, 265, 270))
+	// Formal generation numbers (fork/v0.4.22+):
+	// 265-271 upstream issue_view band; 272-276 External PR core indexes;
+	// 277-279 workload authority; 280-284 External PR cleanup/fence;
+	// 285-291 delegated merge; 292-299 T016 retirement of dead authority.
+	run(realMigrationRange(t, serverRoot, 265, 276))
+
+	// Authority table + temporary member trigger live after 277.
+	run(realMigrationRange(t, serverRoot, 277, 277))
 	var epochBefore int64
 	if err := pool.QueryRow(ctx, `SELECT membership_epoch FROM workspace_workload_authority
 WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochBefore); err != nil {
 		t.Fatalf("read epoch before inter-migration member change: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE member SET role='admin' WHERE id='00000000-0000-4000-8000-000000000249'`); err != nil {
-		t.Fatalf("mutate member between 270 and 271: %v", err)
+		t.Fatalf("mutate member between 277 and 278: %v", err)
 	}
 	var epochAfterTemporaryTrigger int64
 	if err := pool.QueryRow(ctx, `SELECT membership_epoch FROM workspace_workload_authority
@@ -175,24 +179,21 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 	if epochAfterTemporaryTrigger != epochBefore+1 {
 		t.Fatalf("temporary member trigger epoch=%d, want %d", epochAfterTemporaryTrigger, epochBefore+1)
 	}
-	run(realMigrationRange(t, serverRoot, 271, 272))
+	run(realMigrationRange(t, serverRoot, 278, 279))
 
-	// Build the workspace-scoped authority before dropping any legacy global
-	// authority. First exercise the exact failed-build/wrong-definition recovery
-	// path while migration 269's receipt authority (and legacy authority on old
-	// origins) remains valid. The failed migration must not be ledgered.
-	migration273 := realMigrationRange(t, serverRoot, 273, 273)
-	exerciseMigration273Recovery(t, ctx, pool, tableFQN, tableName, lockKey, migration273, scenario)
-	run(migration273)
+	// External PR workspace-scoped idempotency + reconciliation fence path.
+	migration280 := realMigrationRange(t, serverRoot, 280, 280)
+	exerciseMigration273Recovery(t, ctx, pool, tableFQN, tableName, lockKey, migration280, scenario)
+	run(migration280)
 	assertWorkspaceIdempotencyIntermediate(t, ctx, pool, schema, scenario)
 	exerciseLedgeredIndexRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
 	exerciseMigration274Gate(t, ctx, pool, serverRoot, tableName, lockKey)
-	run(realMigrationRange(t, serverRoot, 274, 274))
+	run(realMigrationRange(t, serverRoot, 281, 281))
 	prepareReconciliationFenceRecovery(t, ctx, pool)
-	run(realMigrationRange(t, serverRoot, 275, 275))
+	run(realMigrationRange(t, serverRoot, 282, 282))
 	assertReconciliationFenceStopsHistoricalRepair(t, ctx, pool, serverRoot, tableName, lockKey)
 	exerciseCleanupIndexRecovery(t, ctx, pool)
-	run(realMigrationRange(t, serverRoot, 276, 277))
+	run(realMigrationRange(t, serverRoot, 283, 284))
 	exerciseCleanupIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
 	for _, spec := range externalPRCleanupIndexSpecs {
 		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
@@ -200,18 +201,20 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 		}
 	}
 
-	// Delegated merge v2 adds its schema in a transactional migration and keeps
-	// each concurrent index in a separate, recoverable migration.
-	run(realMigrationRange(t, serverRoot, 278, 278))
+	// Delegated merge schema + concurrent indexes (formal 285-291).
+	run(realMigrationRange(t, serverRoot, 285, 285))
 	seedPRMergeIndexRecoveryRows(t, ctx, pool)
 	exercisePRMergeIndexWrongDefinitionRecovery(t, ctx, pool)
-	run(realMigrationRange(t, serverRoot, 279, 284))
+	run(realMigrationRange(t, serverRoot, 286, 291))
 	exercisePRMergeIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
 	for _, spec := range prMergeDelegationIndexSpecs {
 		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
 			t.Fatalf("delegated merge index %s not exact after recovery: exact=%v err=%v", spec.Name, exact, err)
 		}
 	}
+
+	// T016: retire dead authority/delegation schema after product indexes are proven.
+	run(realMigrationRange(t, serverRoot, 292, 299))
 
 	assertContextContinuitySchema(t, ctx, pool, schema, scenario, wantLegacyRow)
 	assertWorkspaceScopedIdempotency(t, ctx, pool)
@@ -278,8 +281,8 @@ func exerciseCleanupIndexInvalidRecovery(
 		version   string
 		spec      migrationIndexSpec
 	}{
-		{276, "276_external_pr_link_issue_updated_index", externalPRCleanupIndexSpecs[0]},
-		{277, "277_external_pr_receipt_issue_cleanup_index", externalPRCleanupIndexSpecs[1]},
+		{283, "283_external_pr_link_issue_updated_index", externalPRCleanupIndexSpecs[0]},
+		{284, "284_external_pr_receipt_issue_cleanup_index", externalPRCleanupIndexSpecs[1]},
 	}
 	for _, tc := range tests {
 		t.Run(strconv.Itoa(tc.migration), func(t *testing.T) {
@@ -392,15 +395,15 @@ func exercisePRMergeIndexInvalidRecovery(
 ) {
 	t.Helper()
 	versions := []string{
-		"279_workload_pr_merge_delegation_id_index",
-		"280_workload_pr_merge_delegation_active_index",
-		"281_workload_pr_merge_delegation_consumer_intent_index",
-		"282_workload_pr_merge_delegation_issue_state_index",
-		"283_workload_pr_merge_delegation_event_id_index",
-		"284_workload_pr_merge_delegation_event_history_index",
+		"286_workload_pr_merge_delegation_id_index",
+		"287_workload_pr_merge_delegation_active_index",
+		"288_workload_pr_merge_delegation_consumer_intent_index",
+		"289_workload_pr_merge_delegation_issue_state_index",
+		"290_workload_pr_merge_delegation_event_id_index",
+		"291_workload_pr_merge_delegation_event_history_index",
 	}
 	for i, spec := range prMergeDelegationIndexSpecs {
-		migration := 279 + i
+		migration := 286 + i
 		t.Run("delegated_merge_"+strconv.Itoa(migration), func(t *testing.T) {
 			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", versions[i]); err != nil {
 				t.Fatalf("remove migration %d ledger fixture: %v", migration, err)
@@ -474,7 +477,7 @@ func exerciseMigration273Recovery(
 	scenario string,
 ) {
 	t.Helper()
-	const version = "273_external_pr_link_workspace_idempotency_index"
+	const version = "280_external_pr_link_workspace_idempotency_index"
 
 	if scenario == "clean_v0_4_12" {
 		const duplicateKey = "cc-v049-invalid-index-build"
@@ -552,12 +555,13 @@ func exerciseLedgeredIndexRecovery(
 		version string
 		spec    migrationIndexSpec
 	}{
-		{266, "266_external_pr_link_id_unique_index", externalPRIndexSpecs[0]},
-		{267, "267_external_pr_link_identity_index", externalPRIndexSpecs[1]},
-		{268, "268_external_pr_link_issue_state_index", externalPRIndexSpecs[2]},
-		{269, "269_external_pr_link_idempotency_index", externalPRIndexSpecs[3]},
-		{271, "271_workspace_workload_authority_workspace_id_index", externalPRIndexSpecs[4]},
-		{273, "273_external_pr_link_workspace_idempotency_index", externalPRIndexSpecs[5]},
+		{273, "273_external_pr_link_id_unique_index", externalPRIndexSpecs[0]},
+		{274, "274_external_pr_link_identity_index", externalPRIndexSpecs[1]},
+		{275, "275_external_pr_link_issue_state_index", externalPRIndexSpecs[2]},
+		{276, "276_external_pr_link_idempotency_index", externalPRIndexSpecs[3]},
+		// Authority index still exists when this recovery runs (before T016 292-299).
+		{278, "278_workspace_workload_authority_workspace_id_index", externalPRIndexSpecs[4]},
+		{280, "280_external_pr_link_workspace_idempotency_index", externalPRIndexSpecs[5]},
 	}
 	for _, tc := range versions {
 		t.Run("recovery_"+tc.version, func(t *testing.T) {
@@ -697,10 +701,10 @@ INSERT INTO external_pull_request_link (
 		t.Fatal(err)
 	}
 	if err := runMigrations(ctx, pool, runOptions{
-		Direction: "up", Files: realMigrationRange(t, serverRoot, 273, 273), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+		Direction: "up", Files: realMigrationRange(t, serverRoot, 280, 280), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
 		ReconcileHooks: reconciliationMigrationHooks, ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
 	}); err != nil {
-		t.Fatalf("repair ledgered invalid 273 index: %v", err)
+		t.Fatalf("repair ledgered invalid 280 index: %v", err)
 	}
 	_, exact, _, err := inspectMigrationIndex(ctx, pool, spec)
 	if err != nil || !exact {
@@ -723,17 +727,17 @@ func exerciseMigration274Gate(t *testing.T, ctx context.Context, pool *pgxpool.P
 		t.Fatal(err)
 	}
 	err = runMigrations(ctx, pool, runOptions{
-		Direction: "up", Files: realMigrationRange(t, serverRoot, 274, 274), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+		Direction: "up", Files: realMigrationRange(t, serverRoot, 281, 281), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
 		ReconcileHooks: reconciliationMigrationHooks, ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
 	})
 	if err == nil || !strings.Contains(err.Error(), "refuse legacy idempotency index removal") {
-		t.Fatalf("migration 274 did not fail closed on wrong 273 authority: %v", err)
+		t.Fatalf("migration 281 did not fail closed on wrong 280 authority: %v", err)
 	}
 	if repairErr := runMigrations(ctx, pool, runOptions{
-		Direction: "up", Files: realMigrationRange(t, serverRoot, 273, 273), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+		Direction: "up", Files: realMigrationRange(t, serverRoot, 280, 280), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
 		ReconcileHooks: reconciliationMigrationHooks, ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
 	}); repairErr != nil {
-		t.Fatalf("repair 273 after 274 gate: %v", repairErr)
+		t.Fatalf("repair 280 after 281 gate: %v", repairErr)
 	}
 }
 
@@ -839,7 +843,7 @@ func assertReconciliationFenceStopsHistoricalRepair(t *testing.T, ctx context.Co
 	if _, err := pool.Exec(ctx, futureSQL); err != nil {
 		t.Fatal(err)
 	}
-	downFence := filepath.Join(serverRoot, "migrations", "275_external_pr_index_reconciliation_fence.down.sql")
+	downFence := filepath.Join(serverRoot, "migrations", "282_external_pr_index_reconciliation_fence.down.sql")
 	err = runMigrations(ctx, pool, runOptions{
 		Direction: "down", Files: []string{downFence}, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
 		ReconcileHooks: reconciliationMigrationHooks, ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
@@ -856,10 +860,10 @@ func assertReconciliationFenceStopsHistoricalRepair(t *testing.T, ctx context.Co
 		t.Fatal(err)
 	}
 	if !fenceLedgered {
-		t.Fatal("rejected down removed migration 275 ledger")
+		t.Fatal("rejected down removed migration 282 ledger")
 	}
 	if err := runMigrations(ctx, pool, runOptions{
-		Direction: "up", Files: realMigrationRange(t, serverRoot, 266, 275), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+		Direction: "up", Files: realMigrationRange(t, serverRoot, 273, 282), SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
 		ReconcileHooks: reconciliationMigrationHooks, ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
 	}); err != nil {
 		t.Fatalf("post-fence migration rerun: %v", err)
@@ -1009,8 +1013,7 @@ FROM (
     WHERE n.nspname=$1 AND c.relname IN (
         'idx_external_pr_link_id', 'idx_external_pr_link_identity',
         'idx_external_pr_link_issue_state', 'idx_external_pr_receipt_idempotency',
-        'idx_external_pr_link_workspace_idempotency',
-        'workspace_workload_authority_workspace_id_uidx'
+        'idx_external_pr_link_workspace_idempotency'
     )
     UNION ALL
     SELECT 'trigger', t.tgname, pg_get_triggerdef(t.oid)
@@ -1020,9 +1023,7 @@ FROM (
     WHERE n.nspname=$1 AND NOT t.tgisinternal AND t.tgname IN (
         'issue_completion_lock_on_status', 'external_pr_link_completion_lock',
         'issue_pull_request_completion_lock', 'github_pull_request_completion_lock',
-        'issue_vcs_pull_request_completion_lock', 'vcs_pull_request_completion_lock',
-        'workspace_workload_authority_on_workspace_create',
-        'workspace_workload_authority_on_member_change'
+        'issue_vcs_pull_request_completion_lock', 'vcs_pull_request_completion_lock'
     )
 ) catalog
 ORDER BY kind, name`, schema)
@@ -1062,16 +1063,15 @@ func assertContextContinuitySchema(t *testing.T, ctx context.Context, pool *pgxp
 		"idx_external_pr_link_identity":                  {"external_pull_request_link USING btree (workspace_id, provider, external_repo, external_number)"},
 		"idx_external_pr_link_issue_state":               {"external_pull_request_link USING btree (workspace_id, issue_id, state)", "open", "draft", "link_confidence"},
 		"idx_external_pr_receipt_idempotency":            {"external_pull_request_receipt USING btree (workspace_id, idempotency_key)"},
-		"idx_external_pr_link_workspace_idempotency":     {"external_pull_request_link USING btree (workspace_id, idempotency_key)"},
-		"workspace_workload_authority_workspace_id_uidx": {"workspace_workload_authority USING btree (workspace_id)"},
+			"idx_external_pr_link_workspace_idempotency": {"external_pull_request_link USING btree (workspace_id, idempotency_key)"},
 	}
+	// T016 retires workspace_workload_authority*; External PR indexes remain.
 	for _, index := range []string{
 		"idx_external_pr_link_id",
 		"idx_external_pr_link_identity",
 		"idx_external_pr_link_issue_state",
 		"idx_external_pr_receipt_idempotency",
 		"idx_external_pr_link_workspace_idempotency",
-		"workspace_workload_authority_workspace_id_uidx",
 	} {
 		var ready, valid bool
 		var columns, predicate string
@@ -1156,11 +1156,24 @@ WHERE ns.nspname=$1 AND rel.relname='external_pull_request_link' AND c.contype='
 	if foreignKeys != 0 {
 		t.Fatalf("external PR table retained %d foreign keys", foreignKeys)
 	}
-	var authorityRows int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM workspace_workload_authority
-WHERE workspace_id='00000000-0000-4000-8000-000000000049' AND team_identity_id=workspace_id
-  AND membership_epoch >= 2 AND policy_class='multica.workspace.default.v1'`).Scan(&authorityRows); err != nil || authorityRows != 1 {
-		t.Fatalf("authority rows=%d err=%v", authorityRows, err)
+	// T016: dead authority/delegation tables must be gone after 292-299.
+	for _, table := range []string{
+		"workspace_workload_authority",
+		"workload_pr_merge_delegation",
+		"workload_pr_merge_delegation_event",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM pg_class c
+  JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind='r'
+)`, schema, table).Scan(&exists); err != nil {
+			t.Fatalf("check retired table %s: %v", table, err)
+		}
+		if exists {
+			t.Fatalf("retired table %s still exists after T016 migrations", table)
+		}
 	}
 	var legacyRows int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM external_pull_request_link

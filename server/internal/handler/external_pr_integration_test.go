@@ -307,32 +307,6 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
 		t.Fatalf("seed external PR link: %v", err)
 	}
-	var linkID, delegationID string
-	if err := testPool.QueryRow(ctx, `SELECT id FROM external_pull_request_link WHERE workspace_id=$1 AND issue_id=$2`, testWorkspaceID, issueID).Scan(&linkID); err != nil {
-		t.Fatalf("read external PR link: %v", err)
-	}
-	if err := testPool.QueryRow(ctx, `INSERT INTO workload_pr_merge_delegation (
-		workspace_id, issue_id, external_pr_link_id, task_id, execution_id, runtime_id,
-		target_instance, canonical_repository_id, canonical_repository,
-		provider_binding_id, provider_binding_revision, provider_repository,
-		ags_pr_number, provider_pr_number, expected_head_sha, expected_base_sha,
-		base_ref, merge_method, projection_facts_revision, facts_digest, state
-	) VALUES ($1,$2,$3,$4,$5,$6,'mini',$7,'jackie/agent-kit',$8,$9,'jackie/agent-kit',1501,2501,$10,$11,'main','rebase',$12,$13,'pending_approval') RETURNING id`,
-		testWorkspaceID, issueID, linkID, uuid.NewString(), uuid.NewString(), uuid.NewString(),
-		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		"1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222",
-		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-		"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").Scan(&delegationID); err != nil {
-		t.Fatalf("seed PR merge delegation: %v", err)
-	}
-	if _, err := testPool.Exec(ctx, `INSERT INTO workload_pr_merge_delegation_event (
-		workspace_id, issue_id, delegation_id, event_type, actor_type, actor_id
-	) VALUES ($1,$2,$3,'request_created','system','delete-cleanup-test')`, testWorkspaceID, issueID, delegationID); err != nil {
-		t.Fatalf("seed PR merge delegation event: %v", err)
-	}
-
 	if err := testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{
 		ID:          parseUUID(issueID),
 		WorkspaceID: parseUUID(testWorkspaceID),
@@ -359,14 +333,8 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("external PR receipts after issue delete = %d, want 0", count)
 	}
-	for table := range map[string]struct{}{"workload_pr_merge_delegation": {}, "workload_pr_merge_delegation_event": {}} {
-		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE issue_id=$1`, issueID).Scan(&count); err != nil {
-			t.Fatalf("count %s after issue delete: %v", table, err)
-		}
-		if count != 0 {
-			t.Fatalf("%s rows after issue delete=%d, want 0", table, count)
-		}
-	}
+	// T016 retired workload_pr_merge_delegation* tables; External PR link/receipt
+	// cleanup above is the remaining product surface for this test.
 }
 
 func TestExternalPRWritesRejectCrossWorkspaceIssue(t *testing.T) {

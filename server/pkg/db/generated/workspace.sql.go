@@ -176,18 +176,6 @@ func (q *Queries) DeleteWorkspace(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
-const deleteWorkspaceWorkloadAuthority = `-- name: DeleteWorkspaceWorkloadAuthority :exec
-DELETE FROM workspace_workload_authority WHERE workspace_id = $1
-`
-
-// Historical workload-authority rows intentionally have no FK. This cleanup
-// remains only so workspace deletion removes retired data in the same
-// application transaction; no live path creates or reads these rows.
-func (q *Queries) DeleteWorkspaceWorkloadAuthority(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteWorkspaceWorkloadAuthority, workspaceID)
-	return err
-}
-
 const getDaemonWorkspace = `-- name: GetDaemonWorkspace :one
 SELECT id, name
 FROM workspace

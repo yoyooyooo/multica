@@ -68,6 +68,8 @@ var preMigrationHooks = map[string]preMigrationHook{
 	// historical reconciliation: if CREATE INDEX CONCURRENTLY leaves an invalid
 	// artifact before ledger commit, the next run removes/rebuilds it; once
 	// ledgered, later migrations remain free to evolve the definition.
+	// Historical live ledger names (pre-formal renumber) keep recovery hooks so
+	// dual-ledger mini dumps can still self-heal invalid concurrent artifacts.
 	"276_external_pr_link_issue_updated_index":               reconcileMigrationIndex(externalPRCleanupIndexSpecs[0]),
 	"277_external_pr_receipt_issue_cleanup_index":            reconcileMigrationIndex(externalPRCleanupIndexSpecs[1]),
 	"279_workload_pr_merge_delegation_id_index":              reconcileMigrationIndex(prMergeDelegationIndexSpecs[0]),
@@ -76,6 +78,15 @@ var preMigrationHooks = map[string]preMigrationHook{
 	"282_workload_pr_merge_delegation_issue_state_index":     reconcileMigrationIndex(prMergeDelegationIndexSpecs[3]),
 	"283_workload_pr_merge_delegation_event_id_index":        reconcileMigrationIndex(prMergeDelegationIndexSpecs[4]),
 	"284_workload_pr_merge_delegation_event_history_index":   reconcileMigrationIndex(prMergeDelegationIndexSpecs[5]),
+	// Formal fork/v0.4.22+ renumbered filenames.
+	"283_external_pr_link_issue_updated_index":               reconcileMigrationIndex(externalPRCleanupIndexSpecs[0]),
+	"284_external_pr_receipt_issue_cleanup_index":            reconcileMigrationIndex(externalPRCleanupIndexSpecs[1]),
+	"286_workload_pr_merge_delegation_id_index":              reconcileMigrationIndex(prMergeDelegationIndexSpecs[0]),
+	"287_workload_pr_merge_delegation_active_index":          reconcileMigrationIndex(prMergeDelegationIndexSpecs[1]),
+	"288_workload_pr_merge_delegation_consumer_intent_index": reconcileMigrationIndex(prMergeDelegationIndexSpecs[2]),
+	"289_workload_pr_merge_delegation_issue_state_index":     reconcileMigrationIndex(prMergeDelegationIndexSpecs[3]),
+	"290_workload_pr_merge_delegation_event_id_index":        reconcileMigrationIndex(prMergeDelegationIndexSpecs[4]),
+	"291_workload_pr_merge_delegation_event_history_index":   reconcileMigrationIndex(prMergeDelegationIndexSpecs[5]),
 }
 
 // cleanupInvalidConcurrentIndexHook removes an INVALID index left by an
@@ -116,15 +127,17 @@ func cleanupInvalidConcurrentIndexHook(indexRegclass string) preMigrationHook {
 	}
 }
 
-const externalPRIndexReconciliationFenceVersion = "275_external_pr_index_reconciliation_fence"
+// Formal fence filename after fork/v0.4.22 renumber. Historical dual-ledger
+// dumps may still carry 275_*; both are accepted as the same fence epoch.
+const externalPRIndexReconciliationFenceVersion = "282_external_pr_index_reconciliation_fence"
+const externalPRIndexReconciliationFenceVersionLegacy = "275_external_pr_index_reconciliation_fence"
 
 // reconciliationMigrationHooks run before the ledger skip check only until
-// migration 275 records the final catalog fence. Concurrent index creation can
-// leave an invalid same-name catalog entry, and older runners using IF NOT
-// EXISTS may already have ledgered that invalid artifact. The fence prevents
-// these historical definitions from becoming permanent schema authority after
-// a future migration intentionally evolves an index.
+// the External PR index fence records the final catalog. Concurrent index
+// creation can leave an invalid same-name catalog entry, and older runners
+// using IF NOT EXISTS may already have ledgered that invalid artifact.
 var reconciliationMigrationHooks = map[string]preMigrationHook{
+	// Historical live ledger names.
 	"266_external_pr_link_id_unique_index":                reconcileMigrationIndex(externalPRIndexSpecs[0]),
 	"267_external_pr_link_identity_index":                 reconcileMigrationIndex(externalPRIndexSpecs[1]),
 	"268_external_pr_link_issue_state_index":              reconcileMigrationIndex(externalPRIndexSpecs[2]),
@@ -132,6 +145,15 @@ var reconciliationMigrationHooks = map[string]preMigrationHook{
 	"271_workspace_workload_authority_workspace_id_index": reconcileMigrationIndex(externalPRIndexSpecs[4]),
 	"273_external_pr_link_workspace_idempotency_index":    reconcileMigrationIndex(externalPRIndexSpecs[5]),
 	"274_external_pr_legacy_idempotency_index_remove":     verifyExternalPRIndexAuthorities,
+	externalPRIndexReconciliationFenceVersionLegacy:       reconcileAndVerifyExternalPRIndexAuthorities,
+	// Formal fork/v0.4.22+ renumbered filenames.
+	"273_external_pr_link_id_unique_index":                reconcileMigrationIndex(externalPRIndexSpecs[0]),
+	"274_external_pr_link_identity_index":                 reconcileMigrationIndex(externalPRIndexSpecs[1]),
+	"275_external_pr_link_issue_state_index":              reconcileMigrationIndex(externalPRIndexSpecs[2]),
+	"276_external_pr_link_idempotency_index":              reconcileMigrationIndex(externalPRIndexSpecs[3]),
+	"278_workspace_workload_authority_workspace_id_index": reconcileMigrationIndex(externalPRIndexSpecs[4]),
+	"280_external_pr_link_workspace_idempotency_index":    reconcileMigrationIndex(externalPRIndexSpecs[5]),
+	"281_external_pr_legacy_idempotency_index_remove":     verifyExternalPRIndexAuthorities,
 	externalPRIndexReconciliationFenceVersion:             reconcileAndVerifyExternalPRIndexAuthorities,
 }
 
@@ -511,6 +533,12 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	if opts.Direction == "up" && opts.ReconcileFenceVersion != "" {
 		if err := conn.QueryRow(ctx, existsSQL, opts.ReconcileFenceVersion).Scan(&reconciliationFenced); err != nil {
 			return fmt.Errorf("check reconciliation fence %q: %w", opts.ReconcileFenceVersion, err)
+		}
+		// Accept the pre-renumber fence name on dual-ledger / historical dumps.
+		if !reconciliationFenced && opts.ReconcileFenceVersion == externalPRIndexReconciliationFenceVersion {
+			if err := conn.QueryRow(ctx, existsSQL, externalPRIndexReconciliationFenceVersionLegacy).Scan(&reconciliationFenced); err != nil {
+				return fmt.Errorf("check legacy reconciliation fence %q: %w", externalPRIndexReconciliationFenceVersionLegacy, err)
+			}
 		}
 	}
 

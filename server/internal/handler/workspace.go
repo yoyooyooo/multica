@@ -903,21 +903,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
 		},
 		{
-			name: "delete retired PR merge delegation events",
-			run:  func() error { return qtx.DeleteWorkspacePRMergeDelegationEvents(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete retired PR merge delegations",
-			run:  func() error { return qtx.DeleteWorkspacePRMergeDelegations(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete retired workload authority",
-			run:  func() error { return qtx.DeleteWorkspaceWorkloadAuthority(ctx, requester.WorkspaceID) },
-		},
-		{
 			// At this point workspaceMember has resolved → workspaceID is a
 			// valid UUID, so reuse the resolved value. The existing final
 			// statement also sweeps any expand-phase compatibility leftovers.
+			// T016 retired workload_pr_merge_delegation* and workspace_workload_authority;
+			// those cleanup steps are intentionally gone with the tables.
 			name: "delete workspace",
 			run:  func() error { return qtx.DeleteWorkspace(ctx, requester.WorkspaceID) },
 		},

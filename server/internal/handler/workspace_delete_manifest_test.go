@@ -108,11 +108,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"vcs_pull_request":                   workspaceDelete,
 	"verification_code":                  workspaceDeleteKeep,
 	"webhook_delivery":                   workspaceDelete,
-	"workload_pr_merge_delegation":       workspaceDelete,
-	"workload_pr_merge_delegation_event": workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
-	"workspace_workload_authority":       workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
