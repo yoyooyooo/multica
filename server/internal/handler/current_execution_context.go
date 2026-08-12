@@ -2,19 +2,19 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-const currentExecutionContextSchema = "multica.current-execution-context.v1"
+// T018: minimal current-execution-context.v2. Dual-read keeps `run` for one
+// generation while `claim.generation` is the internal claim-generation id
+// (execution_id, falling back to task id). Display enrichment is removed.
+const currentExecutionContextSchema = "multica.current-execution-context.v2"
 
 type currentExecutionContextResponse struct {
 	Schema      string                    `json:"schema"`
@@ -22,7 +22,8 @@ type currentExecutionContextResponse struct {
 	Workspace   currentExecutionWorkspace `json:"workspace"`
 	Agent       currentExecutionAgent     `json:"agent"`
 	Task        currentExecutionTask      `json:"task"`
-	Run         currentExecutionRun       `json:"run"`
+	Claim       currentExecutionClaim     `json:"claim"`
+	Run         currentExecutionRun       `json:"run"` // dual-read alias of claim.generation until Agent Kit/AGS cut over
 	Issue       *currentExecutionIssue    `json:"issue,omitempty"`
 	Squad       *currentExecutionSquad    `json:"squad,omitempty"`
 	Runtime     *currentExecutionRuntime  `json:"runtime,omitempty"`
@@ -32,69 +33,47 @@ type currentExecutionContextResponse struct {
 
 type currentExecutionWorkspace struct {
 	ID   string `json:"id"`
-	Name string `json:"name"`
 	Slug string `json:"slug"`
 }
 
 type currentExecutionAgent struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID string `json:"id"`
 }
 
 type currentExecutionTask struct {
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	Attempt      int32  `json:"attempt"`
-	MaxAttempts  int32  `json:"max_attempts"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	DispatchedAt string `json:"dispatched_at,omitempty"`
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
-	ParentTaskID string `json:"parent_task_id,omitempty"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Attempt int32  `json:"attempt"`
+}
+
+type currentExecutionClaim struct {
+	// Generation is the internal claim-generation coordinate (not a user-facing Run product).
+	Generation string `json:"generation"`
+	TaskID     string `json:"task_id"`
 }
 
 type currentExecutionRun struct {
-	ID           string `json:"id"`
-	TaskID       string `json:"task_id"`
-	Status       string `json:"status"`
-	Attempt      int32  `json:"attempt"`
-	MaxAttempts  int32  `json:"max_attempts"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	DispatchedAt string `json:"dispatched_at,omitempty"`
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
+	// ID mirrors claim.generation during the dual-read window.
+	ID     string `json:"id"`
+	TaskID string `json:"task_id"`
 }
 
 type currentExecutionIssue struct {
-	ID        string `json:"id"`
-	Key       string `json:"key"`
-	Title     string `json:"title"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	ID  string `json:"id"`
+	Key string `json:"key"`
 }
 
 type currentExecutionSquad struct {
-	ID               string `json:"id"`
-	Name             string `json:"name,omitempty"`
-	DetailsAvailable bool   `json:"details_available"`
+	ID string `json:"id"`
 }
 
 type currentExecutionRuntime struct {
-	ID               string `json:"id"`
-	Name             string `json:"name,omitempty"`
-	CustomName       string `json:"custom_name,omitempty"`
-	Provider         string `json:"provider,omitempty"`
-	Status           string `json:"status,omitempty"`
-	DetailsAvailable bool   `json:"details_available"`
+	ID string `json:"id"`
 }
 
 type currentExecutionTrigger struct {
-	Kind           string `json:"kind"`
-	ID             string `json:"id"`
-	CommentID      string `json:"comment_id,omitempty"`
-	AutopilotRunID string `json:"autopilot_run_id,omitempty"`
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 // GetCurrentExecutionContext returns a task-token-bound, provider-neutral
@@ -223,22 +202,18 @@ func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, r
 		Schema:     currentExecutionContextSchema,
 		ObservedAt: observedAt.UTC().Format(time.RFC3339Nano),
 		Workspace: currentExecutionWorkspace{
-			ID: uuidToString(resolved.Workspace.ID), Name: resolved.Workspace.Name, Slug: resolved.Workspace.Slug,
+			ID: uuidToString(resolved.Workspace.ID), Slug: resolved.Workspace.Slug,
 		},
-		Agent: currentExecutionAgent{
-			ID: uuidToString(resolved.Agent.ID), Name: resolved.Agent.Name, Status: resolved.Agent.Status,
-		},
+		Agent: currentExecutionAgent{ID: uuidToString(resolved.Agent.ID)},
 		Task: currentExecutionTask{
-			ID: uuidToString(task.ID), Status: task.Status, Attempt: task.Attempt, MaxAttempts: task.MaxAttempts,
-			CreatedAt: timestampString(task.CreatedAt), DispatchedAt: timestampString(task.DispatchedAt),
-			StartedAt: timestampString(task.StartedAt), CompletedAt: timestampString(task.CompletedAt),
-			ParentTaskID: uuidToString(task.ParentTaskID),
+			ID: uuidToString(task.ID), Status: task.Status, Attempt: task.Attempt,
 		},
+		Claim: currentExecutionClaim{
+			Generation: resolved.RunID, TaskID: uuidToString(task.ID),
+		},
+		// Dual-read: run.id == claim.generation until Agent Kit/AGS drop Run product language.
 		Run: currentExecutionRun{
-			ID: resolved.RunID, TaskID: uuidToString(task.ID), Status: task.Status,
-			Attempt: task.Attempt, MaxAttempts: task.MaxAttempts,
-			CreatedAt: timestampString(task.CreatedAt), DispatchedAt: timestampString(task.DispatchedAt),
-			StartedAt: timestampString(task.StartedAt), CompletedAt: timestampString(task.CompletedAt),
+			ID: resolved.RunID, TaskID: uuidToString(task.ID),
 		},
 		Attribution: taskAttributionBase(task),
 	}
@@ -246,35 +221,18 @@ func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, r
 	if resolved.Issue != nil {
 		response.Issue = &currentExecutionIssue{
 			ID: uuidToString(resolved.Issue.ID), Key: resolved.IssueKey,
-			Title: resolved.Issue.Title, Status: resolved.Issue.Status,
-			CreatedAt: timestampString(resolved.Issue.CreatedAt), UpdatedAt: timestampString(resolved.Issue.UpdatedAt),
 		}
 	}
 	if task.SquadID.Valid {
 		response.Squad = &currentExecutionSquad{ID: uuidToString(task.SquadID)}
-		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: resolved.WorkspaceID})
-		if err == nil {
-			response.Squad.Name = squad.Name
-			response.Squad.DetailsAvailable = true
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return currentExecutionContextResponse{}, err
-		}
 	}
 	if task.RuntimeID.Valid {
 		response.Runtime = &currentExecutionRuntime{ID: uuidToString(task.RuntimeID)}
-		runtime, err := queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: task.RuntimeID, WorkspaceID: resolved.WorkspaceID})
-		if err == nil {
-			response.Runtime.Name = runtime.Name
-			response.Runtime.CustomName = textString(runtime.CustomName)
-			response.Runtime.Provider = runtime.Provider
-			response.Runtime.Status = runtime.Status
-			response.Runtime.DetailsAvailable = true
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return currentExecutionContextResponse{}, err
-		}
 	}
 	response.Trigger = currentExecutionTriggerFromTask(task)
-	hydrateCurrentExecutionAttributionNames(ctx, queries, response.Attribution)
+	// T018: do not hydrate display names onto attribution; IDs/source only.
+	_ = ctx
+	_ = queries
 	return response, nil
 }
 
@@ -299,49 +257,7 @@ func currentExecutionTriggerFromTask(task db.AgentTaskQueue) *currentExecutionTr
 	if kind == "" || id == "" {
 		return nil
 	}
-	return &currentExecutionTrigger{Kind: kind, ID: id, CommentID: commentID, AutopilotRunID: autopilotRunID}
-}
-
-func hydrateCurrentExecutionAttributionNames(ctx context.Context, queries *db.Queries, attr *TaskAttribution) {
-	if attr == nil {
-		return
-	}
-	ids := make([]pgtype.UUID, 0, 2)
-	seen := make(map[string]struct{}, 2)
-	add := func(ref *AttributionUser) {
-		if ref == nil || ref.ID == "" {
-			return
-		}
-		if _, exists := seen[ref.ID]; exists {
-			return
-		}
-		parsed, err := util.ParseUUID(ref.ID)
-		if err != nil {
-			return
-		}
-		seen[ref.ID] = struct{}{}
-		ids = append(ids, parsed)
-	}
-	add(attr.Initiator)
-	add(attr.Originator)
-	if len(ids) == 0 {
-		return
-	}
-	users, err := queries.GetUsersByIDs(ctx, ids)
-	if err != nil {
-		return
-	}
-	names := make(map[string]string, len(users))
-	for _, user := range users {
-		names[uuidToString(user.ID)] = user.Name
-	}
-	fill := func(ref *AttributionUser) {
-		if ref != nil {
-			ref.Name = names[ref.ID]
-		}
-	}
-	fill(attr.Initiator)
-	fill(attr.Originator)
+	return &currentExecutionTrigger{Kind: kind, ID: id}
 }
 
 func timestampString(value pgtype.Timestamptz) string {

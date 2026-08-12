@@ -119,10 +119,10 @@ func TestGetCurrentExecutionContextReturnsOnlyTokenBoundServerFacts(t *testing.T
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("decode context response: %v", err)
 	}
-	if got, want := sortedJSONKeys(response), []string{"agent", "attribution", "issue", "observed_at", "run", "runtime", "schema", "squad", "task", "trigger", "workspace"}; !reflect.DeepEqual(got, want) {
+	if got, want := sortedJSONKeys(response), []string{"agent", "attribution", "claim", "issue", "observed_at", "run", "runtime", "schema", "squad", "task", "trigger", "workspace"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("top-level keys=%v want=%v", got, want)
 	}
-	if response["schema"] != "multica.current-execution-context.v1" {
+	if response["schema"] != "multica.current-execution-context.v2" {
 		t.Fatalf("schema=%v", response["schema"])
 	}
 	if _, err := time.Parse(time.RFC3339Nano, response["observed_at"].(string)); err != nil {
@@ -130,33 +130,37 @@ func TestGetCurrentExecutionContextReturnsOnlyTokenBoundServerFacts(t *testing.T
 	}
 
 	workspace := response["workspace"].(map[string]any)
-	if workspace["id"] != testWorkspaceID || workspace["slug"] == "" || workspace["name"] == "" {
+	if workspace["id"] != testWorkspaceID || workspace["slug"] == "" || workspace["name"] != nil {
 		t.Fatalf("workspace=%#v", workspace)
 	}
 	agent := response["agent"].(map[string]any)
-	if agent["id"] != agentID || agent["name"] != "current-execution-context-agent" || agent["status"] == "" {
+	if agent["id"] != agentID || agent["name"] != nil || agent["status"] != nil {
 		t.Fatalf("agent=%#v", agent)
 	}
 	task := response["task"].(map[string]any)
-	if task["id"] != taskID || task["status"] != "running" || task["attempt"] == nil || task["max_attempts"] == nil {
+	if task["id"] != taskID || task["status"] != "running" || task["attempt"] == nil || task["max_attempts"] != nil {
 		t.Fatalf("task=%#v", task)
 	}
+	claim := response["claim"].(map[string]any)
+	if claim["generation"] != executionID || claim["task_id"] != taskID {
+		t.Fatalf("claim=%#v", claim)
+	}
 	run := response["run"].(map[string]any)
-	if run["id"] != executionID || run["status"] != "running" || run["task_id"] != taskID {
+	if run["id"] != executionID || run["task_id"] != taskID || run["status"] != nil {
 		t.Fatalf("run=%#v", run)
 	}
 	issue := response["issue"].(map[string]any)
-	if issue["id"] != issueID || issue["title"] != "current execution context issue" || issue["status"] != "in_review" || issue["key"] == "" {
+	if issue["id"] != issueID || issue["key"] == "" || issue["title"] != nil || issue["status"] != nil {
 		t.Fatalf("issue=%#v", issue)
 	}
-	if squad := response["squad"].(map[string]any); squad["id"] != squadID || squad["name"] != "current-execution-context-squad" {
+	if squad := response["squad"].(map[string]any); squad["id"] != squadID || squad["name"] != nil || squad["details_available"] != nil {
 		t.Fatalf("squad=%#v", squad)
 	}
-	if runtime := response["runtime"].(map[string]any); runtime["id"] == "" || runtime["name"] == "" || runtime["provider"] == "" || runtime["status"] == "" {
+	if runtime := response["runtime"].(map[string]any); runtime["id"] == "" || runtime["name"] != nil || runtime["provider"] != nil || runtime["status"] != nil {
 		t.Fatalf("runtime=%#v", runtime)
 	}
 	trigger := response["trigger"].(map[string]any)
-	if trigger["kind"] != "comment" || trigger["id"] != triggerID || trigger["comment_id"] != triggerID {
+	if trigger["kind"] != "comment" || trigger["id"] != triggerID || trigger["comment_id"] != nil {
 		t.Fatalf("trigger=%#v", trigger)
 	}
 	attribution := response["attribution"].(map[string]any)
@@ -324,11 +328,11 @@ func TestGetCurrentExecutionContextKeepsUnavailableOptionalRuntimeAndSquadAsUnre
 		t.Fatal(err)
 	}
 	runtime := response["runtime"].(map[string]any)
-	if runtime["id"] != unavailableRuntimeID || runtime["details_available"] != false || len(runtime) != 2 {
+	if runtime["id"] != unavailableRuntimeID || runtime["details_available"] != nil || len(runtime) != 1 {
 		t.Fatalf("runtime=%#v", runtime)
 	}
 	squad := response["squad"].(map[string]any)
-	if squad["id"] != unavailableSquadID || squad["details_available"] != false || len(squad) != 2 {
+	if squad["id"] != unavailableSquadID || squad["details_available"] != nil || len(squad) != 1 {
 		t.Fatalf("squad=%#v", squad)
 	}
 }
