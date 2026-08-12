@@ -94,7 +94,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           FRONTEND_CHANGED: ${{ steps.filter.outputs.frontend }}
         run: |
-          # Push/workflow_dispatch on listened branches: always full frontend.
+          # Push on listened branches: always full frontend.
           # pull_request: only when frontend-relevant paths changed.
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"

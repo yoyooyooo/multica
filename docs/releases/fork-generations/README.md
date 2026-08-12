@@ -13,9 +13,9 @@ Each file records one Multica fork generation frozen on a synced upstream base
 
 - **[`v0.4.22`](v0.4.22.md)** — formal generation frozen on official tag **`v0.4.22`**, branch `fork/v0.4.22`.
   - shape: `v0.4.22@8bd49bba8` + 6 fork-only tip commits (bootstrap → replay → mobile-ci → remediate → docs → declare-active)
-  - formal tip at freeze of this router: `66fdc1d5b` (`v0.4.22-6-g66fdc1d5b`)
+  - published formal tip: `8e7367eb8` (`v0.4.22-8-g8e7367eb8`) on `origin/fork/v0.4.22`
   - includes best-effort daemon `MULTICA_RUN_ID` injection (ExecutionID or Task ID)
-  - publication/CI/runtime acceptance is **not** implied by this router entry; until origin has `fork/v0.4.22` and exact-head checks, treat the tip as a local formal candidate only
+  - source/CI publication is separate from runtime redeploy; live mini backend may still be a prior generation until a deployment receipt exists
 
 ## Previous generations (rollback / historical)
 
