@@ -28,8 +28,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Path filtering is only needed for pull_request gating. Push to a
+      # listened branch always wants full frontend validation (see Decide).
+      # Running dorny/paths-filter on a newly published generation branch can
+      # attempt a shallow merge-base against an unrelated fork/* tip and fail
+      # with `shallow file has changed since we read it`, cascading into a
+      # false frontend failure while backend already passed.
       - name: Filter paths
         id: filter
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
         with:
           # apps/docs is excluded from the frontend turbo run, so a
@@ -87,7 +94,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           FRONTEND_CHANGED: ${{ steps.filter.outputs.frontend }}
         run: |
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FRONTEND_CHANGED" = "true" ]; then
+          # Push/workflow_dispatch on listened branches: always full frontend.
+          # pull_request: only when frontend-relevant paths changed.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          elif [ "$FRONTEND_CHANGED" = "true" ]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
