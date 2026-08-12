@@ -960,24 +960,24 @@ INSERT INTO external_pull_request_link (
 
 func assertWorkspaceScopedIdempotency(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
+	// T017: receipt owns idempotency; same key may exist in two workspaces on the receipt table.
 	const key = "cc-v049-shared-workspace-key"
 	if _, err := pool.Exec(ctx, `
-INSERT INTO external_pull_request_link (
-    workspace_id, issue_id, provider, external_repo, external_number,
-    link_confidence, completion_intent, state, idempotency_key
+INSERT INTO external_pull_request_receipt (
+    workspace_id, idempotency_key, payload_hash, issue_id, provider, external_repo, external_number
 ) VALUES
-    ('00000000-0000-4000-8000-000000000049', '00000000-0000-4000-8000-000000000149',
-     'ags', 'jackie/workspace-one', 501, 'authoritative', TRUE, 'open', $1),
-    ('00000000-0000-4000-8000-000000000050', '00000000-0000-4000-8000-000000000150',
-     'ags', 'jackie/workspace-two', 502, 'authoritative', TRUE, 'open', $1)`, key); err != nil {
-		t.Fatalf("workspace-scoped idempotency regression: %v", err)
+    ('00000000-0000-4000-8000-000000000049', $1, 'hash-one', '00000000-0000-4000-8000-000000000149',
+     'ags', 'jackie/workspace-one', 501),
+    ('00000000-0000-4000-8000-000000000050', $1, 'hash-two', '00000000-0000-4000-8000-000000000150',
+     'ags', 'jackie/workspace-two', 502)`, key); err != nil {
+		t.Fatalf("workspace-scoped receipt idempotency regression: %v", err)
 	}
 	var rows int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pull_request_link WHERE idempotency_key=$1`, key).Scan(&rows); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pull_request_receipt WHERE idempotency_key=$1`, key).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 2 {
-		t.Fatalf("workspace-scoped idempotency rows=%d, want 2", rows)
+		t.Fatalf("workspace-scoped receipt idempotency rows=%d, want 2", rows)
 	}
 }
 
@@ -1050,7 +1050,7 @@ func legacyExternalPRSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.P
 	t.Helper()
 	var value string
 	if err := pool.QueryRow(ctx, `SELECT COALESCE(string_agg(
-provider || '|' || external_repo || '|' || external_number::text || '|' || state || '|' || COALESCE(idempotency_key,''),
+provider || '|' || external_repo || '|' || external_number::text || '|' || state,
 ',' ORDER BY provider, external_repo, external_number), '') FROM external_pull_request_link`).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
@@ -1085,9 +1085,6 @@ WHERE n.nspname=$1 AND c.relname=$2`, schema, index).Scan(&ready, &valid, &colum
 		}
 		if !ready || !valid || columns == "" {
 			t.Fatalf("index %s ready=%v valid=%v definition=%q predicate=%q", index, ready, valid, columns, predicate)
-		}
-		if index == "idx_external_pr_link_workspace_idempotency" && predicate != "(idempotency_key IS NOT NULL)" {
-			t.Fatalf("index %s predicate=%q, want workspace-scoped non-null predicate", index, predicate)
 		}
 		definition := columns + " " + predicate
 		for _, fragment := range expectedIndexDefinition[index] {
@@ -1176,7 +1173,7 @@ SELECT EXISTS(
 	}
 	var legacyRows int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM external_pull_request_link
-WHERE idempotency_key='cc-v049-legacy-fact'`).Scan(&legacyRows); err != nil {
+WHERE provider='ags' AND external_repo='jackie/agent-kit' AND external_number=49`).Scan(&legacyRows); err != nil {
 		t.Fatalf("count legacy external PR rows: %v", err)
 	}
 	want := 0
@@ -1185,5 +1182,24 @@ WHERE idempotency_key='cc-v049-legacy-fact'`).Scan(&legacyRows); err != nil {
 	}
 	if legacyRows != want {
 		t.Fatalf("legacy external PR rows=%d want=%d", legacyRows, want)
+	}
+	// T017: projection columns and link.idempotency_key must be gone.
+	for _, col := range []string{
+		"target_instance", "canonical_repository_id", "canonical_repository",
+		"provider_binding_id", "provider_binding_revision", "provider_repository",
+		"expected_head_sha", "expected_base_sha", "base_ref",
+		"delegated_merge_method", "projection_facts_revision", "idempotency_key",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM information_schema.columns
+  WHERE table_schema=$1 AND table_name='external_pull_request_link' AND column_name=$2
+)`, schema, col).Scan(&exists); err != nil {
+			t.Fatalf("check dropped column %s: %v", col, err)
+		}
+		if exists {
+			t.Fatalf("T017 column %s still present on external_pull_request_link", col)
+		}
 	}
 }

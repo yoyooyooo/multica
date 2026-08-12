@@ -16,7 +16,7 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 | 路由 | 调用方与认证 | 作用 |
 |---|---|---|
 | `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v1`；身份全部来自服务端绑定的 Workspace、Agent、Task/Run 和可选 Issue/Squad/Runtime/Trigger |
-| `POST /api/integrations/external-pr/link-token` | still-running Task token | 为 external-PR link 回调签发 task-bound correlation token；不授予仓库操作权限 |
+| `POST /api/integrations/external-pr/link-token` | still-running Task token | **兼容入口（T017 residual）**：签发 task-bound correlation token；不授予仓库操作权限；owner=Multica fork maintainer；目标退役：完整 404 + AGS verify/assertion 字段同代清理（登记于 evidence `external-pr-link-token-census.md`） |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
 | `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 依据已登记投影与 completion intent 请求完成 Issue |
 | `GET /api/workspaces/{workspace_id}/issues/{issue_id}/external-prs` | Workspace member | 读取外部 PR 链接 |
@@ -43,12 +43,19 @@ Class、operation、capability、Session、Grant 或 provider credential。
 
 ## External PR 数据与完成规则
 
-`external_pull_request_link` 保存 Workspace、Issue、provider、repository、PR number、
-state、canonical projection 与 completion intent。`external_pull_request_receipt` 保存
-幂等回执。兼容列/JSON 名 `delegated_merge_method` 只保存已观察到的外部 PR merge
-projection method，用于链接幂等与完成校验；它不是 delegation、policy、operation selector
-或仓库授权。历史 schema 中的 workload merge delegation 表只保留迁移兼容和旧数据清理
-用途，不再有创建、读取、批准、消费或 effect API。
+`external_pull_request_link` 只保存 Multica 产品字段：Workspace、Issue、provider、
+repository、PR number、URL、state、`link_confidence`、completion intent，以及可选
+merge-provider 镜像（merge_repo/number/url/sha）。AGS binding/head/base/method/revision
+等 projection 不进入 Multica link（T017）。
+
+`external_pull_request_receipt` 是幂等回执的唯一所有者（workspace + idempotency_key）。
+请求可带 `target_instance` 作为 request-only fence（精确匹配配置实例，参与 payload hash，
+但不落库）。`workspace`/`issue_key` display 字段不再出现在 closed request schema。
+
+历史 workload authority / merge-delegation 表已由 T016 前向退役；回滚需 pre-299 dump。
+
+`POST /external-pr/link-token` 仍为兼容入口（见下方 disposition），普通 Agent PR 路径
+不得依赖它。
 
 完成请求必须匹配已登记的 authoritative link。仅 PR/MR 已合并、投影一致且
 `completion_intent=true` 时，服务端才推进 Issue；普通 link 更新、评论 marker 或客户端
