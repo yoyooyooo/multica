@@ -1,3 +1,5 @@
--- Full recreation of retired schema is not provided. Roll back via database
--- restore to a pre-299 dump rather than partial table rebuilds.
-SELECT 1;
+-- Forward-only T016 retirement fence. Schema restore requires a pre-299 dump.
+DO $$
+BEGIN
+  RAISE EXCEPTION 'refuse rollback across T016 dead-authority retirement fence 299; restore a pre-299 database dump';
+END $$;

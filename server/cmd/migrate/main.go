@@ -132,6 +132,10 @@ func cleanupInvalidConcurrentIndexHook(indexRegclass string) preMigrationHook {
 const externalPRIndexReconciliationFenceVersion = "282_external_pr_index_reconciliation_fence"
 const externalPRIndexReconciliationFenceVersionLegacy = "275_external_pr_index_reconciliation_fence"
 
+// T016 dead-authority retirement is forward-only. migrate down across 299 is
+// refused; restore a pre-299 dump instead of partial schema rebuilds.
+const deadAuthorityRetirementFenceVersion = "299_retire_dead_workload_authority_tables"
+
 // reconciliationMigrationHooks run before the ledger skip check only until
 // the External PR index fence records the final catalog. Concurrent index
 // creation can leave an invalid same-name catalog entry, and older runners
@@ -571,6 +575,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			}
 			if opts.ReconcileFenceVersion != "" && version == opts.ReconcileFenceVersion {
 				return fmt.Errorf("refuse rollback across forward-only reconciliation fence %q", version)
+			}
+			if version == deadAuthorityRetirementFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only T016 dead-authority retirement fence %q; restore a pre-299 database dump", version)
 			}
 		}
 
