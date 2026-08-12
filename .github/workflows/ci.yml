@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, fork/v0.4.12, fork/upstream-main-20260808]
+    branches: [main, fork/v0.4.22, fork/upstream-main-20260808, fork/v0.4.12]
   pull_request:
-    branches: [main, fork/v0.4.12, fork/upstream-main-20260808]
+    branches: [main, fork/v0.4.22, fork/upstream-main-20260808, fork/v0.4.12]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -77,7 +77,7 @@ jobs:
 
       - name: Decide
         id: decide
-        # Always run the frontend job on push to main (full validation);
+        # Always run the frontend job on push to a listened branch (full validation);
         # on pull_request, run only when frontend-relevant paths changed.
         # The frontend job itself always runs and reports success — its
         # steps are gated on this output rather than the job being skipped

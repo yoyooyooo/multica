@@ -2,9 +2,9 @@
 
 ## Status and authority
 
-**Current formal/live generation** under the rule “formal = latest upstream version this fork has synchronized.”
+**Previous live / historical generation** (no longer the formal home). Superseded by formal generation `fork/v0.4.22` documented in [`v0.4.22.md`](v0.4.22.md).
 
-It began as an owner-authorized freeze of a post-`v0.4.21` upstream tip rather than an exact official tag tip. Future generations should prefer pure `vX.Y.Z` freezes when possible, still replaying so fork-only commits sit at the tip.
+This file remains immutable rollback/source inventory for the post-`v0.4.21` freeze line. It began as an owner-authorized freeze of a post-`v0.4.21` upstream tip rather than an exact official tag tip. It does **not** claim current formal authority and does **not** invent current deployment acceptance.
 
 - generation branch: `fork/upstream-main-20260808`
 - integration/work branch (not deploy authority by itself): `feature/upstream-main-20260808-fork-replay`
@@ -26,7 +26,7 @@ b3118a340 jackie  fix(fork): remediate access grant review findings   <-- tip is
 
 Local deploy tip may advance by fast-forward only (example: `5354e11c0` best-effort `MULTICA_RUN_ID` daemon fix). The previous generation and its deployment artifacts remain immutable rollback authority; that branch is never force-updated or repurposed.
 
-**Not latest forever:** as of 2026-08-10, official upstream has **`v0.4.22`** and a newer `upstream/main`. The next clean generation should replay onto that newer synced base rather than keep extending this freeze indefinitely.
+**Superseded formal base:** official tag **`v0.4.22`** is now the formal freeze home (`fork/v0.4.22`). Keep this generation branch immutable for live rollback until mini (and any other hosts still on `b3118a340`) complete a separately evidenced redeploy. Do not extend this freeze as formal authority.
 
 ## Replay method
 
@@ -79,4 +79,4 @@ Rollback authority is `fork/v0.4.12@d5ec9569ede6e48e3caced031254259f48b83f41` pl
 
 ## Claim limit
 
-This manifest records source intent only. It does not prove CI, source acceptance, publication, deployment, health, route behavior or rollback until their separate exact-head receipts exist.
+This manifest records **historical** generation identity and prior live tip intent only. Current formal home is [`v0.4.22.md`](v0.4.22.md). This file does not prove CI, source acceptance, publication, deployment, health, route behavior, or that live hosts have moved off `b3118a340`; those remain separate receipts.
