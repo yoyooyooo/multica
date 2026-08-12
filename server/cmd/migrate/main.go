@@ -135,6 +135,7 @@ const externalPRIndexReconciliationFenceVersionLegacy = "275_external_pr_index_r
 // T016 dead-authority retirement is forward-only. migrate down across 299 is
 // refused; restore a pre-299 dump instead of partial schema rebuilds.
 const deadAuthorityRetirementFenceVersion = "299_retire_dead_workload_authority_tables"
+const externalPRCoreSchemaFenceVersion = "301_external_pr_core_drop_projection_and_link_idempotency"
 
 // reconciliationMigrationHooks run before the ledger skip check only until
 // the External PR index fence records the final catalog. Concurrent index
@@ -578,6 +579,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			}
 			if version == deadAuthorityRetirementFenceVersion {
 				return fmt.Errorf("refuse rollback across forward-only T016 dead-authority retirement fence %q; restore a pre-299 database dump", version)
+			}
+			if version == externalPRCoreSchemaFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only T017 external-pr-core schema fence %q; restore a pre-301 database dump", version)
 			}
 		}
 

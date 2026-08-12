@@ -964,8 +964,6 @@ func externalPRCompletionReq(workspaceID, issueID string, number int32) external
 		Provider:         "ags",
 		IssueID:          issueID,
 		WorkspaceID:      workspaceID,
-		Workspace:        handlerTestWorkspaceSlug,
-		IssueKey:         "HAN-" + fmt.Sprint(number),
 		ExternalRepo:     repository,
 		ExternalNumber:   number,
 		ExternalURL:      fmt.Sprintf("http://ags.local/pull/%d", number),

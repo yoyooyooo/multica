@@ -215,6 +215,8 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 
 	// T016: retire dead authority/delegation schema after product indexes are proven.
 	run(realMigrationRange(t, serverRoot, 292, 299))
+	// T017: drop link-row projection/idempotency columns; receipt remains owner.
+	run(realMigrationRange(t, serverRoot, 300, 301))
 
 	assertContextContinuitySchema(t, ctx, pool, schema, scenario, wantLegacyRow)
 	assertWorkspaceScopedIdempotency(t, ctx, pool)
@@ -1013,7 +1015,6 @@ FROM (
     WHERE n.nspname=$1 AND c.relname IN (
         'idx_external_pr_link_id', 'idx_external_pr_link_identity',
         'idx_external_pr_link_issue_state', 'idx_external_pr_receipt_idempotency',
-        'idx_external_pr_link_workspace_idempotency'
     )
     UNION ALL
     SELECT 'trigger', t.tgname, pg_get_triggerdef(t.oid)
@@ -1063,15 +1064,13 @@ func assertContextContinuitySchema(t *testing.T, ctx context.Context, pool *pgxp
 		"idx_external_pr_link_identity":                  {"external_pull_request_link USING btree (workspace_id, provider, external_repo, external_number)"},
 		"idx_external_pr_link_issue_state":               {"external_pull_request_link USING btree (workspace_id, issue_id, state)", "open", "draft", "link_confidence"},
 		"idx_external_pr_receipt_idempotency":            {"external_pull_request_receipt USING btree (workspace_id, idempotency_key)"},
-			"idx_external_pr_link_workspace_idempotency": {"external_pull_request_link USING btree (workspace_id, idempotency_key)"},
-	}
+		}
 	// T016 retires workspace_workload_authority*; External PR indexes remain.
 	for _, index := range []string{
 		"idx_external_pr_link_id",
 		"idx_external_pr_link_identity",
 		"idx_external_pr_link_issue_state",
 		"idx_external_pr_receipt_idempotency",
-		"idx_external_pr_link_workspace_idempotency",
 	} {
 		var ready, valid bool
 		var columns, predicate string

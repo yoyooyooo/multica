@@ -87,104 +87,40 @@ func isCanonicalGitBranchRef(ref string) bool {
 }
 
 type externalPullRequestLinkRequest struct {
-	Provider                string `json:"provider"`
-	IssueID                 string `json:"issue_id"`
-	WorkspaceID             string `json:"workspace_id"`
-	Workspace               string `json:"workspace"`
-	IssueKey                string `json:"issue_key"`
-	ExternalRepo            string `json:"external_repo"`
-	ExternalNumber          int32  `json:"external_number"`
-	ExternalURL             string `json:"external_url"`
-	MergeProvider           string `json:"merge_provider"`
-	MergeRepo               string `json:"merge_repo"`
-	MergeNumber             int32  `json:"merge_number"`
-	MergeURL                string `json:"merge_url"`
-	MergedSHA               string `json:"merged_sha"`
-	TargetInstance          string `json:"target_instance,omitempty"`
-	CanonicalRepositoryID   string `json:"canonical_repository_id,omitempty"`
-	CanonicalRepository     string `json:"canonical_repository,omitempty"`
-	ProviderBindingID       string `json:"provider_binding_id,omitempty"`
-	ProviderBindingRevision string `json:"provider_binding_revision,omitempty"`
-	ProviderRepository      string `json:"provider_repository,omitempty"`
-	ExpectedHeadSHA         string `json:"expected_head_sha,omitempty"`
-	ExpectedBaseSHA         string `json:"expected_base_sha,omitempty"`
-	BaseRef                 string `json:"base_ref,omitempty"`
-	DelegatedMergeMethod    string `json:"delegated_merge_method,omitempty"`
-	ProjectionFactsRevision string `json:"projection_facts_revision,omitempty"`
-	CompletionIntent        *bool  `json:"completion_intent,omitempty"`
-	LinkConfidence          string `json:"link_confidence"`
-	State                   string `json:"state"`
-	IdempotencyKey          string `json:"idempotency_key"`
+	Provider         string `json:"provider"`
+	IssueID          string `json:"issue_id"`
+	WorkspaceID      string `json:"workspace_id"`
+	ExternalRepo     string `json:"external_repo"`
+	ExternalNumber   int32  `json:"external_number"`
+	ExternalURL      string `json:"external_url"`
+	MergeProvider    string `json:"merge_provider"`
+	MergeRepo        string `json:"merge_repo"`
+	MergeNumber      int32  `json:"merge_number"`
+	MergeURL         string `json:"merge_url"`
+	MergedSHA        string `json:"merged_sha"`
+	// TargetInstance is request-only fence until T019 registered identity lands.
+	// It is never persisted on external_pull_request_link (T017).
+	TargetInstance   string `json:"target_instance,omitempty"`
+	CompletionIntent *bool  `json:"completion_intent,omitempty"`
+	LinkConfidence   string `json:"link_confidence"`
+	State            string `json:"state"`
+	IdempotencyKey   string `json:"idempotency_key"`
 }
 
-type normalizedExternalPRMergeProjection struct {
-	present                 bool
-	targetInstance          string
-	canonicalRepositoryID   string
-	canonicalRepository     string
-	providerBindingID       string
-	providerBindingRevision string
-	providerRepository      string
-	expectedHeadSHA         string
-	expectedBaseSHA         string
-	baseRef                 string
-	mergeMethod             string
-	factsRevision           string
-}
-
-func normalizeExternalPRMergeProjection(req externalPullRequestLinkRequest, mergeProvider string) (normalizedExternalPRMergeProjection, error) {
-	values := []string{req.TargetInstance, req.CanonicalRepositoryID, req.CanonicalRepository, req.ProviderBindingID,
-		req.ProviderBindingRevision, req.ProviderRepository, req.ExpectedHeadSHA, req.ExpectedBaseSHA,
-		req.BaseRef, req.DelegatedMergeMethod, req.ProjectionFactsRevision}
-	present := 0
-	for _, value := range values {
-		if value != "" {
-			present++
-		}
-	}
-	if present == 0 {
-		return normalizedExternalPRMergeProjection{}, nil
-	}
-	if present != len(values) || mergeProvider != "forgejo" || req.MergeNumber < 1 {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection facts require their exact complete set")
-	}
+// validateExternalPRTargetInstanceFence checks optional request-only instance fence.
+func validateExternalPRTargetInstanceFence(req externalPullRequestLinkRequest) error {
 	instance := strings.TrimSpace(req.TargetInstance)
+	if instance == "" {
+		return nil
+	}
+	if instance != req.TargetInstance || !canonicalExternalPRInstancePattern.MatchString(instance) {
+		return fmt.Errorf("target_instance is not canonical")
+	}
 	configuredInstance := configuredExternalPRServiceInstance()
-	if instance != req.TargetInstance || !canonicalExternalPRInstancePattern.MatchString(instance) || configuredInstance == "" || instance != configuredInstance {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("target_instance does not match the configured service instance")
+	if configuredInstance == "" || instance != configuredInstance {
+		return fmt.Errorf("target_instance does not match the configured service instance")
 	}
-	canonicalRepository := strings.TrimSpace(req.CanonicalRepository)
-	providerRepository := strings.TrimSpace(req.ProviderRepository)
-	if !isCanonicalRepositoryName(canonicalRepository) || !isCanonicalRepositoryName(providerRepository) ||
-		strings.TrimSpace(req.ExternalRepo) != canonicalRepository || strings.TrimSpace(req.MergeRepo) != providerRepository {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection repositories are not canonical")
-	}
-	if !canonicalExternalPRDigestPattern.MatchString(req.CanonicalRepositoryID) ||
-		!canonicalExternalPRDigestPattern.MatchString(req.ProviderBindingID) ||
-		!canonicalExternalPRDigestPattern.MatchString(req.ProviderBindingRevision) ||
-		!canonicalExternalPRDigestPattern.MatchString(req.ProjectionFactsRevision) {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection binding identities are not canonical")
-	}
-	if !canonicalGitSHA1Pattern.MatchString(req.ExpectedHeadSHA) || !canonicalGitSHA1Pattern.MatchString(req.ExpectedBaseSHA) {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection head and base must be canonical git SHAs")
-	}
-	baseRef, err := normalizeCanonicalGitBranchRef("pr.merge", "base_ref", req.BaseRef)
-	if err != nil || baseRef != req.BaseRef {
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection base_ref is not canonical")
-	}
-	method := strings.TrimSpace(req.DelegatedMergeMethod)
-	switch method {
-	case "merge", "rebase", "rebase-merge", "squash", "fast-forward-only":
-	default:
-		return normalizedExternalPRMergeProjection{}, fmt.Errorf("external PR merge projection method is not registered")
-	}
-	return normalizedExternalPRMergeProjection{
-		present: true, targetInstance: instance, canonicalRepositoryID: req.CanonicalRepositoryID,
-		canonicalRepository: canonicalRepository, providerBindingID: req.ProviderBindingID,
-		providerBindingRevision: req.ProviderBindingRevision, providerRepository: providerRepository,
-		expectedHeadSHA: req.ExpectedHeadSHA, expectedBaseSHA: req.ExpectedBaseSHA,
-		baseRef: baseRef, mergeMethod: method, factsRevision: req.ProjectionFactsRevision,
-	}, nil
+	return nil
 }
 
 func isCanonicalRepositoryName(value string) bool {
@@ -440,31 +376,22 @@ type externalPRUpsertResult struct {
 }
 
 type externalPRCanonicalPayload struct {
-	Provider                string `json:"provider"`
-	IssueID                 string `json:"issue_id"`
-	WorkspaceID             string `json:"workspace_id"`
-	ExternalRepo            string `json:"external_repo"`
-	ExternalNumber          int32  `json:"external_number"`
-	ExternalURL             string `json:"external_url"`
-	MergeProvider           string `json:"merge_provider"`
-	MergeRepo               string `json:"merge_repo"`
-	MergeNumber             int32  `json:"merge_number"`
-	MergeURL                string `json:"merge_url"`
-	MergedSHA               string `json:"merged_sha"`
-	TargetInstance          string `json:"target_instance,omitempty"`
-	CanonicalRepositoryID   string `json:"canonical_repository_id,omitempty"`
-	CanonicalRepository     string `json:"canonical_repository,omitempty"`
-	ProviderBindingID       string `json:"provider_binding_id,omitempty"`
-	ProviderBindingRevision string `json:"provider_binding_revision,omitempty"`
-	ProviderRepository      string `json:"provider_repository,omitempty"`
-	ExpectedHeadSHA         string `json:"expected_head_sha,omitempty"`
-	ExpectedBaseSHA         string `json:"expected_base_sha,omitempty"`
-	BaseRef                 string `json:"base_ref,omitempty"`
-	DelegatedMergeMethod    string `json:"delegated_merge_method,omitempty"`
-	ProjectionFactsRevision string `json:"projection_facts_revision,omitempty"`
-	CompletionIntent        bool   `json:"completion_intent"`
-	LinkConfidence          string `json:"link_confidence"`
-	State                   string `json:"state"`
+	Provider         string `json:"provider"`
+	IssueID          string `json:"issue_id"`
+	WorkspaceID      string `json:"workspace_id"`
+	ExternalRepo     string `json:"external_repo"`
+	ExternalNumber   int32  `json:"external_number"`
+	ExternalURL      string `json:"external_url"`
+	MergeProvider    string `json:"merge_provider"`
+	MergeRepo        string `json:"merge_repo"`
+	MergeNumber      int32  `json:"merge_number"`
+	MergeURL         string `json:"merge_url"`
+	MergedSHA        string `json:"merged_sha"`
+	// TargetInstance is request-only fence identity; hashed when present but not stored on the link row.
+	TargetInstance   string `json:"target_instance,omitempty"`
+	CompletionIntent bool   `json:"completion_intent"`
+	LinkConfidence   string `json:"link_confidence"`
+	State            string `json:"state"`
 }
 
 func hashExternalPRPayload(payload externalPRCanonicalPayload) string {
@@ -521,8 +448,7 @@ func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externa
 		completionIntent = *req.CompletionIntent
 	}
 	mergeProvider := normalizeExternalPRProvider(req.MergeProvider)
-	projection, err := normalizeExternalPRMergeProjection(req, mergeProvider)
-	if err != nil {
+	if err := validateExternalPRTargetInstanceFence(req); err != nil {
 		return out, externalPRValidation(err.Error())
 	}
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
@@ -534,13 +460,8 @@ func (h *Handler) upsertExternalPullRequestLink(ctx context.Context, req externa
 			ExternalURL: strings.TrimSpace(req.ExternalURL), MergeProvider: mergeProvider,
 			MergeRepo: strings.TrimSpace(req.MergeRepo), MergeNumber: req.MergeNumber,
 			MergeURL: strings.TrimSpace(req.MergeURL), MergedSHA: strings.TrimSpace(req.MergedSHA),
-			TargetInstance: projection.targetInstance, CanonicalRepositoryID: projection.canonicalRepositoryID,
-			CanonicalRepository: projection.canonicalRepository, ProviderBindingID: projection.providerBindingID,
-			ProviderBindingRevision: projection.providerBindingRevision, ProviderRepository: projection.providerRepository,
-			ExpectedHeadSHA: projection.expectedHeadSHA, ExpectedBaseSHA: projection.expectedBaseSHA,
-			BaseRef: projection.baseRef, DelegatedMergeMethod: projection.mergeMethod,
-			ProjectionFactsRevision: projection.factsRevision,
-			CompletionIntent:        completionIntent, LinkConfidence: confidence, State: state,
+			TargetInstance: strings.TrimSpace(req.TargetInstance),
+			CompletionIntent: completionIntent, LinkConfidence: confidence, State: state,
 		})
 	}
 
@@ -682,21 +603,12 @@ workspace_id, idempotency_key, payload_hash, issue_id, provider, external_repo, 
 INSERT INTO external_pull_request_link (
     workspace_id, issue_id, provider, external_repo, external_number, external_url,
     merge_provider, merge_repo, merge_number, merge_url, merged_sha,
-    link_confidence, completion_intent, state, idempotency_key,
-    target_instance, canonical_repository_id, canonical_repository,
-    provider_binding_id, provider_binding_revision, provider_repository,
-    expected_head_sha, expected_base_sha, base_ref, delegated_merge_method,
-    projection_facts_revision
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+    link_confidence, completion_intent, state
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (workspace_id, provider, external_repo, external_number) DO NOTHING`,
 			workspaceID, issueID, provider, externalRepo, req.ExternalNumber,
 			nilIfBlank(req.ExternalURL), nilIfBlank(mergeProvider), nilIfBlank(req.MergeRepo), nilIfZero(req.MergeNumber),
-			nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state,
-			nilIfBlank(idempotencyKey), nilIfBlank(projection.targetInstance), nilIfBlank(projection.canonicalRepositoryID),
-			nilIfBlank(projection.canonicalRepository), nilIfBlank(projection.providerBindingID),
-			nilIfBlank(projection.providerBindingRevision), nilIfBlank(projection.providerRepository),
-			nilIfBlank(projection.expectedHeadSHA), nilIfBlank(projection.expectedBaseSHA), nilIfBlank(projection.baseRef),
-			nilIfBlank(projection.mergeMethod), nilIfBlank(projection.factsRevision))
+			nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state)
 		if insertErr != nil {
 			return out, fmt.Errorf("insert external pull request fact: %w", insertErr)
 		}
@@ -728,28 +640,11 @@ UPDATE external_pull_request_link SET
     link_confidence=$12,
     completion_intent=$13,
     state=CASE WHEN state='merged' THEN 'merged' ELSE $14 END,
-    idempotency_key=COALESCE($15, idempotency_key),
-    target_instance=COALESCE($16, target_instance),
-    canonical_repository_id=COALESCE($17, canonical_repository_id),
-    canonical_repository=COALESCE($18, canonical_repository),
-    provider_binding_id=COALESCE($19, provider_binding_id),
-    provider_binding_revision=COALESCE($20, provider_binding_revision),
-    provider_repository=COALESCE($21, provider_repository),
-    expected_head_sha=COALESCE($22, expected_head_sha),
-    expected_base_sha=COALESCE($23, expected_base_sha),
-    base_ref=COALESCE($24, base_ref),
-    delegated_merge_method=COALESCE($25, delegated_merge_method),
-    projection_facts_revision=COALESCE($26, projection_facts_revision),
     updated_at=now()
 WHERE workspace_id=$1 AND issue_id=$2 AND provider=$3 AND external_repo=$4 AND external_number=$5`,
 			workspaceID, issueID, provider, externalRepo, req.ExternalNumber,
 			nilIfBlank(req.ExternalURL), nilIfBlank(mergeProvider), nilIfBlank(req.MergeRepo), nilIfZero(req.MergeNumber),
-			nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state,
-			nilIfBlank(idempotencyKey), nilIfBlank(projection.targetInstance), nilIfBlank(projection.canonicalRepositoryID),
-			nilIfBlank(projection.canonicalRepository), nilIfBlank(projection.providerBindingID),
-			nilIfBlank(projection.providerBindingRevision), nilIfBlank(projection.providerRepository),
-			nilIfBlank(projection.expectedHeadSHA), nilIfBlank(projection.expectedBaseSHA), nilIfBlank(projection.baseRef),
-			nilIfBlank(projection.mergeMethod), nilIfBlank(projection.factsRevision))
+			nilIfBlank(req.MergeURL), nilIfBlank(req.MergedSHA), confidence, completionIntent, state)
 		if updateErr != nil {
 			return out, fmt.Errorf("update external pull request fact: %w", updateErr)
 		}

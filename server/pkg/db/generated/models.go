@@ -510,35 +510,23 @@ type DaemonToken struct {
 }
 
 type ExternalPullRequestLink struct {
-	ID                      pgtype.UUID        `json:"id"`
-	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
-	IssueID                 pgtype.UUID        `json:"issue_id"`
-	Provider                string             `json:"provider"`
-	ExternalRepo            string             `json:"external_repo"`
-	ExternalNumber          int32              `json:"external_number"`
-	ExternalUrl             pgtype.Text        `json:"external_url"`
-	MergeProvider           pgtype.Text        `json:"merge_provider"`
-	MergeRepo               pgtype.Text        `json:"merge_repo"`
-	MergeNumber             pgtype.Int4        `json:"merge_number"`
-	MergeUrl                pgtype.Text        `json:"merge_url"`
-	MergedSha               pgtype.Text        `json:"merged_sha"`
-	LinkConfidence          string             `json:"link_confidence"`
-	CompletionIntent        bool               `json:"completion_intent"`
-	State                   string             `json:"state"`
-	IdempotencyKey          pgtype.Text        `json:"idempotency_key"`
-	CreatedAt               pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
-	TargetInstance          pgtype.Text        `json:"target_instance"`
-	CanonicalRepositoryID   pgtype.Text        `json:"canonical_repository_id"`
-	CanonicalRepository     pgtype.Text        `json:"canonical_repository"`
-	ProviderBindingID       pgtype.Text        `json:"provider_binding_id"`
-	ProviderBindingRevision pgtype.Text        `json:"provider_binding_revision"`
-	ProviderRepository      pgtype.Text        `json:"provider_repository"`
-	ExpectedHeadSha         pgtype.Text        `json:"expected_head_sha"`
-	ExpectedBaseSha         pgtype.Text        `json:"expected_base_sha"`
-	BaseRef                 pgtype.Text        `json:"base_ref"`
-	DelegatedMergeMethod    pgtype.Text        `json:"delegated_merge_method"`
-	ProjectionFactsRevision pgtype.Text        `json:"projection_facts_revision"`
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	Provider         string             `json:"provider"`
+	ExternalRepo     string             `json:"external_repo"`
+	ExternalNumber   int32              `json:"external_number"`
+	ExternalUrl      pgtype.Text        `json:"external_url"`
+	MergeProvider    pgtype.Text        `json:"merge_provider"`
+	MergeRepo        pgtype.Text        `json:"merge_repo"`
+	MergeNumber      pgtype.Int4        `json:"merge_number"`
+	MergeUrl         pgtype.Text        `json:"merge_url"`
+	MergedSha        pgtype.Text        `json:"merged_sha"`
+	LinkConfidence   string             `json:"link_confidence"`
+	CompletionIntent bool               `json:"completion_intent"`
+	State            string             `json:"state"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ExternalPullRequestReceipt struct {
