@@ -69,6 +69,39 @@ func TestValidateExternalPRProjectionEnvelopeRejectsPartialCurrentAGSWire(t *tes
 	}
 }
 
+func TestValidateExternalPRProjectionEnvelopeRejectsPaddedRepositoryValues(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	base := externalPullRequestLinkRequest{
+		Provider: "ags", Workspace: "mini", IssueKey: "MINI-1663",
+		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
+		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
+		TargetInstance:          "mini",
+		CanonicalRepositoryID:   "sha256:" + strings.Repeat("a", 64),
+		CanonicalRepository:     "jackie/ags-demo-mini",
+		ProviderBindingID:       "sha256:" + strings.Repeat("b", 64),
+		ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
+		ProviderRepository:      "jackie/ags-demo-mini",
+		ExpectedHeadSHA:         strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
+		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only",
+		ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*externalPullRequestLinkRequest)
+	}{
+		{name: "external repo", mutate: func(req *externalPullRequestLinkRequest) { req.ExternalRepo = " jackie/ags-demo-mini " }},
+		{name: "merge repo", mutate: func(req *externalPullRequestLinkRequest) { req.MergeRepo = " jackie/ags-demo-mini " }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			tc.mutate(&req)
+			if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err == nil || !strings.Contains(err.Error(), "repositories are not canonical") {
+				t.Fatalf("validateExternalPRProjectionEnvelope() error = %v, want canonical repository rejection", err)
+			}
+		})
+	}
+}
+
 type rejectingExternalPRTxStarter struct{ err error }
 
 func (s rejectingExternalPRTxStarter) Begin(context.Context) (pgx.Tx, error) {

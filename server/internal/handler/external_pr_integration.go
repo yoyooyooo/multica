@@ -147,7 +147,7 @@ func validateExternalPRProjectionEnvelope(req externalPullRequestLinkRequest, me
 		return fmt.Errorf("target_instance does not match the configured service instance")
 	}
 	if !isCanonicalRepositoryName(req.CanonicalRepository) || !isCanonicalRepositoryName(req.ProviderRepository) ||
-		strings.TrimSpace(req.ExternalRepo) != req.CanonicalRepository || strings.TrimSpace(req.MergeRepo) != req.ProviderRepository {
+		req.ExternalRepo != req.CanonicalRepository || req.MergeRepo != req.ProviderRepository {
 		return fmt.Errorf("external PR merge projection repositories are not canonical")
 	}
 	if !canonicalExternalPRDigestPattern.MatchString(req.CanonicalRepositoryID) ||
