@@ -133,6 +133,23 @@ if ! grep -Fq "Server:" <<<"$auth_output" || ! grep -Fq "User:" <<<"$auth_output
 fi
 profile_cli "$target_bin" config set disable_auto_update true >/dev/null
 
+# Building and candidate preflight can take long enough for a new task to be
+# claimed after the initial snapshot. Recheck immediately before activation.
+status_bin="$GLOBAL_BIN"
+if [[ ! -x "$status_bin" ]]; then
+  status_bin="$target_bin"
+fi
+latest_status="$(profile_cli "$status_bin" daemon status --output json)"
+latest_active_tasks="$(python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+print(int(value.get("active_task_count", 0) or 0))
+' <<<"$latest_status")"
+if ((latest_active_tasks != 0)); then
+  echo "refusing CLI replacement: daemon profile $PROFILE claimed $latest_active_tasks task(s) during build" >&2
+  exit 1
+fi
+
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
 backup_dir="$INSTALL_ROOT/backups/$timestamp-${short_commit}"
 previous_bin=""

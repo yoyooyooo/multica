@@ -56,7 +56,7 @@ make install-local-fork-cli-plan PROFILE=mini
 The installer:
 
 1. requires a clean Git worktree and parser-compatible `git describe` version;
-2. refuses replacement while the selected daemon reports active tasks;
+2. refuses replacement while the selected daemon reports active tasks and rechecks immediately before activation so a task claimed during build cannot be interrupted;
 3. builds `server/cmd/multica` from the current exact source;
 4. stores the binary under `~/.local/lib/multica/<commit>-<version>/multica`;
 5. clears checkout-local `MULTICA_SERVER_URL`, `MULTICA_APP_URL`, and `MULTICA_WORKSPACE_ID` overrides, then uses the candidate binary to verify that the selected profile can authenticate to its configured Server before changing the global command or running daemon;
