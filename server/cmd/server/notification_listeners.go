@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -340,6 +343,32 @@ func notifySubscribers(
 // delegated delivery tier deliberately filtered out. The caller propagates the
 // second set into the parent bubble so a suppressed event cannot be
 // re-delivered through an ancestor subscription (see notifySubscribers).
+func sameInboxUUID(a, b pgtype.UUID) bool {
+	return a.Valid == b.Valid && (!a.Valid || a.Bytes == b.Bytes)
+}
+
+func sameInboxText(a, b pgtype.Text) bool {
+	return a.Valid == b.Valid && (!a.Valid || a.String == b.String)
+}
+
+func inboxDeliveryPayloadMatches(
+	item db.InboxItem,
+	workspaceID string,
+	recipientID pgtype.UUID,
+	notifType, severity, targetIssueID, title, body string,
+	e events.Event,
+	details []byte,
+) bool {
+	return sameInboxUUID(item.WorkspaceID, parseUUID(workspaceID)) &&
+		item.RecipientType == "member" && sameInboxUUID(item.RecipientID, recipientID) &&
+		item.Type == notifType && item.Severity == severity &&
+		sameInboxUUID(item.IssueID, parseUUID(targetIssueID)) && item.Title == title &&
+		sameInboxText(item.Body, util.StrToText(body)) &&
+		sameInboxText(item.ActorType, util.StrToText(e.ActorType)) &&
+		sameInboxUUID(item.ActorID, optionalUUID(e.ActorID)) &&
+		bytes.Equal(item.Details, details) && item.DeliveryKey.Valid && item.DeliveryKey.String == e.DeliveryKey
+}
+
 func notifyIssueSubscribers(
 	ctx context.Context,
 	queries *db.Queries,
@@ -405,19 +434,65 @@ func notifyIssueSubscribers(
 			continue
 		}
 
-		item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
-			WorkspaceID:   parseUUID(workspaceID),
-			RecipientType: "member",
-			RecipientID:   sub.UserID,
-			Type:          notifType,
-			Severity:      severity,
-			IssueID:       parseUUID(targetIssueID),
-			Title:         title,
-			Body:          util.StrToText(body),
-			ActorType:     util.StrToText(e.ActorType),
-			ActorID:       optionalUUID(e.ActorID),
-			Details:       details,
-		})
+		var item db.InboxItem
+		if e.DeliveryKey != "" {
+			item, err = queries.CreateInboxItemWithDeliveryKey(ctx, db.CreateInboxItemWithDeliveryKeyParams{
+				WorkspaceID:   parseUUID(workspaceID),
+				RecipientType: "member",
+				RecipientID:   sub.UserID,
+				Type:          notifType,
+				Severity:      severity,
+				IssueID:       parseUUID(targetIssueID),
+				Title:         title,
+				Body:          util.StrToText(body),
+				ActorType:     util.StrToText(e.ActorType),
+				ActorID:       optionalUUID(e.ActorID),
+				Details:       details,
+				DeliveryKey:   pgtype.Text{String: e.DeliveryKey, Valid: true},
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				existing, lookupErr := queries.GetInboxItemByDeliveryKey(ctx, db.GetInboxItemByDeliveryKeyParams{
+					WorkspaceID:   parseUUID(workspaceID),
+					RecipientType: "member",
+					RecipientID:   sub.UserID,
+					DeliveryKey:   pgtype.Text{String: e.DeliveryKey, Valid: true},
+				})
+				if lookupErr != nil {
+					// The INSERT conflict should have a committed row. Any lookup
+					// failure is fail-closed: do not manufacture a websocket hint
+					// whose durable identity we cannot verify.
+					slog.Error("subscriber notification delivery-key lookup failed",
+						"error_code", "inbox_delivery_key_lookup_failed",
+						"delivery_key", e.DeliveryKey, "subscriber_id", subID, "error", lookupErr)
+					continue
+				}
+				if !inboxDeliveryPayloadMatches(existing, workspaceID, sub.UserID, notifType, severity, targetIssueID, title, body, e, details) {
+					// A reused key with a changed target/event/details is not a
+					// benign replay. Fail closed and emit a structured alert, while
+					// leaving non-keyed legacy notifications untouched.
+					slog.Error("subscriber notification delivery-key conflict",
+						"error_code", "inbox_delivery_key_conflict",
+						"delivery_key", e.DeliveryKey, "subscriber_id", subID)
+				}
+				// A matching immutable payload is a safe replay; suppress the
+				// derived websocket inbox:new hint in either case.
+				continue
+			}
+		} else {
+			item, err = queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+				WorkspaceID:   parseUUID(workspaceID),
+				RecipientType: "member",
+				RecipientID:   sub.UserID,
+				Type:          notifType,
+				Severity:      severity,
+				IssueID:       parseUUID(targetIssueID),
+				Title:         title,
+				Body:          util.StrToText(body),
+				ActorType:     util.StrToText(e.ActorType),
+				ActorID:       optionalUUID(e.ActorID),
+				Details:       details,
+			})
+		}
 		if err != nil {
 			slog.Error("subscriber notification creation failed",
 				"subscriber_id", subID, "type", notifType, "error", err)

@@ -45,6 +45,8 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Canonical Run propagation into Agent env | `server/internal/handler/agent.go` (`AgentTaskResponse.ExecutionID`, `taskToResponse`), `server/internal/daemon/types.go` (`Task.ExecutionID`), `server/internal/daemon/daemon.go` (`taskCanonicalRunID`, `MULTICA_RUN_ID`) |
 | Route wiring and retired-route `404` contract | `server/cmd/server/router.go`, `server/cmd/server/external_pr_routes_integration_test.go` |
 | Historical assertion-authority / merge-delegation schema | retired by forward migrations `292`–`299` (T016); no live tables, sqlc queries, or workspace/issue cleanup paths remain; roll back only via pre-299 DB restore |
+| Typed external-PR terminal continuation | `server/internal/handler/external_pr_reconcile.go`, `external_pr_reconcile_enqueue.go`, `server/pkg/db/queries/external_pr_reconcile.sql`; durable work is narrow `external_pr_terminal`, while the scheduler only leases bounded sweeps |
+| Basic link vs Forgejo canonical projection | `server/internal/handler/external_pr_integration.go` (`validateExternalPRMergeProjection`); basic provider-neutral facts do not imply instance-bound Forgejo projection facts |
 
 `GET /api/integrations/current-execution-context` has no request selectors and
 returns schema `multica.current-execution-context.v2`: minimal Workspace/Agent/Task ids, claim.generation (run.id dual-read), optional Issue/Squad/Runtime/Trigger ids without display enrichment. Formerly: bounded Workspace, Agent,

@@ -310,8 +310,9 @@ type Handler struct {
 	// Wired in cmd/server/router.go after New.
 	PRRefresh                   *ghsnapshot.Manager
 	CompletionActivityWriter    completionActivityWriter
-	ExternalPRActivityWriter    externalPRActivityWriter
-	PullRequestFactHook         func(provider, stage string)
+	ExternalPRActivityWriter       externalPRActivityWriter
+	ExternalPRFinalizationStepHook  func(step string) error
+	PullRequestFactHook              func(provider, stage string)
 	PullRequestFactErrorHook    func(provider, stage string) error
 	TopologyFactHook            func(stage string)
 	CurrentExecutionContextHook func(stage string)

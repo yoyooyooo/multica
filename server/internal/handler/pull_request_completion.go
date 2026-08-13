@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,10 +27,11 @@ type completionActivitySpec struct {
 }
 
 type committedPullRequestCompletion struct {
-	previous   db.Issue
-	updated    db.Issue
-	source     string
-	activities []db.ActivityLog
+	previous     db.Issue
+	updated      db.Issue
+	source       string
+	activities   []db.ActivityLog
+	finalization db.ExternalPrReconcileFinalization
 }
 
 // lockCompletionIssues takes the shared Issue-scoped advisory locks in UUID
@@ -125,6 +127,8 @@ func (h *Handler) evaluatePullRequestCompletionLocked(
 	issue db.Issue,
 	source string,
 	extraActivities []completionActivitySpec,
+	workID pgtype.UUID,
+	sourceRevision string,
 ) (pullRequestCompletionResult, *committedPullRequestCompletion, error) {
 	current, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
 		ID:          issue.ID,
@@ -136,6 +140,30 @@ func (h *Handler) evaluatePullRequestCompletionLocked(
 
 	if h.PullRequestFactHook != nil {
 		h.PullRequestFactHook("completion", "current_loaded_before_terminal_update")
+	}
+
+	// A work/source revision may materialize a terminal transition only once.
+	// Reconcile work can be retried after the status transaction committed but
+	// finalization failed; in that case the durable intent is the authority for
+	// the already-consumed source revision. Do not close a reopened Issue or
+	// create a second status activity: hand the existing intent to the normal
+	// independent finalizer instead.
+	if workID.Valid {
+		existing, getErr := qtx.GetExternalPRFinalizationForWork(ctx, db.GetExternalPRFinalizationForWorkParams{
+			WorkspaceID: current.WorkspaceID,
+			WorkID:      workID,
+		})
+		if getErr == nil {
+			return pullRequestCompletionResult{Outcome: "already_done", Reason: "source_revision_consumed"}, &committedPullRequestCompletion{
+				previous:     current,
+				updated:      current,
+				source:       source,
+				finalization: existing,
+			}, nil
+		}
+		if !errors.Is(getErr, pgx.ErrNoRows) {
+			return pullRequestCompletionResult{Outcome: "recorded", Reason: "finalization_intent_read_failed"}, nil, getErr
+		}
 	}
 
 	switch completionpolicy.Parse(current.Metadata) {
@@ -192,16 +220,50 @@ func (h *Handler) evaluatePullRequestCompletionLocked(
 		activities = append(activities, activity)
 	}
 
+	if strings.TrimSpace(sourceRevision) == "" {
+		sourceRevision = uuidToString(statusActivity.ID)
+	}
+	finalization, err := qtx.CreateExternalPRFinalization(ctx, db.CreateExternalPRFinalizationParams{
+		WorkspaceID:      current.WorkspaceID,
+		IssueID:          current.ID,
+		WorkID:           workID,
+		SourceRevision:   sourceRevision,
+		Source:           source,
+		PreviousStatus:   current.Status,
+		TerminalStatus:   updated.Status,
+		StatusActivityID: statusActivity.ID,
+		IntendedParentID: current.ParentIssueID,
+		ActivityIds:      activityIDs(activities),
+	})
+	if errors.Is(err, pgx.ErrNoRows) && workID.Valid {
+		finalization, err = qtx.GetExternalPRFinalizationForWork(ctx, db.GetExternalPRFinalizationForWorkParams{
+			WorkspaceID: current.WorkspaceID,
+			WorkID:      workID,
+		})
+	}
+	if err != nil {
+		return pullRequestCompletionResult{Outcome: "recorded", Reason: "finalization_intent_failed"}, nil, err
+	}
+
 	return pullRequestCompletionResult{Outcome: "completed"}, &committedPullRequestCompletion{
-		previous:   current,
-		updated:    updated,
-		source:     source,
-		activities: activities,
+		previous:     current,
+		updated:      updated,
+		source:       source,
+		activities:   activities,
+		finalization: finalization,
 	}, nil
 }
 
 // evaluatePullRequestCompletion is the only provider-driven issue terminal
 // kernel for callers that do not already own a provider fact transaction.
+func activityIDs(activities []db.ActivityLog) []pgtype.UUID {
+	ids := make([]pgtype.UUID, 0, len(activities))
+	for _, activity := range activities {
+		ids = append(ids, activity.ID)
+	}
+	return ids
+}
+
 func (h *Handler) evaluatePullRequestCompletion(ctx context.Context, issue db.Issue, source string) pullRequestCompletionResult {
 	return h.evaluatePullRequestCompletionWithActivities(ctx, issue, source, nil)
 }
@@ -225,6 +287,17 @@ func (h *Handler) evaluatePullRequestCompletionWithActivitiesResult(
 	source string,
 	extraActivities []completionActivitySpec,
 ) (pullRequestCompletionResult, error) {
+	return h.evaluatePullRequestCompletionWithActivitiesResultAndWork(ctx, issue, source, extraActivities, pgtype.UUID{}, "")
+}
+
+func (h *Handler) evaluatePullRequestCompletionWithActivitiesResultAndWork(
+	ctx context.Context,
+	issue db.Issue,
+	source string,
+	extraActivities []completionActivitySpec,
+	workID pgtype.UUID,
+	sourceRevision string,
+) (pullRequestCompletionResult, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		slog.Warn("pull request completion: begin transaction failed", "error", err, "issue_id", uuidToString(issue.ID), "source", source)
@@ -237,12 +310,28 @@ func (h *Handler) evaluatePullRequestCompletionWithActivitiesResult(
 		slog.Warn("pull request completion: acquire issue lock failed", "error", err, "issue_id", uuidToString(issue.ID), "source", source)
 		return pullRequestCompletionResult{Outcome: "recorded", Reason: "update_failed"}, err
 	}
-	result, committed, err := h.evaluatePullRequestCompletionLocked(ctx, qtx, issue, source, extraActivities)
+	result, committed, err := h.evaluatePullRequestCompletionLocked(ctx, qtx, issue, source, extraActivities, workID, sourceRevision)
 	if err != nil {
 		slog.Warn("pull request completion: terminal transaction failed", "error", err, "issue_id", uuidToString(issue.ID), "source", source)
 		return result, err
 	}
 	if committed == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return pullRequestCompletionResult{Outcome: "recorded", Reason: "update_failed"}, err
+		}
+		if result.Outcome == "already_done" && workID.Valid {
+			intent, intentErr := h.Queries.GetExternalPRFinalizationForWork(ctx, db.GetExternalPRFinalizationForWorkParams{
+				WorkspaceID: issue.WorkspaceID,
+				WorkID:      workID,
+			})
+			if intentErr == nil {
+				if err := h.finalizePullRequestCompletionIntent(ctx, intent.ID); err != nil {
+					return result, err
+				}
+			} else if !errors.Is(intentErr, pgx.ErrNoRows) {
+				return result, intentErr
+			}
+		}
 		return result, nil
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -250,35 +339,17 @@ func (h *Handler) evaluatePullRequestCompletionWithActivitiesResult(
 		return pullRequestCompletionResult{Outcome: "recorded", Reason: "update_failed"}, err
 	}
 
-	h.finalizePullRequestCompletion(ctx, *committed)
+	if err := h.finalizePullRequestCompletionIntent(ctx, committed.finalization.ID); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
-// finalizePullRequestCompletion runs only after the status+activity transaction
-// commits. It broadcasts already-durable activity rows, then the Issue update,
-// and only then creates the parent comment/task/wake. This does not claim the
-// post-commit crash window between those realtime/release effects.
-func (h *Handler) finalizePullRequestCompletion(ctx context.Context, completion committedPullRequestCompletion) {
-	issue := completion.previous
-	updated := completion.updated
-	workspaceID := uuidToString(issue.WorkspaceID)
-	for _, activity := range completion.activities {
-		h.publishCommittedCompletionActivity(workspaceID, activity)
-	}
-	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
-	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", map[string]any{
-		"issue":                    issueToResponse(updated, prefix),
-		"status_changed":           true,
-		"status_activity_recorded": true,
-		"prev_status":              issue.Status,
-		"creator_type":             issue.CreatorType,
-		"creator_id":               uuidToString(issue.CreatorID),
-		"source":                   completion.source,
-	})
-	h.notifyParentOfChildDone(ctx, issue, updated)
+func (h *Handler) publishCommittedCompletionActivity(workspaceID string, activity db.ActivityLog) {
+	h.publishCommittedCompletionActivityWithDeliveryKey(workspaceID, activity, "")
 }
 
-func (h *Handler) publishCommittedCompletionActivity(workspaceID string, activity db.ActivityLog) {
+func (h *Handler) publishCommittedCompletionActivityWithDeliveryKey(workspaceID string, activity db.ActivityLog, deliveryKey string) {
 	actorType := ""
 	if activity.ActorType.Valid {
 		actorType = activity.ActorType.String
@@ -287,6 +358,7 @@ func (h *Handler) publishCommittedCompletionActivity(workspaceID string, activit
 		Type:        protocol.EventActivityCreated,
 		WorkspaceID: workspaceID,
 		ActorType:   "system",
+		DeliveryKey: deliveryKey,
 		Payload: map[string]any{
 			"issue_id": uuidToString(activity.IssueID),
 			"entry": map[string]any{

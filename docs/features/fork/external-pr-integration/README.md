@@ -18,7 +18,7 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 | `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v2` 最小事实：Workspace/Agent/Task ids、`claim.generation`（`run.id` dual-read 别名）和可选 Issue/Squad/Runtime/Trigger ids；无 display enrichment |
 | `POST /api/integrations/external-pr/link-token` | still-running Task token | **兼容入口（T017 residual）**：签发 task-bound correlation token；不授予仓库操作权限；owner=Multica fork maintainer；目标退役：完整 404 + AGS verify/assertion 字段同代清理（登记于 evidence `external-pr-link-token-census.md`） |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
-| `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 依据已登记投影与 completion intent 请求完成 Issue |
+| `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 幂等登记 merged 事实并返回 durable reconcile acknowledgement；Issue 仅由 worker 完成 |
 | `GET /api/workspaces/{workspace_id}/issues/{issue_id}/external-prs` | Workspace member | 读取外部 PR 链接 |
 | `GET /api/workspaces/{workspace_id}/issues/{issue_id}/pull-requests` | Workspace member | 读取统一 PR 投影 |
 
@@ -63,9 +63,44 @@ delegation。`target_instance` 仍是 request-only fence（精确匹配配置实
 `POST /external-pr/link-token` 仍为兼容入口（见下方 disposition），普通 Agent PR 路径
 不得依赖它。
 
-完成请求必须匹配已登记的 authoritative link。仅 PR/MR 已合并、投影一致且
-`completion_intent=true` 时，服务端才推进 Issue；普通 link 更新、评论 marker 或客户端
-自报状态不能直接完成 Issue。
+**Basic link 与 canonical merge projection 是两种不同合同：** basic link 是 provider-neutral
+事实，只需要 provider、外部 repository/number、URL、state 和 link confidence；空的
+`MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS` 不把它强制限定为 Forgejo。只有带完整
+`target_instance`、canonical/provider repository、binding identity/revision、expected
+head/base、base ref、merge method 与 projection facts revision 的 canonical merge
+projection 才是 Forgejo 且 instance-bound；它必须匹配
+`MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID`，不能用部分字段伪造。两者都不携带
+provider token、raw provider effect 或 `pr.revalidate` selector。
+
+AGS typed terminal admission 只接受 `provider=ags` 的 closed `/links` 或 merged
+`/complete-from-merge` 矩阵：body 必须带 canonical、非空的 `workspace`、`issue_key`、
+`external_url`，以及显式 `state`、`completion_intent`、`link_confidence=authoritative`、
+`idempotency_key` 和完整 Forgejo merge facts；这些 identity 字段也纳入同一
+idempotency-key canonical hash。closed
+不得带 `merged_sha`，merged 必须带小写 40-hex `merged_sha` 且 completion intent 为 true。
+该窄 validator 不改变 generic open-link 或非 AGS provider-neutral 行为。终态事实提交事务会
+同时写入窄的 `external_pr_terminal` durable reconcile work；Bus、HTTP 响应与 finalizer 仅作
+nudge。worker 重新读取当前 Issue、link、completion policy 和 provider-neutral facts，并且
+只能调用现有 completion kernel。work 的 `succeeded`/
+`recorded`/`dead` 不等价于 Issue `done`；`record_only`、unsupported、inferred 或缺失
+completion intent 永不关闭 Issue、Stage barrier 或 parent wake。Issue/workspace 删除在应用事务中显式清理该 work，不使用 FK/cascade；删除、source sweep 与
+finalizer 共用 provider-workspace fence、按 UUID 排序的 Issue advisory/row locks，并在锁后
+重读事实，禁止删除后产生 orphan work 或 stale parent side effect。finalization 的
+`dead` 结果会以 typed outcome 暴露给 scheduler，linked work 不会被误标为 `succeeded`。
+Finalization 保留 lease-only claimed 语义：`pending`/`retry_wait` 持有未过期
+`lease_token` 时表示已 claimed；不额外引入公开 `claimed` 状态。lease 在 retry ceiling
+过期后会转为 `dead`，即使 `work_id` 为空也会让 scheduler 告警。
+
+parent child-done comment 使用 parent + stage/nonstage + sorted relevant child IDs 的稳定
+barrier generation key；同一 generation 只创建一个 comment/task，新增相关 child 才产生新
+generation。实时 EventBus hint 仍是 at-least-once；typed finalization issue event 携带
+`intent_id + step` delivery key，inbox listener 只对该 key 做窄范围幂等去重，不建立通用
+outbox 或 ledger。
+
+typed AGS merged 请求必须匹配当前 authoritative link、完整 Forgejo 投影与
+`completion_intent=true`；HTTP receiver 只确认事实并排队 durable reconcile work，锁后 worker
+才推进 Issue。普通 link 更新、评论 marker 或客户端自报状态不能直接完成 Issue；provider-neutral
+legacy 路径若仍保留，其同步行为与 typed AGS admission 明确隔离。
 
 ## 已退休的公开面
 
@@ -115,7 +150,14 @@ MULTICA_DELEGATED_PR_MERGE_ENABLED
 - `server/internal/handler/current_execution_context_test.go`
 - `server/internal/handler/external_pr_link_token.go`
 - `server/internal/handler/external_pr_integration.go`
+- `server/internal/handler/external_pr_reconcile.go`
 - `server/internal/handler/external_pr_integration_test.go`
+- `server/migrations/302_external_pr_reconcile_work.up.sql`
+- `server/migrations/303-305_external_pr_reconcile_work_*_index.up.sql`
+- `server/migrations/306-310_external_pr_reconcile_finalization_*.sql`
+- `server/migrations/311-312_inbox_item_delivery_key*.sql`
+- `server/migrations/313-316_external_pr_reconcile_*_id_index|*_primary_key.*.sql`（315/316 对 DDL/ledger 间崩溃做 exact authority 校验与幂等重放）
+- `server/cmd/server/notification_listeners.go`（typed finalization inbox delivery-key dedup）
 - `server/cmd/server/router.go`
 - `server/cmd/server/external_pr_routes_integration_test.go`
 - `server/pkg/db/queries/task_token.sql`

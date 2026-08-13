@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/completionpolicy"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/scheduler"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -199,13 +201,23 @@ func TestPullRequestCompletionPublicActivityFailurePreventsRelease(t *testing.T)
 	req.Header.Set("Authorization", "Bearer completion-policy-test-token")
 	w := httptest.NewRecorder()
 	failing.CompleteIssueFromExternalPR(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("activity failure status=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("activity failure acknowledgement status=%d body=%s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "injected durable activity failure") {
 		t.Fatalf("activity failure leaked internal detail: %s", w.Body.String())
 	}
 	assertIssueStatus(t, child.ID, "todo")
+	if _, err := ExternalPRReconcileJob(testPool, &failing).Handler(context.Background(), scheduler.HandlerInput{RunnerID: "activity-failure-worker"}); err != nil {
+		t.Fatalf("activity failure worker tick: %v", err)
+	}
+	var state string
+	if err := testPool.QueryRow(context.Background(), `SELECT state FROM external_pr_reconcile_work WHERE issue_id=$1`, child.ID).Scan(&state); err != nil {
+		t.Fatalf("read activity-failure work state: %v", err)
+	}
+	if state != "retry_wait" {
+		t.Fatalf("activity-failure work state=%q, want retry_wait", state)
+	}
 	if after := completionEffectSnapshotForIssues(t, parent.ID, nextStage.ID); after != baseline {
 		t.Fatalf("activity failure released parent: before=%#v after=%#v", baseline, after)
 	}
@@ -294,21 +306,19 @@ func TestPullRequestCompletionSerializesWithPublicTopologyWrites(t *testing.T) {
 				}
 			}
 			t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "completion-policy-test-token")
-			type completionCall struct {
-				code int
-				body externalCompleteFromPRResponse
-			}
-			resultCh := make(chan completionCall, 1)
 			prNumber := nextCompletionPolicyPRNumber()
+			request := externalPRCompletionReq(testWorkspaceID, target.ID, prNumber)
+			req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
+			req.Header.Set("Authorization", "Bearer completion-policy-test-token")
+			w := httptest.NewRecorder()
+			completion.CompleteIssueFromExternalPR(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("completion acknowledgement status=%d body=%s", w.Code, w.Body.String())
+			}
+			resultCh := make(chan error, 1)
 			go func() {
-				request := externalPRCompletionReq(testWorkspaceID, target.ID, prNumber)
-				req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
-				req.Header.Set("Authorization", "Bearer completion-policy-test-token")
-				w := httptest.NewRecorder()
-				completion.CompleteIssueFromExternalPR(w, req)
-				var body externalCompleteFromPRResponse
-				_ = json.NewDecoder(w.Body).Decode(&body)
-				resultCh <- completionCall{code: w.Code, body: body}
+				_, err := ExternalPRReconcileJob(testPool, &completion).Handler(context.Background(), scheduler.HandlerInput{RunnerID: "topology-completion-worker"})
+				resultCh <- err
 			}()
 			<-locked
 
@@ -328,8 +338,8 @@ func TestPullRequestCompletionSerializesWithPublicTopologyWrites(t *testing.T) {
 			}()
 			time.Sleep(50 * time.Millisecond)
 			close(release)
-			if result := <-resultCh; result.code != http.StatusOK || result.body.Outcome != "completed" {
-				t.Fatalf("completion status=%d body=%#v", result.code, result.body)
+			if err := <-resultCh; err != nil {
+				t.Fatalf("completion worker error=%v", err)
 			}
 			if code := <-codeCh; code != http.StatusConflict {
 				t.Fatalf("topology write status=%d want 409", code)
@@ -651,7 +661,7 @@ func TestPullRequestCompletionPublicHandlerPublishesIssueBeforeParentWake(t *tes
 	commentObserved := make(chan bool, 1)
 	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(event events.Event) {
 		payload, _ := event.Payload.(map[string]any)
-		if payload["source"] == "external_pr_merged" {
+		if payload["source"] == "external_pr_terminal_reconcile" {
 			issuePublished.Store(true)
 		}
 	})
@@ -707,8 +717,8 @@ func TestCompletionPolicySerializesPublicExplicitAndProviderTerminalWriters(t *t
 	if explicitStatus != http.StatusOK || providerStatus != http.StatusOK {
 		t.Fatalf("concurrent public statuses explicit=%d provider=%d", explicitStatus, providerStatus)
 	}
-	if provider.Outcome != "completed" && provider.Outcome != "already_done" {
-		t.Fatalf("provider concurrent response=%#v", provider)
+	if provider.Outcome != "accepted" || provider.Reason != "queued_for_reconciliation" {
+		t.Fatalf("provider concurrent acknowledgement=%#v", provider)
 	}
 	after := completionEffectSnapshotForIssues(t, parent.ID, nextStage.ID)
 	want := baseline
@@ -889,6 +899,11 @@ func completeExternalPRViaHandler(t *testing.T, issueID string, number int32) ex
 
 func completeExternalPRWithHandler(t *testing.T, h *Handler, issueID string, number int32) externalCompleteFromPRResponse {
 	t.Helper()
+	ctx := context.Background()
+	var initialStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id=$1`, issueID).Scan(&initialStatus); err != nil {
+		t.Fatalf("read initial external PR issue status: %v", err)
+	}
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "completion-policy-test-token")
 	request := externalPRCompletionReq(testWorkspaceID, issueID, number)
 	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
@@ -898,11 +913,39 @@ func completeExternalPRWithHandler(t *testing.T, h *Handler, issueID string, num
 	if w.Code != http.StatusOK {
 		t.Fatalf("CompleteIssueFromExternalPR status=%d body=%s", w.Code, w.Body.String())
 	}
-	var response externalCompleteFromPRResponse
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode completion response: %v", err)
+	// The HTTP response is intentionally only an acknowledgement. Drive the
+	// same durable worker used in production so these legacy policy tests keep
+	// asserting completion semantics without reintroducing an HTTP bypass.
+	job := ExternalPRReconcileJob(testPool, h)
+	if _, err := job.Handler(ctx, scheduler.HandlerInput{RunnerID: "completion-policy-test-worker"}); err != nil {
+		t.Fatalf("reconcile external PR completion work: %v", err)
 	}
-	return response
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id=$1`, issueID).Scan(&status); err != nil {
+		t.Fatalf("read reconciled external PR issue status: %v", err)
+	}
+	if initialStatus == "done" {
+		return externalCompleteFromPRResponse{Outcome: "already_done", IssueID: issueID}
+	}
+	var completionActivities int
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM activity_log WHERE issue_id=$1 AND action='issue_completed_by_external_pr'`, issueID).Scan(&completionActivities); err != nil {
+		t.Fatalf("count reconciled completion activity: %v", err)
+	}
+	if completionActivities > 0 || status == "done" {
+		return externalCompleteFromPRResponse{Outcome: "completed", IssueID: issueID}
+	}
+	var metadata []byte
+	if err := testPool.QueryRow(ctx, `SELECT metadata FROM issue WHERE id=$1`, issueID).Scan(&metadata); err != nil {
+		t.Fatalf("read reconciled completion policy: %v", err)
+	}
+	policy := completionpolicy.Parse(metadata)
+	if policy == completionpolicy.RecordOnly {
+		return externalCompleteFromPRResponse{Outcome: "recorded", Reason: "record_only", IssueID: issueID}
+	}
+	if policy == completionpolicy.Unsupported {
+		return externalCompleteFromPRResponse{Outcome: "recorded", Reason: "completion_policy_unsupported", IssueID: issueID}
+	}
+	return externalCompleteFromPRResponse{Outcome: "recorded", Reason: "guard_not_satisfied", IssueID: issueID}
 }
 
 func updateIssueStatusViaHandler(t *testing.T, issueID, status string) {

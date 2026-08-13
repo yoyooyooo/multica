@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/scheduler"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -492,6 +493,7 @@ func TestGitHubWebhookSerializesStateAndRemovedIdentifierMetadata(t *testing.T) 
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "github-public-terminal-token")
 	externalClosed := externalPRCompletionReq(testWorkspaceID, issue.ID, nextCompletionPolicyPRNumber())
 	externalClosed.State = "closed"
+	externalClosed.MergedSHA = ""
 	externalIntent := false
 	externalClosed.CompletionIntent = &externalIntent
 	resultCh := make(chan int, 1)
@@ -2853,54 +2855,71 @@ func TestPublicCompletionRechecksPolicyAtTerminalUpdate(t *testing.T) {
 	ctx := context.Background()
 	parent, child := createRecordOnlyPRTestIssuePair(t, "atomic-public")
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
-		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pr_reconcile_finalization WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pr_reconcile_work WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_receipt WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_link WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
 		_ = testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: parseUUID(child.ID), WorkspaceID: parseUUID(testWorkspaceID)})
 		_ = testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: parseUUID(parent.ID), WorkspaceID: parseUUID(testWorkspaceID)})
 	})
 
 	reached := make(chan struct{}, 1)
 	release := make(chan struct{})
-	publicHandler := *testHandler
-	publicHandler.PullRequestFactHook = func(provider, stage string) {
+	workerHandler := *testHandler
+	workerHandler.PullRequestFactHook = func(provider, stage string) {
 		if provider == "completion" && stage == "current_loaded_before_terminal_update" {
 			reached <- struct{}{}
 			<-release
 		}
 	}
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "stale-policy-public-token")
-	type publicResult struct {
-		status int
-		body   externalCompleteFromPRResponse
+	request := externalPRCompletionReq(testWorkspaceID, child.ID, 2191)
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
+	req.Header.Set("Authorization", "Bearer stale-policy-public-token")
+	w := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("typed completion acknowledgement status=%d body=%s", w.Code, w.Body.String())
 	}
-	resultCh := make(chan publicResult, 1)
+	var acknowledgement externalCompleteFromPRResponse
+	if err := json.NewDecoder(w.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode typed completion acknowledgement: %v", err)
+	}
+	if acknowledgement.Outcome != "accepted" || acknowledgement.Reason != "queued_for_reconciliation" {
+		t.Fatalf("typed completion acknowledgement=%#v, want accepted/queued_for_reconciliation", acknowledgement)
+	}
+
+	workerDone := make(chan error, 1)
 	go func() {
-		req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", externalPRCompletionReq(testWorkspaceID, child.ID, 2191))
-		req.Header.Set("Authorization", "Bearer stale-policy-public-token")
-		w := httptest.NewRecorder()
-		publicHandler.CompleteIssueFromExternalPR(w, req)
-		var body externalCompleteFromPRResponse
-		_ = json.NewDecoder(w.Body).Decode(&body)
-		resultCh <- publicResult{status: w.Code, body: body}
+		_, err := ExternalPRReconcileJob(testPool, &workerHandler).Handler(ctx, scheduler.HandlerInput{RunnerID: "stale-policy-public-worker"})
+		workerDone <- err
 	}()
 	select {
 	case <-reached:
 	case <-time.After(5 * time.Second):
-		t.Fatal("public completion did not reach terminal boundary")
+		t.Fatal("reconcile worker did not reach terminal boundary")
 	}
 	setCompletionPolicyViaHandler(t, child.ID, "record_only")
 	close(release)
-	response := <-resultCh
-	if response.status != http.StatusOK {
-		t.Fatalf("stale policy public status=%d body=%#v", response.status, response.body)
+	if err := <-workerDone; err != nil {
+		t.Fatalf("reconcile worker returned error: %v", err)
 	}
-	result := response.body
-	if result.Outcome != "recorded" || (result.Reason != "record_only" && result.Reason != "guard_not_satisfied") {
-		t.Fatalf("stale policy public result = %#v, want terminal denial", result)
-	}
+
 	assertIssueStatus(t, child.ID, "in_progress")
-	if comments := countParentSystemComments(t, parent.ID); comments != 0 {
-		t.Fatalf("atomic record-only guard emitted %d parent stage wake comments, want 0", comments)
+	var completionActivities, recordedWork, parentComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action='issue_completed_by_external_pr'`, child.ID).Scan(&completionActivities); err != nil {
+		t.Fatalf("count completion activity: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pr_reconcile_work WHERE issue_id=$1 AND state='recorded'`, child.ID).Scan(&recordedWork); err != nil {
+		t.Fatalf("count recorded reconcile work: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system' AND type='system'`, parent.ID).Scan(&parentComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if completionActivities != 0 || recordedWork != 1 || parentComments != 0 {
+		t.Fatalf("stale policy effects=(completion_activities=%d,recorded_work=%d,parent_comments=%d), want (0,1,0)", completionActivities, recordedWork, parentComments)
 	}
 }
 

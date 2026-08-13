@@ -87,6 +87,20 @@ var preMigrationHooks = map[string]preMigrationHook{
 	"289_workload_pr_merge_delegation_issue_state_index":     reconcileMigrationIndex(prMergeDelegationIndexSpecs[3]),
 	"290_workload_pr_merge_delegation_event_id_index":        reconcileMigrationIndex(prMergeDelegationIndexSpecs[4]),
 	"291_workload_pr_merge_delegation_event_history_index":   reconcileMigrationIndex(prMergeDelegationIndexSpecs[5]),
+	"303_external_pr_reconcile_work_identity_index":          reconcileMigrationIndex(externalPRReconcileIndexSpecs[0]),
+	"304_external_pr_reconcile_work_claim_index":             reconcileMigrationIndex(externalPRReconcileIndexSpecs[1]),
+	"305_external_pr_reconcile_work_issue_index":             reconcileMigrationIndex(externalPRReconcileIndexSpecs[2]),
+	"307_external_pr_reconcile_finalization_work_index":      reconcileMigrationIndex(externalPRFinalizationIndexSpecs[0]),
+	"308_comment_external_pr_finalization_index":             reconcileMigrationIndex(externalPRFinalizationIndexSpecs[1]),
+	"312_inbox_item_delivery_key_index":                      reconcileMigrationIndex(externalPRInboxIndexSpecs[0]),
+	"313_external_pr_reconcile_work_id_index":                reconcileMigrationIndex(externalPRPrimaryKeyIndexSpecs[0]),
+	"314_external_pr_reconcile_finalization_id_index":        reconcileMigrationIndex(externalPRPrimaryKeyIndexSpecs[1]),
+}
+
+// postFenceReconciliationHooks repair later catalog authorities even when an
+// older runner committed DDL but did not record the matching ledger row.
+var postFenceReconciliationHooks = map[string]preMigrationHook{
+	"312_inbox_item_delivery_key_index": reconcileMigrationIndex(externalPRInboxIndexSpecs[0]),
 }
 
 // cleanupInvalidConcurrentIndexHook removes an INVALID index left by an
@@ -209,6 +223,26 @@ type migrationIndexSpec struct {
 var externalPRCleanupIndexSpecs = []migrationIndexSpec{
 	{Name: "idx_external_pr_link_workspace_issue_updated", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "updated_at"}},
 	{Name: "idx_external_pr_receipt_workspace_issue", Table: "external_pull_request_receipt", Columns: []string{"workspace_id", "issue_id"}},
+}
+
+var externalPRReconcileIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_work_identity_uidx", Table: "external_pr_reconcile_work", Unique: true, Columns: []string{"workspace_id", "kind", "link_id", "source_revision"}},
+	{Name: "external_pr_reconcile_work_claim_idx", Table: "external_pr_reconcile_work", Columns: []string{"state", "next_attempt_at", "lease_expires_at", "updated_at"}},
+	{Name: "external_pr_reconcile_work_issue_idx", Table: "external_pr_reconcile_work", Columns: []string{"workspace_id", "issue_id", "state", "updated_at"}},
+}
+
+var externalPRFinalizationIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_finalization_work_uidx", Table: "external_pr_reconcile_finalization", Unique: true, Columns: []string{"work_id"}, PredicateNormalized: "work_idisnotnull", PredicateSQL: "work_id IS NOT NULL"},
+	{Name: "comment_external_pr_finalization_key_uidx", Table: "comment", Unique: true, Columns: []string{"finalization_key"}, PredicateNormalized: "finalization_keyisnotnull", PredicateSQL: "finalization_key IS NOT NULL"},
+}
+
+var externalPRInboxIndexSpecs = []migrationIndexSpec{
+	{Name: "inbox_item_delivery_key_uidx", Table: "inbox_item", Unique: true, Columns: []string{"workspace_id", "recipient_type", "recipient_id", "delivery_key"}, PredicateNormalized: "delivery_keyisnotnull", PredicateSQL: "delivery_key IS NOT NULL"},
+}
+
+var externalPRPrimaryKeyIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_work_id_uidx", Table: "external_pr_reconcile_work", Unique: true, Columns: []string{"id"}},
+	{Name: "external_pr_reconcile_finalization_id_uidx", Table: "external_pr_reconcile_finalization", Unique: true, Columns: []string{"id"}},
 }
 
 var prMergeDelegationIndexSpecs = []migrationIndexSpec{
@@ -397,9 +431,12 @@ type runOptions struct {
 	// Hooks run only for migrations that are not yet ledgered.
 	Hooks map[string]preMigrationHook
 	// ReconcileHooks run before the ledger check, including for already-applied
-	// migrations. They are reserved for retry-safe catalog authorities whose
-	// validity must be re-established after a failed concurrent build.
+	// migrations. They are reserved for retry-safe historical catalog
+	// authorities whose validity must be re-established before the fence.
 	ReconcileHooks map[string]preMigrationHook
+	// PostFenceReconcileHooks run before the ledger check even after the
+	// historical fence exists. They are only for later explicit authorities.
+	PostFenceReconcileHooks map[string]preMigrationHook
 	// ReconcileFenceVersion disables the historical reconciliation hooks once
 	// its ledger row exists, allowing later migrations to evolve those indexes.
 	ReconcileFenceVersion string
@@ -444,11 +481,12 @@ func main() {
 	}
 
 	if err := runMigrations(ctx, pool, runOptions{
-		Direction:             direction,
-		Files:                 files,
-		Hooks:                 preMigrationHooks,
-		ReconcileHooks:        reconciliationMigrationHooks,
-		ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
+		Direction:               direction,
+		Files:                   files,
+		Hooks:                   preMigrationHooks,
+		ReconcileHooks:          reconciliationMigrationHooks,
+		PostFenceReconcileHooks: postFenceReconciliationHooks,
+		ReconcileFenceVersion:   externalPRIndexReconciliationFenceVersion,
 	}); err != nil {
 		slog.Error("migration run failed", "error", err)
 		os.Exit(1)
@@ -550,11 +588,19 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	for _, file := range opts.Files {
 		version := migrations.ExtractVersion(file)
 
-		if opts.Direction == "up" && !reconciliationFenced {
-			if hook, ok := opts.ReconcileHooks[version]; ok && hook != nil {
-				slog.Info("running migration reconciliation hook", "version", version)
+		if opts.Direction == "up" {
+			if !reconciliationFenced {
+				if hook, ok := opts.ReconcileHooks[version]; ok && hook != nil {
+					slog.Info("running migration reconciliation hook", "version", version)
+					if err := hook(ctx, pool); err != nil {
+						return fmt.Errorf("migration reconciliation hook for %q: %w", version, err)
+					}
+				}
+			}
+			if hook, ok := opts.PostFenceReconcileHooks[version]; ok && hook != nil {
+				slog.Info("running post-fence migration reconciliation hook", "version", version)
 				if err := hook(ctx, pool); err != nil {
-					return fmt.Errorf("migration reconciliation hook for %q: %w", version, err)
+					return fmt.Errorf("post-fence migration reconciliation hook for %q: %w", version, err)
 				}
 			}
 		}

@@ -60,6 +60,26 @@ Frozen upstream owns migrations through `264`. The old fork used `231`–`250`, 
 
 Migration `278` is idempotent for databases that already applied the old fork filenames: columns and audit tables use `IF NOT EXISTS`. A production dump upgrade must pass before runtime switching. Migration `275` is the forward-only index-reconciliation fence; rollback across this generation requires the recorded database restore, not image replacement alone.
 
+The later typed external-PR continuation seam is allocated after the active-generation
+T016/T017 fences as forward-only migrations `302`–`316`: `302` creates the narrow
+`external_pr_reconcile_work` table; `303`–`305` each build one independent
+`CREATE [UNIQUE] INDEX CONCURRENTLY` authority. `306` creates the durable finalization
+intent; `307`–`308` add its independent concurrent indexes; `309` adds its lease; and
+`310` repairs the pre-publication finalization state constraint. Migrations `311`–`312`
+add the narrowly scoped inbox `delivery_key` column and one independent concurrent unique
+index. Because the continuation tables are created without inline primary-key indexes,
+`313`–`314` build the table-ID unique indexes independently and `315`–`316` attach those
+indexes as primary-key constraints. The attach migrations verify exact existing authority,
+fail closed on a wrong shape, and recover the DDL-committed/ledger-missing window
+idempotently. These migrations do not alter historical migrations `265`–`301`; relationships
+remain application-owned without foreign keys or cascades. Realtime fanout remains
+at-least-once.
+
+The typed continuation lifecycle also uses one provider-workspace fence followed by sorted
+Issue advisory/row locks for finalizer, source sweep and Issue/batch/workspace deletion. Parent
+barrier comments use a stable generation key derived from parent, stage mode and sorted relevant
+child IDs; this is lifecycle-specific idempotency, not a generic outbox/ledger.
+
 ## Safety contracts
 
 The final source must prove:
