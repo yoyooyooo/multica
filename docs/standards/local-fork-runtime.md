@@ -59,12 +59,13 @@ The installer:
 2. refuses replacement while the selected daemon reports active tasks;
 3. builds `server/cmd/multica` from the current exact source;
 4. stores the binary under `~/.local/lib/multica/<commit>-<version>/multica`;
-5. preserves the prior global command under `~/.local/lib/multica/backups/`;
-6. atomically switches `~/.local/bin/multica` to the new immutable binary;
-7. persists `disable_auto_update=true` for the selected profile so the official release updater cannot replace fork authority;
-8. restarts the selected daemon using the activated binary;
-9. requires daemon health to report both `status=running` and the exact built version;
-10. restores the previous global command and attempts to restart it if activation verification fails.
+5. uses the candidate binary to verify that the selected profile can authenticate to its configured Server before changing the global command or running daemon;
+6. preserves the prior global command under `~/.local/lib/multica/backups/`;
+7. atomically switches `~/.local/bin/multica` to the new immutable binary;
+8. persists `disable_auto_update=true` for the selected profile so the official release updater cannot replace fork authority;
+9. restarts the selected daemon using the activated binary;
+10. requires daemon health to report both `status=running` and the exact built version;
+11. restores the previous global command and attempts to restart it if activation verification fails.
 
 The command installs only CLI/daemon bytes. It does not rebuild or switch Docker backend/frontend images.
 

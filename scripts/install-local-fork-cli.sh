@@ -118,6 +118,9 @@ else
   install -m 0755 "$built_bin" "$target_bin"
 fi
 
+# Prove the candidate can load this profile and reach its configured server
+# before changing either the stable command or the running daemon.
+"$target_bin" --profile "$PROFILE" auth status >/dev/null
 "$target_bin" --profile "$PROFILE" config set disable_auto_update true >/dev/null
 
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -129,12 +132,9 @@ ln -s "$target_bin" "$link_tmp"
 if [[ -e "$GLOBAL_BIN" || -L "$GLOBAL_BIN" ]]; then
   mkdir -p "$backup_dir"
   previous_bin="$backup_dir/multica"
-  mv "$GLOBAL_BIN" "$previous_bin"
+  cp -pP "$GLOBAL_BIN" "$previous_bin"
 fi
-if ! mv "$link_tmp" "$GLOBAL_BIN"; then
-  if [[ -n "$previous_bin" && -e "$previous_bin" ]]; then
-    mv "$previous_bin" "$GLOBAL_BIN"
-  fi
+if ! mv -f "$link_tmp" "$GLOBAL_BIN"; then
   echo "failed to activate $GLOBAL_BIN" >&2
   exit 1
 fi
