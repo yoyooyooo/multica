@@ -38,6 +38,7 @@ This repository is operated as an official-tag-derived fork. The detailed proced
 - Upgrades inventory every prior generation and donor delta at commit/file granularity, then classify each as `keep`, `rework`, `superseded`, `retire`, or `blocked`. A prior squash is not proof that older UI/runtime/operations deltas were absorbed.
 - Current fork capability narratives live under `docs/features/fork/`; generation manifests live under `docs/releases/fork-generations/`.
 - Source-built deployable versions must pass `make validate-cli-build-version` and use a clean `git describe` value.
+- On an owner-controlled machine that intentionally runs the fork, use `make install-local-fork-cli PROFILE=<profile>` and follow [Local Fork Runtime](docs/standards/local-fork-runtime.md); the CLI and daemon are the same binary, while Docker backend/frontend deployment remains separate.
 - Backend/frontend deployment artifacts come from one exact deployment source; deployment evidence records image digests, preserved storage/network authority, runtime readback, and rollback boundary.
 
 ## State Rules

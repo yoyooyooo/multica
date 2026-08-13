@@ -18,3 +18,4 @@
 ## Read next
 
 - [Fork Development Standard](fork-development.md)
+- [Local fork runtime](local-fork-runtime.md) — build and activate the fork CLI and its same-binary daemon on an owner-controlled machine.

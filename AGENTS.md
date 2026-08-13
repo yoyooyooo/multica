@@ -50,6 +50,7 @@ Go backend + monorepo frontend (pnpm workspaces + Turborepo) with shared package
 - Create each generation from the exact official release tag and inventory all prior/donor deltas at commit/file granularity.
 - Integration is fast-forward only; no merge commits, force updates, or movable `fork/latest`.
 - Build/deployment evidence uses exact source, clean parser-compatible version, immutable tag, image digests, runtime readback, and rollback evidence.
+- Owner-controlled fork machines install CLI/daemon together with `make install-local-fork-cli PROFILE=<profile>`; see [Local Fork Runtime](docs/standards/local-fork-runtime.md).
 - Read [Fork Development Standard](docs/standards/fork-development.md) before creating, merging, building, or deploying fork work.
 
 ### Commands

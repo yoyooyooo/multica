@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica validate-cli-build-version build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost-migrate-uploads selfhost selfhost-build selfhost-stop
+.PHONY: help makehelp dev server daemon cli multica validate-cli-build-version build-cli build install-local-fork-cli install-local-fork-cli-plan test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree db-up db-down db-reset selfhost-migrate-uploads selfhost selfhost-build selfhost-stop
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -280,10 +280,19 @@ DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 validate-cli-build-version: ## Reject CLI versions that daemon capability gates cannot parse
 	@bash scripts/validate-cli-build-version.sh "$(VERSION)"
 
+build-cli: validate-cli-build-version ## Build the source-pinned Multica CLI into server/bin
+	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/multica ./cmd/multica
+
 build: validate-cli-build-version ## Build the server, CLI, and migrate binaries into server/bin
 	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/server ./cmd/server
-	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/multica ./cmd/multica
+	@$(MAKE) build-cli
 	cd server && go build -o bin/migrate ./cmd/migrate
+
+install-local-fork-cli: ## Build, activate, and restart the local fork CLI/daemon (PROFILE=mini)
+	@PROFILE="$(or $(PROFILE),mini)" bash scripts/install-local-fork-cli.sh
+
+install-local-fork-cli-plan: ## Preview local fork CLI/daemon activation without changing runtime state
+	@PROFILE="$(or $(PROFILE),mini)" bash scripts/install-local-fork-cli.sh --plan
 
 test: ## Run Go tests after ensuring the target DB exists and migrations are applied
 	$(REQUIRE_ENV)

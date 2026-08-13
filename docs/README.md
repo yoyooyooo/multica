@@ -17,6 +17,7 @@ A document cannot prove that code is accepted, an artifact is deployed, or a run
 
 - [Standards](standards/README.md)
 - [Fork Development Standard](standards/fork-development.md)
+- [Local fork runtime](standards/local-fork-runtime.md)
 - [Features](features/README.md)
 - [Fork capabilities](features/fork/README.md)
 - [Releases](releases/README.md)

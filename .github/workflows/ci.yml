@@ -81,6 +81,9 @@ jobs:
               - 'scripts/migrate-selfhost-uploads.sh'
               - 'scripts/validate-cli-build-version.sh'
               - 'scripts/validate-cli-build-version.test.sh'
+              - 'scripts/install-local-fork-cli.sh'
+              - 'scripts/install-local-fork-cli.test.sh'
+              - 'docs/standards/local-fork-runtime.md'
 
       - name: Decide
         id: decide
@@ -321,6 +324,9 @@ jobs:
 
       - name: Test CLI build version admission
         run: bash scripts/validate-cli-build-version.test.sh
+
+      - name: Test local fork CLI installer
+        run: bash scripts/install-local-fork-cli.test.sh
 
       - name: Build
         run: cd server && go build ./...

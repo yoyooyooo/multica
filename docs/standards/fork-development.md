@@ -105,6 +105,8 @@ Deployable source builds report either `vX.Y.Z` at that exact tag or `vX.Y.Z-N-g
 
 `make multica` remains a local source-execution path and is not deployment evidence.
 
+On an owner-controlled machine where the fork is the intended local runtime, use the tracked [Local fork runtime](local-fork-runtime.md) procedure. It keeps the user-global CLI and its same-binary daemon on one exact fork source while treating Docker backend/frontend deployment as a separate state transition.
+
 ## Deployment and rollback
 
 Deployment authority is:
