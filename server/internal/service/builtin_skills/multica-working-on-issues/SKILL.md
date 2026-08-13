@@ -114,7 +114,10 @@ gh pr comment ...
 Do **not** call `ags-cli grant|session|access|pr` (or similar) as an Agent
 workflow. Access Grant issue/reuse is an **internal** launcher/service material,
 not a command surface. Multica current-execution-context, task tokens, metadata,
-and external-PR link tokens are **not** repository authority.
+and external-PR link tokens are **not** repository authority; that context does not authorize repository operations.
+The canonical actor is resolved inside the launcher/service path. Ordinary writes
+still require a short-lived Access Grant backed by a live native repository grant;
+Agents do not request or manage either artifact directly.
 
 Multica ↔ AGS association (Issue linkage / link-token) is **best-effort
 provenance**: association failure may warn but must not block a legitimate
@@ -122,7 +125,7 @@ provenance**: association failure may warn but must not block a legitimate
 True denials come from AGS repository permission, protected branch, or exact
 effects (for example merge)—not from missing Multica link-token or Grant CLI.
 
-Do not route repository operations through retired Multica workload assertion
+Do not route repository operations through retired Multica assertion-authority
 or `pr.merge` delegation paths (those routes return 404).
 
 ## Reading a linked PR's real state
