@@ -51,8 +51,12 @@ merge-provider 镜像（merge_repo/number/url/sha）。AGS binding/head/base/met
 等 projection 不进入 Multica link（T017）。
 
 `external_pull_request_receipt` 是幂等回执的唯一所有者（workspace + idempotency_key）。
-请求可带 `target_instance` 作为 request-only fence（精确匹配配置实例，参与 payload hash，
-但不落库）。`workspace`/`issue_key` display 字段不再出现在 closed request schema。
+当前 association boundary 为兼容现行 AGS wire，closed request schema 接受 `workspace` / `issue_key`
+display 字段，以及完整的 canonical repository / provider binding / expected head+base / base ref /
+delegated merge method / projection revision envelope。该 envelope 必须全有或全无；存在时会执行
+canonical identity、repo、SHA、branch、method 与 `target_instance` 精确校验，并参与 payload hash。
+当前 generation 只接受与校验这些字段，不持久化为 Multica authority，也不因此开放 merge
+delegation。`target_instance` 仍是 request-only fence（精确匹配配置实例，不落库）。
 
 历史 workload authority / merge-delegation 表已由 T016 前向退役；回滚需 pre-299 dump。
 
