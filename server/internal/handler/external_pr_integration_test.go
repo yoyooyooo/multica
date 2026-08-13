@@ -36,6 +36,39 @@ func TestExternalPRProviderAllowedHonorsAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateExternalPRProjectionEnvelopeAcceptsCurrentAGSWireWithoutGrantingMerge(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	req := externalPullRequestLinkRequest{
+		Provider: "ags", Workspace: "mini", IssueKey: "MINI-1663",
+		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
+		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
+		TargetInstance:          "mini",
+		CanonicalRepositoryID:   "sha256:" + strings.Repeat("a", 64),
+		CanonicalRepository:     "jackie/ags-demo-mini",
+		ProviderBindingID:       "sha256:" + strings.Repeat("b", 64),
+		ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
+		ProviderRepository:      "jackie/ags-demo-mini",
+		ExpectedHeadSHA:         strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
+		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only",
+		ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+	}
+	if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err != nil {
+		t.Fatalf("validateExternalPRProjectionEnvelope() error = %v", err)
+	}
+}
+
+func TestValidateExternalPRProjectionEnvelopeRejectsPartialCurrentAGSWire(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	req := externalPullRequestLinkRequest{
+		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
+		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
+		TargetInstance: "mini", CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64),
+	}
+	if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err == nil || !strings.Contains(err.Error(), "exact complete set") {
+		t.Fatalf("validateExternalPRProjectionEnvelope() error = %v, want exact-set rejection", err)
+	}
+}
+
 type rejectingExternalPRTxStarter struct{ err error }
 
 func (s rejectingExternalPRTxStarter) Begin(context.Context) (pgx.Tx, error) {
@@ -64,6 +97,50 @@ func TestExternalPRErrorContractIsTypedAndSecretSafe(t *testing.T) {
 				t.Fatalf("response leaked infrastructure detail: %q", body)
 			}
 		})
+	}
+}
+
+func TestRegisterExternalPRAcceptsCurrentAGSProjectionEnvelope(t *testing.T) {
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-current-wire-token")
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
+	issueID := createExternalPRTestIssue(t, "external current AGS wire", "todo", "", nil)
+	completionIntent := true
+	reqBody := externalPullRequestLinkRequest{
+		Provider: "ags", IssueID: issueID, WorkspaceID: testWorkspaceID, Workspace: "mini", IssueKey: "MINI-1663",
+		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 16631, ExternalURL: "http://mini:6666/jackie/ags-demo-mini/pull/1",
+		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
+		MergeURL:              "http://forgejo.example/jackie/ags-demo-mini/pulls/1",
+		TargetInstance:        "mini",
+		CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64), CanonicalRepository: "jackie/ags-demo-mini",
+		ProviderBindingID: "sha256:" + strings.Repeat("b", 64), ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
+		ProviderRepository: "jackie/ags-demo-mini", ExpectedHeadSHA: strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
+		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only", ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+		CompletionIntent: &completionIntent, LinkConfidence: "authoritative", State: "open",
+	}
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", reqBody)
+	req.Header.Set("Authorization", "Bearer external-pr-current-wire-token")
+	w := httptest.NewRecorder()
+	testHandler.RegisterExternalPullRequestLink(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestExternalPRProjectionEnvelopeParticipatesInIdempotencyHash(t *testing.T) {
+	base := externalPRCanonicalPayload{
+		Provider: "ags", IssueID: strings.Repeat("1", 36), WorkspaceID: strings.Repeat("2", 36),
+		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1, MergeProvider: "forgejo",
+		MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1, TargetInstance: "mini",
+		CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64), CanonicalRepository: "jackie/ags-demo-mini",
+		ProviderBindingID: "sha256:" + strings.Repeat("b", 64), ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
+		ProviderRepository: "jackie/ags-demo-mini", ExpectedHeadSHA: strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
+		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only", ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+		CompletionIntent: true, LinkConfidence: "authoritative", State: "open",
+	}
+	changed := base
+	changed.ExpectedHeadSHA = strings.Repeat("0", 40)
+	if hashExternalPRPayload(base) == hashExternalPRPayload(changed) {
+		t.Fatal("projection envelope drift did not change the idempotency payload hash")
 	}
 }
 
