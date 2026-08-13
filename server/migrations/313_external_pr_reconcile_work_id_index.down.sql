@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS external_pr_reconcile_work_id_uidx;

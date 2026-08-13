@@ -19,6 +19,11 @@ type Event struct {
 	// without re-deserializing Payload. See MUL-1138 phase 1.
 	TaskID        string
 	ChatSessionID string
+
+	// DeliveryKey is an optional durable-side-effect deduplication key. It is
+	// intentionally scoped to callers that already own a typed durable intent;
+	// realtime delivery itself remains at-least-once.
+	DeliveryKey string
 }
 
 // Handler is a function that processes an event.

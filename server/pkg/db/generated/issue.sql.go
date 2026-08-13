@@ -352,6 +352,14 @@ cleared_external_pr_receipts AS (
 cleared_external_pr_links AS (
     DELETE FROM external_pull_request_link
     WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_reconcile_work AS (
+    DELETE FROM external_pr_reconcile_work
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
+),
+cleared_external_pr_reconcile_finalization AS (
+    DELETE FROM external_pr_reconcile_finalization
+    WHERE workspace_id = $2 AND issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target)
 `

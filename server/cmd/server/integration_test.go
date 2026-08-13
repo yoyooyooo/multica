@@ -20,11 +20,13 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/realtime"
 )
 
 var (
 	testServer      *httptest.Server
+	testHandler     *handler.Handler
 	testPool        *pgxpool.Pool
 	testToken       string
 	testUserID      string
@@ -72,7 +74,8 @@ func TestMain(m *testing.M) {
 
 	bus := events.New()
 	registerListeners(bus, hub)
-	router := NewRouter(pool, hub, bus, analytics.NoopClient{}, nil)
+	router, h := NewRouterWithOptions(pool, hub, bus, analytics.NoopClient{}, nil, RouterOptions{})
+	testHandler = h
 	testServer = httptest.NewServer(router)
 
 	// Generate a JWT token directly for the test user

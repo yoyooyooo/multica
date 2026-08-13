@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/scheduler"
 )
 
 type stageHTTPTask struct {
@@ -17,8 +21,9 @@ type stageHTTPTask struct {
 }
 
 type stageHTTPIssue struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Status     string `json:"status"`
 }
 
 func TestCompletionStageChainUsesRealHTTPAndPublicReadAPIs(t *testing.T) {
@@ -144,13 +149,18 @@ VALUES ($1,$2,'','cloud','{}'::jsonb,$3,'workspace',1,$4) RETURNING id`,
 			t.Fatalf("public task runs did not contain completed task %s: %#v", task.ID, taskRuns)
 		}
 	}
-	completeProvider := func(issueID string, number int) {
+	completeProvider := func(issue stageHTTPIssue, number int) {
 		t.Helper()
 		t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "completion-stage-http-token")
 		body := map[string]any{
-			"provider": "ags", "workspace_id": testWorkspaceID, "issue_id": issueID,
+			"provider": "ags", "workspace_id": testWorkspaceID, "workspace": integrationTestWorkspaceSlug,
+			"issue_id": issue.ID, "issue_key": issue.Identifier,
 			"external_repo": "jackie/http-stage", "external_number": number,
-			"state": "merged", "link_confidence": "authoritative", "completion_intent": true,
+			"external_url":   fmt.Sprintf("https://ags.example/jackie/http-stage/pulls/%d", number),
+			"merge_provider": "forgejo", "merge_repo": "forgejo/http-stage", "merge_number": number,
+			"merge_url":  fmt.Sprintf("https://forgejo.example/forgejo/http-stage/pulls/%d", number),
+			"merged_sha": strings.Repeat("b", 40),
+			"state":      "merged", "link_confidence": "authoritative", "completion_intent": true,
 			"idempotency_key": fmt.Sprintf("http-stage-%d", number),
 		}
 		payload, _ := json.Marshal(body)
@@ -165,6 +175,9 @@ VALUES ($1,$2,'','cloud','{}'::jsonb,$3,'workspace',1,$4) RETURNING id`,
 			t.Fatalf("provider completion status=%d", resp.StatusCode)
 		}
 		resp.Body.Close()
+		if _, err := handler.ExternalPRReconcileJob(testPool, testHandler).Handler(ctx, scheduler.HandlerInput{RunnerID: "completion-stage-http-test-worker"}); err != nil {
+			t.Fatalf("provider completion worker status=%d error=%v", resp.StatusCode, err)
+		}
 	}
 	inboxCounts := func(issueIDs ...string) map[string]int {
 		t.Helper()
@@ -205,7 +218,7 @@ VALUES ($1,$2,'','cloud','{}'::jsonb,$3,'workspace',1,$4) RETURNING id`,
 		t.Fatal("stage one was not queued")
 	}
 	startAndComplete(claimTask(stageOne.ID))
-	completeProvider(stageOne.ID, int(sequence%1000000)+2100000)
+	completeProvider(stageOne, int(sequence%1000000)+2100000)
 	if got := getIssue(stageOne.ID).Status; got != "done" {
 		t.Fatalf("stage one status=%q", got)
 	}
@@ -218,7 +231,7 @@ VALUES ($1,$2,'','cloud','{}'::jsonb,$3,'workspace',1,$4) RETURNING id`,
 		t.Fatal("stage two was not queued")
 	}
 	startAndComplete(claimTask(stageTwo.ID))
-	completeProvider(stageTwo.ID, int(sequence%1000000)+3100000)
+	completeProvider(stageTwo, int(sequence%1000000)+3100000)
 	if got := getIssue(stageTwo.ID).Status; got != "done" {
 		t.Fatalf("stage two status=%q", got)
 	}

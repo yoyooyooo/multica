@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS comment_external_pr_finalization_key_uidx;

@@ -111,13 +111,14 @@ func testContextContinuityMigrationScenario(t *testing.T, dbURL, scenario string
 	run := func(files []string) {
 		t.Helper()
 		if err := runMigrations(ctx, pool, runOptions{
-			Direction:             "up",
-			Files:                 files,
-			SchemaMigrationsTable: tableName,
-			AdvisoryLockKey:       lockKey,
-			Hooks:                 preMigrationHooks,
-			ReconcileHooks:        contextContinuityHooks,
-			ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
+			Direction:               "up",
+			Files:                   files,
+			SchemaMigrationsTable:   tableName,
+			AdvisoryLockKey:         lockKey,
+			Hooks:                   preMigrationHooks,
+			ReconcileHooks:          contextContinuityHooks,
+			PostFenceReconcileHooks: postFenceReconciliationHooks,
+			ReconcileFenceVersion:   externalPRIndexReconciliationFenceVersion,
 		}); err != nil {
 			t.Fatalf("run migrations: %v", err)
 		}
@@ -218,6 +219,53 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 	// T017: drop link-row projection/idempotency columns; receipt remains owner.
 	run(realMigrationRange(t, serverRoot, 300, 301))
 
+	// The typed continuation seam is forward-only and independent from the
+	// historical delegation audit range. Exercise clean creation, wrong
+	// definitions, invalid concurrent artifacts, and a second-run no-op.
+	run(realMigrationRange(t, serverRoot, 302, 302))
+	exerciseExternalPRReconcileIndexWrongDefinitionRecovery(t, ctx, pool)
+	run(realMigrationRange(t, serverRoot, 303, 305))
+	exerciseExternalPRReconcileIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+	for _, spec := range externalPRReconcileIndexSpecs {
+		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+			t.Fatalf("external PR reconcile index %s not exact after recovery: exact=%v err=%v", spec.Name, exact, err)
+		}
+	}
+	run(realMigrationRange(t, serverRoot, 306, 306))
+	exerciseExternalPRFinalizationHistoricalStateConstraint(t, ctx, pool)
+	exerciseExternalPRFinalizationIndexWrongDefinitionRecovery(t, ctx, pool)
+	run(realMigrationRange(t, serverRoot, 307, 311))
+	exerciseExternalPRInboxIndexWrongDefinitionRecovery(t, ctx, pool)
+	run(realMigrationRange(t, serverRoot, 312, 312))
+	exerciseExternalPRInboxIndexLedgeredWrongDefinitionRecovery(t, ctx, pool, serverRoot, tableName, lockKey)
+	exerciseExternalPRFinalizationRetryStateRollback(t, ctx, pool, serverRoot, tableName, lockKey)
+	assertExternalPRFinalizationLeaseColumns(t, ctx, pool)
+	assertExternalPRFinalizationStateConstraint(t, ctx, pool)
+	exerciseExternalPRFinalizationIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+	exerciseExternalPRInboxIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+
+	// 313-314 build the new-table primary-key indexes independently; 315-316
+	// attach those indexes as constraints without creating another index.
+	exerciseExternalPRPrimaryKeyIndexWrongDefinitionRecovery(t, ctx, pool)
+	run(realMigrationRange(t, serverRoot, 313, 314))
+	exerciseExternalPRPrimaryKeyIndexInvalidRecovery(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+	run(realMigrationRange(t, serverRoot, 315, 316))
+	assertExternalPRPrimaryKeyConstraints(t, ctx, pool)
+	exerciseExternalPRPrimaryKeyLedgerGap(t, ctx, pool, serverRoot, tableFQN, tableName, lockKey)
+	exerciseExternalPRPrimaryKeyWrongAuthorityRecovery(t, ctx, pool, serverRoot, tableName, lockKey)
+	exerciseExternalPRPrimaryKeyDownUp(t, ctx, pool, serverRoot, tableName, lockKey)
+	assertExternalPRPrimaryKeyConstraints(t, ctx, pool)
+	for _, spec := range externalPRFinalizationIndexSpecs {
+		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+			t.Fatalf("external PR finalization index %s not exact after recovery: exact=%v err=%v", spec.Name, exact, err)
+		}
+	}
+	for _, spec := range externalPRInboxIndexSpecs {
+		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+			t.Fatalf("external PR inbox index %s not exact after recovery: exact=%v err=%v", spec.Name, exact, err)
+		}
+	}
+
 	assertContextContinuitySchema(t, ctx, pool, schema, scenario, wantLegacyRow)
 	assertWorkspaceScopedIdempotency(t, ctx, pool)
 	ledgerBefore := migrationLedgerSnapshot(t, ctx, pool, tableFQN)
@@ -228,13 +276,14 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 	// the complete ledger, relevant catalog definitions, triggers, and legacy
 	// facts. No schema_migrations row is inserted or edited by the fixture.
 	if err := runMigrations(ctx, pool, runOptions{
-		Direction:             "up",
-		Files:                 appliedFiles,
-		SchemaMigrationsTable: tableName,
-		AdvisoryLockKey:       lockKey,
-		Hooks:                 preMigrationHooks,
-		ReconcileHooks:        contextContinuityHooks,
-		ReconcileFenceVersion: externalPRIndexReconciliationFenceVersion,
+		Direction:               "up",
+		Files:                   appliedFiles,
+		SchemaMigrationsTable:   tableName,
+		AdvisoryLockKey:         lockKey,
+		Hooks:                   preMigrationHooks,
+		ReconcileHooks:          contextContinuityHooks,
+		PostFenceReconcileHooks: postFenceReconciliationHooks,
+		ReconcileFenceVersion:   externalPRIndexReconciliationFenceVersion,
 	}); err != nil {
 		t.Fatalf("second migration runner pass: %v", err)
 	}
@@ -251,6 +300,548 @@ WHERE workspace_id='00000000-0000-4000-8000-000000000049'`).Scan(&epochAfterTemp
 		t.Fatalf("legacy facts changed on rerun: before=%q after=%q", legacyBefore, legacyAfter)
 	}
 	assertContextContinuitySchema(t, ctx, pool, schema, scenario, wantLegacyRow)
+}
+
+func assertExternalPRFinalizationStateConstraint(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	var count int
+	var definitions string
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int, COALESCE(string_agg(pg_get_constraintdef(oid), ';' ORDER BY conname), '')
+FROM pg_constraint
+WHERE conrelid='external_pr_reconcile_finalization'::regclass
+  AND contype='c'
+  AND conname LIKE 'external_pr_reconcile_finalization%state%check'`).Scan(&count, &definitions); err != nil {
+		t.Fatalf("inspect finalization state constraint: %v", err)
+	}
+	if count != 1 || !strings.Contains(strings.ToLower(definitions), "retry_wait") {
+		t.Fatalf("finalization state constraints=%d definitions=%q, want one constraint allowing retry_wait", count, definitions)
+	}
+}
+
+func assertExternalPRFinalizationLeaseColumns(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int
+FROM information_schema.columns
+WHERE table_schema=current_schema()
+  AND table_name='external_pr_reconcile_finalization'
+  AND column_name = ANY($1::text[])`, []string{"lease_owner", "lease_token", "lease_expires_at"}).Scan(&count); err != nil {
+		t.Fatalf("inspect finalization lease columns: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("finalization lease columns=%d, want 3", count)
+	}
+}
+
+func exerciseExternalPRFinalizationHistoricalStateConstraint(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE external_pr_reconcile_finalization
+    DROP CONSTRAINT IF EXISTS external_pr_reconcile_finalization_state_check;
+ALTER TABLE external_pr_reconcile_finalization
+    ADD CONSTRAINT external_pr_reconcile_finalization_state_check
+    CHECK (state IN ('pending', 'succeeded', 'recorded', 'dead'));`); err != nil {
+		t.Fatalf("seed historical 306 state constraint: %v", err)
+	}
+}
+
+func exerciseExternalPRFinalizationRetryStateRollback(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	serverRoot, tableName string,
+	lockKey int64,
+) {
+	t.Helper()
+	const (
+		workspaceID       = "00000000-0000-4000-8000-000000000049"
+		issueID           = "00000000-0000-4000-8000-000000000149"
+		exhaustedID       = "00000000-0000-4000-8000-000000000951"
+		availableID       = "00000000-0000-4000-8000-000000000952"
+		retryAfterUpID    = "00000000-0000-4000-8000-000000000953"
+		activityExhausted = "00000000-0000-4000-8000-000000000954"
+		activityAvailable = "00000000-0000-4000-8000-000000000955"
+		activityAfterUp   = "00000000-0000-4000-8000-000000000956"
+	)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO external_pr_reconcile_finalization (
+    id, workspace_id, issue_id, source_revision, source,
+    previous_status, terminal_status, status_activity_id, activity_ids,
+    state, attempt, max_attempts, next_attempt_at,
+    lease_owner, lease_token, lease_expires_at
+) VALUES
+  ($1,$2,$3,'cc-retry-down-exhausted','migration','todo','done',$4,'{}','retry_wait',2,2,now(),'runner-a',$5,now()-interval '1 second'),
+  ($6,$2,$3,'cc-retry-down-available','migration','todo','done',$7,'{}','retry_wait',1,2,now(),'runner-b',$8,now()-interval '1 second')`,
+		exhaustedID, workspaceID, issueID, activityExhausted,
+		"00000000-0000-4000-8000-000000000957",
+		availableID, activityAvailable,
+		"00000000-0000-4000-8000-000000000958"); err != nil {
+		t.Fatalf("seed retry_wait rollback rows: %v", err)
+	}
+
+	down := filepath.Join(serverRoot, "migrations", "310_external_pr_reconcile_finalization_retry_state.down.sql")
+	if err := runMigrations(ctx, pool, runOptions{
+		Direction: "down", Files: []string{down}, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+	}); err != nil {
+		t.Fatalf("run 293 down with retry_wait rows: %v", err)
+	}
+	var exhaustedState, availableState string
+	var exhaustedOwner, availableOwner, exhaustedToken, availableToken *string
+	if err := pool.QueryRow(ctx, `
+SELECT state, lease_owner, lease_token::text
+FROM external_pr_reconcile_finalization WHERE id=$1`, exhaustedID).Scan(&exhaustedState, &exhaustedOwner, &exhaustedToken); err != nil {
+		t.Fatalf("read exhausted retry rollback row: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT state, lease_owner, lease_token::text
+FROM external_pr_reconcile_finalization WHERE id=$1`, availableID).Scan(&availableState, &availableOwner, &availableToken); err != nil {
+		t.Fatalf("read available retry rollback row: %v", err)
+	}
+	if exhaustedState != "dead" || availableState != "pending" || exhaustedOwner != nil || availableOwner != nil || exhaustedToken != nil || availableToken != nil {
+		t.Fatalf("293 down retry mapping=(%q,%q,%v,%v,%v,%v), want dead/pending and cleared leases", exhaustedState, availableState, exhaustedOwner, availableOwner, exhaustedToken, availableToken)
+	}
+
+	up := filepath.Join(serverRoot, "migrations", "310_external_pr_reconcile_finalization_retry_state.up.sql")
+	if err := runMigrations(ctx, pool, runOptions{
+		Direction: "up", Files: []string{up}, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+	}); err != nil {
+		t.Fatalf("run 293 up after retry_wait rollback: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO external_pr_reconcile_finalization (
+    id, workspace_id, issue_id, source_revision, source,
+    previous_status, terminal_status, status_activity_id, activity_ids,
+    state, attempt, max_attempts, next_attempt_at
+) VALUES ($1,$2,$3,'cc-retry-after-up','migration','todo','done',$4,'{}','retry_wait',0,2,now())`,
+		retryAfterUpID, workspaceID, issueID, activityAfterUp); err != nil {
+		t.Fatalf("293 up did not restore retry_wait: %v", err)
+	}
+}
+
+func exerciseExternalPRReconcileIndexWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, spec := range externalPRReconcileIndexSpecs {
+		if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+			t.Fatalf("create wrong external PR reconcile index fixture %s: %v", spec.Name, err)
+		}
+	}
+	for _, spec := range externalPRReconcileIndexSpecs {
+		if err := reconcileMigrationIndex(spec)(ctx, pool); err != nil {
+			t.Fatalf("repair wrong external PR reconcile index %s: %v", spec.Name, err)
+		}
+		if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+			t.Fatalf("wrong external PR reconcile index %s did not recover: exact=%v err=%v", spec.Name, exact, err)
+		}
+	}
+}
+
+func exerciseExternalPRReconcileIndexInvalidRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableFQN, tableName string, lockKey int64) {
+	t.Helper()
+	for i, spec := range externalPRReconcileIndexSpecs {
+		migration := 303 + i
+		files := realMigrationRange(t, serverRoot, migration, migration)
+		version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+		t.Run("external_pr_reconcile_"+strconv.Itoa(migration), func(t *testing.T) {
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration %d ledger fixture: %v", migration, err)
+			}
+			schema, _, _, err := inspectMigrationIndex(ctx, pool, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+				t.Fatalf("drop migration %d exact index: %v", migration, err)
+			}
+			failFunction := createFailedConcurrentIndexArtifact(t, ctx, pool, schema, spec)
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err != nil {
+				t.Fatalf("repair migration %d invalid concurrent artifact: %v", migration, err)
+			}
+			if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+				t.Fatalf("migration %d invalid artifact did not recover: exact=%v err=%v", migration, exact, err)
+			}
+			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
+				t.Fatalf("drop migration %d invalid-index fixture function: %v", migration, err)
+			}
+		})
+	}
+}
+
+func exerciseExternalPRFinalizationIndexWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, spec := range externalPRFinalizationIndexSpecs {
+		if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+			t.Fatalf("create wrong external PR finalization index fixture %s: %v", spec.Name, err)
+		}
+	}
+}
+
+func exerciseExternalPRFinalizationIndexInvalidRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableFQN, tableName string, lockKey int64) {
+	t.Helper()
+	for i, spec := range externalPRFinalizationIndexSpecs {
+		migration := 307 + i
+		files := realMigrationRange(t, serverRoot, migration, migration)
+		version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+		t.Run("external_pr_finalization_"+strconv.Itoa(migration), func(t *testing.T) {
+			if spec.Table == "external_pr_reconcile_finalization" {
+				_, err := pool.Exec(ctx, `INSERT INTO external_pr_reconcile_finalization (workspace_id, issue_id, work_id, source_revision, source, previous_status, terminal_status, status_activity_id) VALUES ('00000000-0000-4000-8000-000000000049', '00000000-0000-4000-8000-000000000149', '00000000-0000-4000-8000-000000000748', 'cc-finalization-index', 'migration', 'todo', 'done', '00000000-0000-4000-8000-000000000848') ON CONFLICT DO NOTHING`)
+				if err != nil {
+					t.Fatalf("seed finalization index row: %v", err)
+				}
+			} else {
+				_, err := pool.Exec(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, finalization_key) VALUES ('00000000-0000-4000-8000-000000000149', '00000000-0000-4000-8000-000000000049', 'system', '00000000-0000-0000-0000-000000000000', 'migration finalization index', 'system', '00000000-0000-4000-8000-000000000950') ON CONFLICT DO NOTHING`)
+				if err != nil {
+					t.Fatalf("seed comment finalization index row: %v", err)
+				}
+			}
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration %d ledger fixture: %v", migration, err)
+			}
+			schema, _, _, err := inspectMigrationIndex(ctx, pool, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+				t.Fatalf("drop migration %d exact index: %v", migration, err)
+			}
+			failFunction := createFailedConcurrentIndexArtifact(t, ctx, pool, schema, spec)
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err != nil {
+				t.Fatalf("repair migration %d invalid concurrent artifact: %v", migration, err)
+			}
+			if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+				t.Fatalf("migration %d invalid artifact did not recover: exact=%v err=%v", migration, exact, err)
+			}
+			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
+				t.Fatalf("drop migration %d invalid-index fixture function: %v", migration, err)
+			}
+		})
+	}
+}
+
+func exerciseExternalPRInboxIndexWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, spec := range externalPRInboxIndexSpecs {
+		if _, err := pool.Exec(ctx, "DROP INDEX IF EXISTS "+pgx.Identifier{spec.Name}.Sanitize()); err != nil {
+			t.Fatalf("drop inbox delivery-key index fixture %s: %v", spec.Name, err)
+		}
+		if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+			t.Fatalf("create wrong inbox delivery-key index fixture %s: %v", spec.Name, err)
+		}
+	}
+}
+
+func exerciseExternalPRInboxIndexLedgeredWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableName string, lockKey int64) {
+	t.Helper()
+	spec := externalPRInboxIndexSpecs[0]
+	schema, exact, exists, err := inspectMigrationIndex(ctx, pool, spec)
+	if err != nil || !exact || !exists {
+		t.Fatalf("migration 312 ledgered fixture is not initially exact: schema=%q exact=%v exists=%v err=%v", schema, exact, exists, err)
+	}
+	if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+		t.Fatalf("drop ledgered migration 312 index: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+		t.Fatalf("create ledgered migration 312 wrong-definition fixture: %v", err)
+	}
+	files := realMigrationRange(t, serverRoot, 312, 312)
+	if err := runMigrations(ctx, pool, runOptions{
+		Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+		PostFenceReconcileHooks: postFenceReconciliationHooks,
+	}); err != nil {
+		t.Fatalf("repair ledgered migration 312 wrong-definition fixture: %v", err)
+	}
+	if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+		t.Fatalf("ledgered migration 312 did not converge to exact ready/valid index: exact=%v err=%v", exact, err)
+	}
+}
+
+func exerciseExternalPRInboxIndexInvalidRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableFQN, tableName string, lockKey int64) {
+	t.Helper()
+	for _, spec := range externalPRInboxIndexSpecs {
+		version := "312_inbox_item_delivery_key_index"
+		files := realMigrationRange(t, serverRoot, 312, 312)
+		t.Run("external_pr_inbox_312", func(t *testing.T) {
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration 312 ledger fixture: %v", err)
+			}
+			schema, _, _, err := inspectMigrationIndex(ctx, pool, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+				t.Fatalf("drop migration 312 exact index: %v", err)
+			}
+			failFunction := createFailedConcurrentIndexArtifact(t, ctx, pool, schema, spec)
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err != nil {
+				t.Fatalf("repair migration 312 invalid concurrent artifact: %v", err)
+			}
+			if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+				t.Fatalf("migration 312 invalid artifact did not recover: exact=%v err=%v", exact, err)
+			}
+			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
+				t.Fatalf("drop migration 312 invalid-index fixture function: %v", err)
+			}
+		})
+	}
+}
+
+func exerciseExternalPRPrimaryKeyIndexWrongDefinitionRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, spec := range externalPRPrimaryKeyIndexSpecs {
+		if _, err := pool.Exec(ctx, "CREATE INDEX "+pgx.Identifier{spec.Name}.Sanitize()+" ON "+pgx.Identifier{spec.Table}.Sanitize()+"("+pgx.Identifier{spec.Columns[0]}.Sanitize()+")"); err != nil {
+			t.Fatalf("create wrong external PR primary-key index fixture %s: %v", spec.Name, err)
+		}
+	}
+}
+
+func exerciseExternalPRPrimaryKeyIndexInvalidRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableFQN, tableName string, lockKey int64) {
+	t.Helper()
+	for i, spec := range externalPRPrimaryKeyIndexSpecs {
+		migration := 313 + i
+		files := realMigrationRange(t, serverRoot, migration, migration)
+		version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+		t.Run("external_pr_primary_key_"+strconv.Itoa(migration), func(t *testing.T) {
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration %d ledger fixture: %v", migration, err)
+			}
+			schema, _, _, err := inspectMigrationIndex(ctx, pool, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+pgx.Identifier{schema, spec.Name}.Sanitize()); err != nil {
+				t.Fatalf("drop migration %d exact index: %v", migration, err)
+			}
+			failFunction := createFailedConcurrentIndexArtifact(t, ctx, pool, schema, spec)
+			if err := runMigrations(ctx, pool, runOptions{
+				Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks,
+			}); err != nil {
+				t.Fatalf("repair migration %d invalid concurrent artifact: %v", migration, err)
+			}
+			if _, exact, _, err := inspectMigrationIndex(ctx, pool, spec); err != nil || !exact {
+				t.Fatalf("migration %d invalid artifact did not recover: exact=%v err=%v", migration, exact, err)
+			}
+			if _, err := pool.Exec(ctx, "DROP FUNCTION "+failFunction+"(uuid)"); err != nil {
+				t.Fatalf("drop migration %d invalid-index fixture function: %v", migration, err)
+			}
+		})
+	}
+}
+
+func exerciseExternalPRPrimaryKeyLedgerGap(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableFQN, tableName string, lockKey int64) {
+	t.Helper()
+	for migration := 315; migration <= 316; migration++ {
+		files := realMigrationRange(t, serverRoot, migration, migration)
+		version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+		var beforeOID uint32
+		if err := pool.QueryRow(ctx, `
+SELECT c.conindid::oid
+FROM pg_constraint c
+WHERE c.conrelid = CASE $1::integer
+    WHEN 315 THEN 'external_pr_reconcile_work'::regclass
+    ELSE 'external_pr_reconcile_finalization'::regclass
+END
+  AND c.contype='p'`, migration).Scan(&beforeOID); err != nil {
+			t.Fatalf("read attached primary-key authority before ledger-gap migration %d: %v", migration, err)
+		}
+		if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQN+" WHERE version=$1", version); err != nil {
+			t.Fatalf("simulate missing ledger for migration %d: %v", migration, err)
+		}
+		if err := runMigrations(ctx, pool, runOptions{
+			Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+			Hooks: preMigrationHooks,
+		}); err != nil {
+			t.Fatalf("recover attached primary-key migration %d after ledger gap: %v", migration, err)
+		}
+		var afterOID uint32
+		if err := pool.QueryRow(ctx, `
+SELECT c.conindid::oid
+FROM pg_constraint c
+WHERE c.conrelid = CASE $1::integer
+    WHEN 315 THEN 'external_pr_reconcile_work'::regclass
+    ELSE 'external_pr_reconcile_finalization'::regclass
+END
+  AND c.contype='p'`, migration).Scan(&afterOID); err != nil {
+			t.Fatalf("read attached primary-key authority after ledger-gap migration %d: %v", migration, err)
+		}
+		if afterOID != beforeOID {
+			t.Fatalf("migration %d rebuilt attached primary-key index across ledger gap: before=%d after=%d", migration, beforeOID, afterOID)
+		}
+		var ledgerRows int
+		if err := pool.QueryRow(ctx, "SELECT count(*)::int FROM "+tableFQN+" WHERE version=$1", version).Scan(&ledgerRows); err != nil {
+			t.Fatalf("read repaired migration %d ledger: %v", migration, err)
+		}
+		if ledgerRows != 1 {
+			t.Fatalf("migration %d ledger rows=%d, want one", migration, ledgerRows)
+		}
+	}
+}
+
+func exerciseExternalPRPrimaryKeyWrongAuthorityRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableName string, lockKey int64) {
+	t.Helper()
+	tests := []struct {
+		migration  int
+		table      string
+		constraint string
+		source     string
+	}{
+		{315, "external_pr_reconcile_work", "external_pr_reconcile_work_pkey", "external_pr_reconcile_work_id_uidx"},
+		{316, "external_pr_reconcile_finalization", "external_pr_reconcile_finalization_pkey", "external_pr_reconcile_finalization_id_uidx"},
+	}
+	for _, tc := range tests {
+		t.Run(strconv.Itoa(tc.migration)+"_source_wrong", func(t *testing.T) {
+			t.Helper()
+			tableIdent := pgx.Identifier{tc.table}.Sanitize()
+			constraintIdent := pgx.Identifier{tc.constraint}.Sanitize()
+			sourceIdent := pgx.Identifier{tc.source}.Sanitize()
+			files := realMigrationRange(t, serverRoot, tc.migration, tc.migration)
+			version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableIdent); err != nil {
+				t.Fatalf("clear %s rows: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "ALTER TABLE "+tableIdent+" DROP CONSTRAINT IF EXISTS "+constraintIdent); err != nil {
+				t.Fatalf("drop exact %s authority: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "CREATE UNIQUE INDEX CONCURRENTLY "+sourceIdent+" ON "+tableIdent+" (workspace_id)"); err != nil {
+				t.Fatalf("create wrong source authority for %s: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQNForContextContinuity(t, tableName)+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration %d ledger for wrong source: %v", tc.migration, err)
+			}
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err == nil {
+				t.Fatalf("migration %d accepted wrong source primary-key authority", tc.migration)
+			}
+			var ledgerRows int
+			if err := pool.QueryRow(ctx, "SELECT count(*)::int FROM "+tableFQNForContextContinuity(t, tableName)+" WHERE version=$1", version).Scan(&ledgerRows); err != nil {
+				t.Fatalf("read failed migration %d ledger: %v", tc.migration, err)
+			}
+			if ledgerRows != 0 {
+				t.Fatalf("wrong source migration %d wrote %d ledger rows", tc.migration, ledgerRows)
+			}
+			var sourceDefinition string
+			if err := pool.QueryRow(ctx, "SELECT pg_get_indexdef(to_regclass($1))", tc.source).Scan(&sourceDefinition); err != nil {
+				t.Fatalf("read preserved wrong source authority %s: %v", tc.source, err)
+			}
+			if !strings.Contains(sourceDefinition, "workspace_id") {
+				t.Fatalf("wrong source authority changed after failed migration %d: %q", tc.migration, sourceDefinition)
+			}
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+sourceIdent); err != nil {
+				t.Fatalf("drop wrong source authority %s: %v", tc.source, err)
+			}
+			if _, err := pool.Exec(ctx, "CREATE UNIQUE INDEX CONCURRENTLY "+sourceIdent+" ON "+tableIdent+" (id)"); err != nil {
+				t.Fatalf("restore exact source authority %s: %v", tc.source, err)
+			}
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err != nil {
+				t.Fatalf("restore migration %d after wrong source: %v", tc.migration, err)
+			}
+		})
+
+		t.Run(strconv.Itoa(tc.migration)+"_target_wrong", func(t *testing.T) {
+			t.Helper()
+			tableIdent := pgx.Identifier{tc.table}.Sanitize()
+			constraintIdent := pgx.Identifier{tc.constraint}.Sanitize()
+			wrongIndexName := "cc_wrong_" + strconv.Itoa(tc.migration) + "_primary_key"
+			wrongIndexIdent := pgx.Identifier{wrongIndexName}.Sanitize()
+			correctSourceIdent := pgx.Identifier{tc.source}.Sanitize()
+			files := realMigrationRange(t, serverRoot, tc.migration, tc.migration)
+			version := strings.TrimSuffix(filepath.Base(files[0]), ".up.sql")
+
+			if _, err := pool.Exec(ctx, "DELETE FROM "+tableFQNForContextContinuity(t, tableName)+" WHERE version=$1", version); err != nil {
+				t.Fatalf("remove migration %d ledger for wrong target: %v", tc.migration, err)
+			}
+			if _, err := pool.Exec(ctx, "ALTER TABLE "+tableIdent+" DROP CONSTRAINT IF EXISTS "+constraintIdent); err != nil {
+				t.Fatalf("drop exact target authority %s: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "CREATE UNIQUE INDEX CONCURRENTLY "+wrongIndexIdent+" ON "+tableIdent+" (workspace_id)"); err != nil {
+				t.Fatalf("create wrong target index for %s: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "ALTER TABLE "+tableIdent+" ADD CONSTRAINT "+constraintIdent+" PRIMARY KEY USING INDEX "+wrongIndexIdent); err != nil {
+				t.Fatalf("attach wrong target authority %s: %v", tc.table, err)
+			}
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err == nil {
+				t.Fatalf("migration %d accepted wrong target primary-key authority", tc.migration)
+			}
+			var ledgerRows int
+			if err := pool.QueryRow(ctx, "SELECT count(*)::int FROM "+tableFQNForContextContinuity(t, tableName)+" WHERE version=$1", version).Scan(&ledgerRows); err != nil {
+				t.Fatalf("read failed migration %d target ledger: %v", tc.migration, err)
+			}
+			if ledgerRows != 0 {
+				t.Fatalf("wrong target migration %d wrote %d ledger rows", tc.migration, ledgerRows)
+			}
+			var targetDefinition string
+			if err := pool.QueryRow(ctx, "SELECT pg_get_indexdef(c.conindid) FROM pg_constraint c WHERE c.conrelid=$1::regclass AND c.conname=$2", tc.table, tc.constraint).Scan(&targetDefinition); err != nil {
+				t.Fatalf("read preserved wrong target authority %s: %v", tc.table, err)
+			}
+			if !strings.Contains(targetDefinition, "workspace_id") {
+				t.Fatalf("wrong target authority changed after failed migration %d: %q", tc.migration, targetDefinition)
+			}
+			if _, err := pool.Exec(ctx, "ALTER TABLE "+tableIdent+" DROP CONSTRAINT IF EXISTS "+constraintIdent); err != nil {
+				t.Fatalf("drop preserved wrong target authority %s: %v", tc.table, err)
+			}
+			if _, err := pool.Exec(ctx, "CREATE UNIQUE INDEX CONCURRENTLY "+correctSourceIdent+" ON "+tableIdent+" (id)"); err != nil {
+				t.Fatalf("restore exact source authority %s: %v", tc.source, err)
+			}
+			if err := runMigrations(ctx, pool, runOptions{Direction: "up", Files: files, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey, Hooks: preMigrationHooks}); err != nil {
+				t.Fatalf("restore migration %d after wrong target: %v", tc.migration, err)
+			}
+		})
+	}
+}
+
+func tableFQNForContextContinuity(t *testing.T, tableName string) string {
+	t.Helper()
+	parts := strings.Split(tableName, ".")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected schema migrations table %q", tableName)
+	}
+	return pgx.Identifier{parts[0], parts[1]}.Sanitize()
+}
+
+func exerciseExternalPRPrimaryKeyDownUp(t *testing.T, ctx context.Context, pool *pgxpool.Pool, serverRoot, tableName string, lockKey int64) {
+	t.Helper()
+	downFiles := []string{
+		filepath.Join(serverRoot, "migrations", "316_external_pr_reconcile_finalization_primary_key.down.sql"),
+		filepath.Join(serverRoot, "migrations", "315_external_pr_reconcile_work_primary_key.down.sql"),
+		filepath.Join(serverRoot, "migrations", "314_external_pr_reconcile_finalization_id_index.down.sql"),
+		filepath.Join(serverRoot, "migrations", "313_external_pr_reconcile_work_id_index.down.sql"),
+	}
+	if err := runMigrations(ctx, pool, runOptions{
+		Direction: "down", Files: downFiles, SchemaMigrationsTable: tableName, AdvisoryLockKey: lockKey,
+	}); err != nil {
+		t.Fatalf("primary-key migration down: %v", err)
+	}
+	if err := runMigrations(ctx, pool, runOptions{
+		Direction: "up", Files: realMigrationRange(t, serverRoot, 313, 316), SchemaMigrationsTable: tableName,
+		AdvisoryLockKey: lockKey, Hooks: preMigrationHooks,
+	}); err != nil {
+		t.Fatalf("primary-key migration up after down: %v", err)
+	}
+}
+
+func assertExternalPRPrimaryKeyConstraints(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, tc := range []struct {
+		table      string
+		constraint string
+		index      string
+	}{
+		{table: "external_pr_reconcile_work", constraint: "external_pr_reconcile_work_pkey", index: "external_pr_reconcile_work_pkey"},
+		{table: "external_pr_reconcile_finalization", constraint: "external_pr_reconcile_finalization_pkey", index: "external_pr_reconcile_finalization_pkey"},
+	} {
+		var count int
+		var indexName string
+		if err := pool.QueryRow(ctx, `
+SELECT count(*)::int, COALESCE(max(index_rel.relname), '')
+FROM pg_constraint c
+JOIN pg_class index_rel ON index_rel.oid = c.conindid
+WHERE c.conrelid=$1::regclass AND c.contype='p' AND c.conname=$2`, tc.table, tc.constraint).Scan(&count, &indexName); err != nil {
+			t.Fatalf("inspect primary key %s: %v", tc.constraint, err)
+		}
+		if count != 1 || indexName != tc.index {
+			t.Fatalf("primary key %s=(count=%d,index=%q), want (1,%q)", tc.constraint, count, indexName, tc.index)
+		}
+	}
 }
 
 func exerciseCleanupIndexRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
@@ -786,6 +1377,34 @@ workspace_id, idempotency_key, payload_hash, issue_id, provider, external_repo, 
 			t.Fatalf("seed receipt for failed concurrent build: %v", err)
 		}
 	}
+	if spec.Table == "external_pr_reconcile_work" {
+		if _, err := pool.Exec(ctx, `INSERT INTO external_pr_reconcile_work (
+workspace_id, issue_id, link_id, kind, provider, external_repo, external_number, source_revision
+)
+SELECT
+'00000000-0000-4000-8000-000000000050', '00000000-0000-4000-8000-000000000150',
+'00000000-0000-4000-8000-000000000250', 'external_pr_terminal', 'ags',
+'jackie/invalid-index-work', 5000, 'cc-invalid-index-work'
+WHERE NOT EXISTS (
+    SELECT 1 FROM external_pr_reconcile_work WHERE source_revision='cc-invalid-index-work'
+)`); err != nil {
+			t.Fatalf("seed reconcile work for failed concurrent build: %v", err)
+		}
+	}
+	if spec.Table == "inbox_item" {
+		if _, err := pool.Exec(ctx, `INSERT INTO inbox_item (
+workspace_id, recipient_type, recipient_id, type, title, delivery_key
+)
+SELECT
+'00000000-0000-4000-8000-000000000049', 'member',
+'00000000-0000-4000-8000-000000000449', 'external_pr_terminal',
+'Concurrent index failure fixture', 'cc-invalid-index-inbox'
+WHERE NOT EXISTS (
+    SELECT 1 FROM inbox_item WHERE delivery_key='cc-invalid-index-inbox'
+)`); err != nil {
+			t.Fatalf("seed inbox item for failed concurrent build: %v", err)
+		}
+	}
 	functionName := "cc_fail_" + strings.TrimPrefix(spec.Name, "idx_")
 	functionIdent := pgx.Identifier{schema, functionName}.Sanitize()
 	if _, err := pool.Exec(ctx, "CREATE FUNCTION "+functionIdent+"(uuid) RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN RAISE EXCEPTION 'intentional concurrent index failure'; END $$"); err != nil {
@@ -1015,6 +1634,14 @@ FROM (
     WHERE n.nspname=$1 AND c.relname IN (
         'idx_external_pr_link_id', 'idx_external_pr_link_identity',
         'idx_external_pr_link_issue_state', 'idx_external_pr_receipt_idempotency',
+        'external_pr_reconcile_work_identity_uidx',
+        'external_pr_reconcile_work_claim_idx',
+        'external_pr_reconcile_work_issue_idx',
+        'external_pr_reconcile_finalization_work_uidx',
+        'comment_external_pr_finalization_key_uidx',
+        'inbox_item_delivery_key_uidx',
+        'external_pr_reconcile_work_pkey',
+        'external_pr_reconcile_finalization_pkey'
     )
     UNION ALL
     SELECT 'trigger', t.tgname, pg_get_triggerdef(t.oid)
@@ -1060,17 +1687,33 @@ provider || '|' || external_repo || '|' || external_number::text || '|' || state
 func assertContextContinuitySchema(t *testing.T, ctx context.Context, pool *pgxpool.Pool, schema, scenario string, wantLegacyRow bool) {
 	t.Helper()
 	expectedIndexDefinition := map[string][]string{
-		"idx_external_pr_link_id":                        {"external_pull_request_link USING btree (id)"},
-		"idx_external_pr_link_identity":                  {"external_pull_request_link USING btree (workspace_id, provider, external_repo, external_number)"},
-		"idx_external_pr_link_issue_state":               {"external_pull_request_link USING btree (workspace_id, issue_id, state)", "open", "draft", "link_confidence"},
-		"idx_external_pr_receipt_idempotency":            {"external_pull_request_receipt USING btree (workspace_id, idempotency_key)"},
-		}
+		"idx_external_pr_link_id":                      {"external_pull_request_link USING btree (id)"},
+		"idx_external_pr_link_identity":                {"external_pull_request_link USING btree (workspace_id, provider, external_repo, external_number)"},
+		"idx_external_pr_link_issue_state":             {"external_pull_request_link USING btree (workspace_id, issue_id, state)", "open", "draft", "link_confidence"},
+		"idx_external_pr_receipt_idempotency":          {"external_pull_request_receipt USING btree (workspace_id, idempotency_key)"},
+		"external_pr_reconcile_work_identity_uidx":     {"external_pr_reconcile_work USING btree (workspace_id, kind, link_id, source_revision)"},
+		"external_pr_reconcile_work_claim_idx":         {"external_pr_reconcile_work USING btree (state, next_attempt_at, lease_expires_at, updated_at)"},
+		"external_pr_reconcile_work_issue_idx":         {"external_pr_reconcile_work USING btree (workspace_id, issue_id, state, updated_at)"},
+		"external_pr_reconcile_finalization_work_uidx": {"external_pr_reconcile_finalization USING btree (work_id)"},
+		"comment_external_pr_finalization_key_uidx":    {"comment USING btree (finalization_key)"},
+		"inbox_item_delivery_key_uidx":                 {"inbox_item USING btree (workspace_id, recipient_type, recipient_id, delivery_key)"},
+		"external_pr_reconcile_work_pkey":              {"external_pr_reconcile_work USING btree (id)"},
+		"external_pr_reconcile_finalization_pkey":      {"external_pr_reconcile_finalization USING btree (id)"},
+	}
 	// T016 retires workspace_workload_authority*; External PR indexes remain.
 	for _, index := range []string{
 		"idx_external_pr_link_id",
 		"idx_external_pr_link_identity",
 		"idx_external_pr_link_issue_state",
 		"idx_external_pr_receipt_idempotency",
+		"external_pr_reconcile_work_identity_uidx",
+		"external_pr_reconcile_work_claim_idx",
+		"external_pr_reconcile_work_issue_idx",
+		"external_pr_reconcile_finalization_work_uidx",
+		"comment_external_pr_finalization_key_uidx",
+		"inbox_item_delivery_key_uidx",
+		"external_pr_reconcile_work_pkey",
+		"external_pr_reconcile_finalization_pkey",
 	} {
 		var ready, valid bool
 		var columns, predicate string
@@ -1085,6 +1728,15 @@ WHERE n.nspname=$1 AND c.relname=$2`, schema, index).Scan(&ready, &valid, &colum
 		}
 		if !ready || !valid || columns == "" {
 			t.Fatalf("index %s ready=%v valid=%v definition=%q predicate=%q", index, ready, valid, columns, predicate)
+		}
+		if index == "external_pr_reconcile_finalization_work_uidx" && predicate != "(work_id IS NOT NULL)" {
+			t.Fatalf("index %s predicate=%q, want non-null work predicate", index, predicate)
+		}
+		if index == "comment_external_pr_finalization_key_uidx" && predicate != "(finalization_key IS NOT NULL)" {
+			t.Fatalf("index %s predicate=%q, want non-null finalization predicate", index, predicate)
+		}
+		if index == "inbox_item_delivery_key_uidx" && predicate != "(delivery_key IS NOT NULL)" {
+			t.Fatalf("index %s predicate=%q, want non-null delivery-key predicate", index, predicate)
 		}
 		definition := columns + " " + predicate
 		for _, fragment := range expectedIndexDefinition[index] {

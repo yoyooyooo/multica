@@ -15,9 +15,99 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/scheduler"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestExternalPRTerminalReplayCommitsRetryNudgeAndMergedAbsorption(t *testing.T) {
+	ctx := context.Background()
+	issueID := createExternalPRTestIssue(t, "external-pr replay commit", "todo", "", nil)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM external_pr_reconcile_work WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM external_pull_request_receipt WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM external_pull_request_link WHERE issue_id=$1`, issueID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id=$1`, issueID)
+	})
+	req := externalPRCompletionReq(testWorkspaceID, issueID, 12003)
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
+		t.Fatalf("seed replay fact: %v", err)
+	}
+	var keyedRevision string
+	if err := testPool.QueryRow(ctx, `
+SELECT source_revision FROM external_pr_reconcile_work
+WHERE issue_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, issueID).Scan(&keyedRevision); err != nil {
+		t.Fatalf("read keyed replay work: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE external_pr_reconcile_work SET state='retry_wait', next_attempt_at=now()+interval '1 hour' WHERE issue_id=$1 AND source_revision=$2`, issueID, keyedRevision); err != nil {
+		t.Fatalf("seed keyed retry_wait row: %v", err)
+	}
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
+		t.Fatalf("replay keyed terminal fact: %v", err)
+	}
+	var nextAttempt time.Time
+	if err := testPool.QueryRow(ctx, `SELECT next_attempt_at FROM external_pr_reconcile_work WHERE issue_id=$1 AND source_revision=$2`, issueID, keyedRevision).Scan(&nextAttempt); err != nil {
+		t.Fatalf("read committed keyed retry nudge: %v", err)
+	}
+	var dbNow time.Time
+	if err := testPool.QueryRow(ctx, `SELECT now()`).Scan(&dbNow); err != nil {
+		t.Fatalf("read replay database clock: %v", err)
+	}
+	if nextAttempt.After(dbNow) {
+		t.Fatalf("keyed replay retry nudge was rolled back: next_attempt_at=%s db_now=%s", nextAttempt, dbNow)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*externalPullRequestLinkRequest)
+	}{
+		{"workspace", func(request *externalPullRequestLinkRequest) { request.Workspace = "other-workspace" }},
+		{"issue_key", func(request *externalPullRequestLinkRequest) { request.IssueKey = "HAN-99999" }},
+		{"external_url", func(request *externalPullRequestLinkRequest) {
+			request.ExternalURL = "https://ags.example/changed/12003"
+		}},
+	} {
+		t.Run("same_key_"+tc.name, func(t *testing.T) {
+			changed := req
+			tc.mutate(&changed)
+			_, err := testHandler.upsertExternalPullRequestLink(ctx, changed)
+			var conflict externalPRConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("same-key %s mutation error=%v, want fail-closed conflict", tc.name, err)
+			}
+		})
+	}
+
+	absorbed := req
+	absorbed.IdempotencyKey = ""
+	absorbed.State = "closed"
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, absorbed); err != nil {
+		t.Fatalf("seed merged-absorbed keyless replay: %v", err)
+	}
+	var absorbedRevision string
+	if err := testPool.QueryRow(ctx, `
+SELECT source_revision FROM external_pr_reconcile_work
+WHERE issue_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, issueID).Scan(&absorbedRevision); err != nil {
+		t.Fatalf("read absorbed work: %v", err)
+	}
+	if absorbedRevision != keyedRevision {
+		t.Fatalf("merged-absorbed replay changed the persisted source revision from %q to %q", keyedRevision, absorbedRevision)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE external_pr_reconcile_work SET state='retry_wait', next_attempt_at=now()+interval '1 hour' WHERE issue_id=$1 AND source_revision=$2`, issueID, absorbedRevision); err != nil {
+		t.Fatalf("seed absorbed retry_wait row: %v", err)
+	}
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, absorbed); err != nil {
+		t.Fatalf("replay merged-absorbed keyless fact: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT next_attempt_at FROM external_pr_reconcile_work WHERE issue_id=$1 AND source_revision=$2`, issueID, absorbedRevision).Scan(&nextAttempt); err != nil {
+		t.Fatalf("read committed absorbed retry nudge: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT now()`).Scan(&dbNow); err != nil {
+		t.Fatalf("read absorbed replay database clock: %v", err)
+	}
+	if nextAttempt.After(dbNow) {
+		t.Fatalf("merged-absorbed retry nudge was rolled back: next_attempt_at=%s db_now=%s", nextAttempt, dbNow)
+	}
+}
 
 func TestExternalPRProviderAllowedDefaultsOpen(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS", "")
@@ -36,69 +126,44 @@ func TestExternalPRProviderAllowedHonorsAllowlist(t *testing.T) {
 	}
 }
 
-func TestValidateExternalPRProjectionEnvelopeAcceptsCurrentAGSWireWithoutGrantingMerge(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
-	req := externalPullRequestLinkRequest{
-		Provider: "ags", Workspace: "mini", IssueKey: "MINI-1663",
-		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
-		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
-		TargetInstance:          "mini",
-		CanonicalRepositoryID:   "sha256:" + strings.Repeat("a", 64),
-		CanonicalRepository:     "jackie/ags-demo-mini",
-		ProviderBindingID:       "sha256:" + strings.Repeat("b", 64),
-		ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
-		ProviderRepository:      "jackie/ags-demo-mini",
-		ExpectedHeadSHA:         strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
-		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only",
-		ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+func TestExternalPRTerminalWorkIsIdempotentAndFactTransactionRollsBack(t *testing.T) {
+	ctx := context.Background()
+	issueID := createExternalPRTestIssue(t, "external-pr durable work", "todo", "", nil)
+	req := externalPRCompletionReq(testWorkspaceID, issueID, 12001)
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-work-token")
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
+		t.Fatalf("first external PR fact: %v", err)
 	}
-	if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err != nil {
-		t.Fatalf("validateExternalPRProjectionEnvelope() error = %v", err)
+	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
+		t.Fatalf("idempotent external PR fact replay: %v", err)
 	}
-}
+	var count int
+	var kind, state string
+	if err := testPool.QueryRow(ctx, `
+SELECT COUNT(*)::int, MIN(kind), MIN(state)
+FROM external_pr_reconcile_work
+WHERE workspace_id=$1 AND issue_id=$2`, testWorkspaceID, issueID).Scan(&count, &kind, &state); err != nil {
+		t.Fatalf("read external PR work: %v", err)
+	}
+	if count != 1 || kind != "external_pr_terminal" || state != "pending" {
+		t.Fatalf("durable work=(%d,%q,%q), want one pending external_pr_terminal row", count, kind, state)
+	}
 
-func TestValidateExternalPRProjectionEnvelopeRejectsPartialCurrentAGSWire(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
-	req := externalPullRequestLinkRequest{
-		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
-		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
-		TargetInstance: "mini", CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64),
+	rollbackIssue := createExternalPRTestIssue(t, "external-pr durable rollback", "todo", "", nil)
+	failing := *testHandler
+	failing.ExternalPRActivityWriter = func(context.Context, dbExecutor, string, externalPullRequestLinkRequest, string) error {
+		return errors.New("simulated activity failure")
 	}
-	if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err == nil || !strings.Contains(err.Error(), "exact complete set") {
-		t.Fatalf("validateExternalPRProjectionEnvelope() error = %v, want exact-set rejection", err)
+	rollbackReq := externalPRCompletionReq(testWorkspaceID, rollbackIssue, 12002)
+	if _, err := failing.upsertExternalPullRequestLink(ctx, rollbackReq); err == nil {
+		t.Fatal("expected fact transaction failure")
 	}
-}
-
-func TestValidateExternalPRProjectionEnvelopeRejectsPaddedRepositoryValues(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
-	base := externalPullRequestLinkRequest{
-		Provider: "ags", Workspace: "mini", IssueKey: "MINI-1663",
-		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1,
-		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
-		TargetInstance:          "mini",
-		CanonicalRepositoryID:   "sha256:" + strings.Repeat("a", 64),
-		CanonicalRepository:     "jackie/ags-demo-mini",
-		ProviderBindingID:       "sha256:" + strings.Repeat("b", 64),
-		ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
-		ProviderRepository:      "jackie/ags-demo-mini",
-		ExpectedHeadSHA:         strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
-		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only",
-		ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
+	var rollbackCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pr_reconcile_work WHERE issue_id=$1`, rollbackIssue).Scan(&rollbackCount); err != nil {
+		t.Fatalf("read rolled-back work: %v", err)
 	}
-	for _, tc := range []struct {
-		name   string
-		mutate func(*externalPullRequestLinkRequest)
-	}{
-		{name: "external repo", mutate: func(req *externalPullRequestLinkRequest) { req.ExternalRepo = " jackie/ags-demo-mini " }},
-		{name: "merge repo", mutate: func(req *externalPullRequestLinkRequest) { req.MergeRepo = " jackie/ags-demo-mini " }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := base
-			tc.mutate(&req)
-			if err := validateExternalPRProjectionEnvelope(req, "forgejo"); err == nil || !strings.Contains(err.Error(), "repositories are not canonical") {
-				t.Fatalf("validateExternalPRProjectionEnvelope() error = %v, want canonical repository rejection", err)
-			}
-		})
+	if rollbackCount != 0 {
+		t.Fatalf("fact rollback left %d durable work rows", rollbackCount)
 	}
 }
 
@@ -133,59 +198,15 @@ func TestExternalPRErrorContractIsTypedAndSecretSafe(t *testing.T) {
 	}
 }
 
-func TestRegisterExternalPRAcceptsCurrentAGSProjectionEnvelope(t *testing.T) {
-	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-current-wire-token")
-	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID", "mini")
-	issueID := createExternalPRTestIssue(t, "external current AGS wire", "todo", "", nil)
-	completionIntent := true
-	reqBody := externalPullRequestLinkRequest{
-		Provider: "ags", IssueID: issueID, WorkspaceID: testWorkspaceID, Workspace: "mini", IssueKey: "MINI-1663",
-		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 16631, ExternalURL: "http://mini:6666/jackie/ags-demo-mini/pull/1",
-		MergeProvider: "forgejo", MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1,
-		MergeURL:              "http://forgejo.example/jackie/ags-demo-mini/pulls/1",
-		TargetInstance:        "mini",
-		CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64), CanonicalRepository: "jackie/ags-demo-mini",
-		ProviderBindingID: "sha256:" + strings.Repeat("b", 64), ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
-		ProviderRepository: "jackie/ags-demo-mini", ExpectedHeadSHA: strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
-		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only", ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
-		CompletionIntent: &completionIntent, LinkConfidence: "authoritative", State: "open",
-	}
-	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", reqBody)
-	req.Header.Set("Authorization", "Bearer external-pr-current-wire-token")
-	w := httptest.NewRecorder()
-	testHandler.RegisterExternalPullRequestLink(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-}
-
-func TestExternalPRProjectionEnvelopeParticipatesInIdempotencyHash(t *testing.T) {
-	base := externalPRCanonicalPayload{
-		Provider: "ags", IssueID: strings.Repeat("1", 36), WorkspaceID: strings.Repeat("2", 36),
-		ExternalRepo: "jackie/ags-demo-mini", ExternalNumber: 1, MergeProvider: "forgejo",
-		MergeRepo: "jackie/ags-demo-mini", MergeNumber: 1, TargetInstance: "mini",
-		CanonicalRepositoryID: "sha256:" + strings.Repeat("a", 64), CanonicalRepository: "jackie/ags-demo-mini",
-		ProviderBindingID: "sha256:" + strings.Repeat("b", 64), ProviderBindingRevision: "sha256:" + strings.Repeat("c", 64),
-		ProviderRepository: "jackie/ags-demo-mini", ExpectedHeadSHA: strings.Repeat("d", 40), ExpectedBaseSHA: strings.Repeat("e", 40),
-		BaseRef: "main", DelegatedMergeMethod: "fast-forward-only", ProjectionFactsRevision: "sha256:" + strings.Repeat("f", 64),
-		CompletionIntent: true, LinkConfidence: "authoritative", State: "open",
-	}
-	changed := base
-	changed.ExpectedHeadSHA = strings.Repeat("0", 40)
-	if hashExternalPRPayload(base) == hashExternalPRPayload(changed) {
-		t.Fatal("projection envelope drift did not change the idempotency payload hash")
-	}
-}
-
 func TestExternalPRInfrastructureFailureReturnsGeneric503(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-infra-token")
 	issueID := createExternalPRTestIssue(t, "external infra error", "todo", "", nil)
 	failing := *testHandler
 	failing.TxStarter = rejectingExternalPRTxStarter{err: errors.New("database secret SQLSTATE 40P01")}
-	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", externalPRCompletionReq(testWorkspaceID, issueID, 10001))
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", externalPRCompletionReq(testWorkspaceID, issueID, 10001))
 	req.Header.Set("Authorization", "Bearer external-pr-infra-token")
 	w := httptest.NewRecorder()
-	failing.RegisterExternalPullRequestLink(w, req)
+	failing.CompleteIssueFromExternalPR(w, req)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -287,8 +308,13 @@ func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T)
 
 	eventsCh := make(chan events.Event, 8)
 	testHandler.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
-		if payload, ok := e.Payload.(map[string]any); ok && payload["source"] == "external_pr_merged" {
-			eventsCh <- e
+		if payload, ok := e.Payload.(map[string]any); ok && payload["source"] == "external_pr_terminal_reconcile" {
+			select {
+			case eventsCh <- e:
+			default:
+				// This shared test bus outlives the test; never block later
+				// transactions on an already-observed event.
+			}
 		}
 	})
 
@@ -303,7 +329,7 @@ func TestCompleteIssueFromExternalPRCompletesLeafChildAndPublishes(t *testing.T)
 	select {
 	case <-eventsCh:
 	default:
-		t.Fatalf("expected %s event with source external_pr_merged", protocol.EventIssueUpdated)
+		t.Fatalf("expected %s event with source external_pr_terminal_reconcile", protocol.EventIssueUpdated)
 	}
 
 	var systemComments int
@@ -328,19 +354,23 @@ func TestRegisterExternalTerminalFactReevaluatesEarlierMergedSibling(t *testing.
 		t.Fatalf("register blocker status=%d", status)
 	}
 	merged := externalPRCompletionReq(testWorkspaceID, child, 1604)
-	merged.IdempotencyKey = ""
 	if status := registerExternalPRViaHandlerWithToken(merged, "registration-reeval-token"); status != http.StatusOK {
 		t.Fatalf("register merged sibling status=%d", status)
 	}
 	assertIssueStatus(t, child, "in_progress")
 
 	blocker.State = "closed"
+	blocker.MergedSHA = ""
+	blocker.IdempotencyKey = "registration-reeval-closed-blocker"
 	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", blocker)
 	req.Header.Set("Authorization", "Bearer registration-reeval-token")
 	w := httptest.NewRecorder()
 	testHandler.RegisterExternalPullRequestLink(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("register closed blocker status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := ExternalPRReconcileJob(testPool, testHandler).Handler(context.Background(), scheduler.HandlerInput{RunnerID: "registration-reeval-worker"}); err != nil {
+		t.Fatalf("reconcile closed blocker: %v", err)
 	}
 	assertIssueStatus(t, child, "done")
 }
@@ -417,6 +447,13 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	if _, err := testHandler.upsertExternalPullRequestLink(ctx, req); err != nil {
 		t.Fatalf("seed external PR link: %v", err)
 	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO external_pr_reconcile_finalization (
+    workspace_id, issue_id, work_id, source_revision, source,
+    previous_status, terminal_status, status_activity_id, activity_ids
+) VALUES ($1,$2,NULL,'issue-delete-finalization','test','todo','done',$3,'{}')`, testWorkspaceID, issueID, uuid.New()); err != nil {
+		t.Fatalf("seed external PR finalization: %v", err)
+	}
 	if err := testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{
 		ID:          parseUUID(issueID),
 		WorkspaceID: parseUUID(testWorkspaceID),
@@ -443,8 +480,17 @@ func TestDeleteIssueRemovesExternalPRLinksAtomically(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("external PR receipts after issue delete = %d, want 0", count)
 	}
-	// T016 retired workload_pr_merge_delegation* tables; External PR link/receipt
-	// cleanup above is the remaining product surface for this test.
+	for table := range map[string]struct{}{
+		"external_pr_reconcile_work":         {},
+		"external_pr_reconcile_finalization": {},
+	} {
+		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE issue_id=$1`, issueID).Scan(&count); err != nil {
+			t.Fatalf("count %s after issue delete: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after issue delete=%d, want 0", table, count)
+		}
+	}
 }
 
 func TestExternalPRWritesRejectCrossWorkspaceIssue(t *testing.T) {
@@ -549,7 +595,7 @@ func TestExternalPRPublicIdentityAndIdempotencyAreImmutable(t *testing.T) {
 	}
 
 	changed := first
-	changed.MergedSHA = "different-payload"
+	changed.MergedSHA = strings.Repeat("e", 40)
 	if status := registerExternalPRViaHandler(changed); status != http.StatusConflict {
 		t.Fatalf("changed payload status=%d, want 409", status)
 	}
@@ -722,7 +768,7 @@ func TestExternalPRActivityFailureRollsBackFact(t *testing.T) {
 	}
 }
 
-func TestExternalPRCompletionFailureReturnsGeneric503(t *testing.T) {
+func TestExternalPRCompletionAcknowledgementDefersKernelFailureToWorker(t *testing.T) {
 	ctx := context.Background()
 	parent := createExternalPRTestIssue(t, "external completion infra parent", "todo", "", nil)
 	child := createExternalPRTestIssue(t, "external completion infra child", "todo", parent, int32Ptr(1))
@@ -735,19 +781,30 @@ func TestExternalPRCompletionFailureReturnsGeneric503(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer external-completion-infra-token")
 	w := httptest.NewRecorder()
 	failing.CompleteIssueFromExternalPR(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("completion failure status=%d body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "password") || strings.Contains(w.Body.String(), "SQLSTATE") {
-		t.Fatalf("completion failure leaked internal detail: %s", w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("completion acknowledgement status=%d body=%s", w.Code, w.Body.String())
 	}
 	assertIssueStatus(t, child, "todo")
-	var completionActivities int
+	var completionActivities, pendingWork int
 	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action='issue_completed_by_external_pr'`, child).Scan(&completionActivities); err != nil {
 		t.Fatal(err)
 	}
-	if completionActivities != 0 {
-		t.Fatalf("failed completion persisted activities=%d", completionActivities)
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pr_reconcile_work WHERE issue_id=$1 AND state='pending'`, child).Scan(&pendingWork); err != nil {
+		t.Fatal(err)
+	}
+	if completionActivities != 0 || pendingWork != 1 {
+		t.Fatalf("acknowledged completion side effects=(activity=%d,pending_work=%d), want (0,1)", completionActivities, pendingWork)
+	}
+	job := ExternalPRReconcileJob(testPool, &failing)
+	if _, err := job.Handler(context.Background(), scheduler.HandlerInput{RunnerID: "completion-failure-worker"}); err != nil {
+		t.Fatalf("worker tick returned infrastructure error instead of retrying work: %v", err)
+	}
+	var retryState, errorCode string
+	if err := testPool.QueryRow(ctx, `SELECT state, last_error_code FROM external_pr_reconcile_work WHERE issue_id=$1`, child).Scan(&retryState, &errorCode); err != nil {
+		t.Fatal(err)
+	}
+	if retryState != "retry_wait" || errorCode != "reconcile_error" {
+		t.Fatalf("worker failure state=(%q,%q), want retry_wait/reconcile_error", retryState, errorCode)
 	}
 }
 
@@ -796,10 +853,10 @@ func TestDeleteIssueSerializesBeforeExternalPRFact(t *testing.T) {
 	}
 	providerDone := make(chan providerResponse, 1)
 	go func() {
-		req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", request)
+		req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
 		req.Header.Set("Authorization", "Bearer external-delete-lock-token")
 		w := httptest.NewRecorder()
-		testHandler.RegisterExternalPullRequestLink(w, req)
+		testHandler.CompleteIssueFromExternalPR(w, req)
 		providerDone <- providerResponse{status: w.Code, body: w.Body.String()}
 	}()
 	select {
@@ -908,6 +965,24 @@ func TestWorkspaceDeleteSerializesBeforeExternalPRFact(t *testing.T) {
 	if status := registerExternalPRViaHandlerWithToken(request, "external-workspace-delete-token"); status != http.StatusOK {
 		t.Fatalf("seed external PR status=%d", status)
 	}
+	var linkID string
+	if err := testPool.QueryRow(ctx, `SELECT id FROM external_pull_request_link WHERE workspace_id=$1 AND issue_id=$2`, workspaceID, issueID).Scan(&linkID); err != nil {
+		t.Fatalf("read workspace cleanup link: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO external_pr_reconcile_work (
+    workspace_id, issue_id, link_id, kind, provider, external_repo,
+    external_number, source_revision
+) VALUES ($1,$2,$3,'external_pr_terminal','ags',$4,$5,'workspace-delete-work')`, workspaceID, issueID, linkID, request.ExternalRepo, request.ExternalNumber); err != nil {
+		t.Fatalf("seed workspace external PR work: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO external_pr_reconcile_finalization (
+    workspace_id, issue_id, work_id, source_revision, source,
+    previous_status, terminal_status, status_activity_id, activity_ids
+) VALUES ($1,$2,NULL,'workspace-delete-finalization','test','todo','done',$3,'{}')`, workspaceID, issueID, uuid.New()); err != nil {
+		t.Fatalf("seed workspace external PR finalization: %v", err)
+	}
 	locked := make(chan struct{})
 	release := make(chan struct{})
 	testHandler.IssueDeleteHook = func(stage string) {
@@ -947,6 +1022,16 @@ func TestWorkspaceDeleteSerializesBeforeExternalPRFact(t *testing.T) {
 	if status := <-providerDone; status != http.StatusBadRequest {
 		t.Fatalf("post-workspace-delete callback status=%d, want 400", status)
 	}
+	var workCount, finalizationCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM external_pr_reconcile_work WHERE workspace_id=$1`, workspaceID).Scan(&workCount); err != nil {
+		t.Fatalf("count workspace external PR work after delete: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM external_pr_reconcile_finalization WHERE workspace_id=$1`, workspaceID).Scan(&finalizationCount); err != nil {
+		t.Fatalf("count workspace external PR finalization after delete: %v", err)
+	}
+	if workCount != 0 || finalizationCount != 0 {
+		t.Fatalf("workspace delete left continuation rows work=%d finalization=%d", workCount, finalizationCount)
+	}
 }
 
 func TestExternalPRServiceTokenRequiresExactBearerScheme(t *testing.T) {
@@ -970,8 +1055,12 @@ func TestExternalPRServiceTokenRequiresExactBearerScheme(t *testing.T) {
 			t.Fatalf("authorization %q status=%d, want 401", authorization, w.Code)
 		}
 	}
-	if status := registerExternalPRViaHandlerWithToken(body, "strict-bearer-token"); status != http.StatusOK {
-		t.Fatalf("exact bearer status=%d", status)
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", body)
+	req.Header.Set("Authorization", "Bearer strict-bearer-token")
+	w := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("exact bearer status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -979,13 +1068,13 @@ func TestExternalPRPublicMergedStateIsAbsorbingWithoutProviderVersion(t *testing
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "external-pr-handler-test-token")
 	issueID := createExternalPRTestIssue(t, "external merged absorbing", "todo", "", nil)
 	merged := externalPRCompletionReq(testWorkspaceID, issueID, 1603)
-	merged.IdempotencyKey = ""
 	if status := registerExternalPRViaHandler(merged); status != http.StatusOK {
 		t.Fatalf("register merged fact status=%d", status)
 	}
 	stale := merged
 	stale.State = "open"
 	stale.MergedSHA = ""
+	stale.IdempotencyKey = merged.IdempotencyKey + "-stale"
 	if status := registerExternalPRViaHandler(stale); status != http.StatusOK {
 		t.Fatalf("register stale open replay status=%d", status)
 	}
@@ -1021,7 +1110,7 @@ func TestUpsertExternalPRRejectsUnsafeURLs(t *testing.T) {
 	}
 }
 
-func TestCompleteIssueFromExternalPRWritesActivityNotIssueComments(t *testing.T) {
+func TestCompleteIssueFromExternalPRAcknowledgesWithoutDirectCompletion(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "test-external-pr-token")
 	parent := createExternalPRTestIssue(t, "external-pr activity parent", "todo", "", nil)
@@ -1044,7 +1133,7 @@ func TestCompleteIssueFromExternalPRWritesActivityNotIssueComments(t *testing.T)
 		t.Fatalf("external PR complete wrote %d child comments, want 0", childComments)
 	}
 
-	for _, action := range []string{"external_pr_linked", "external_pr_merged", "issue_completed_by_external_pr"} {
+	for _, action := range []string{"external_pr_linked", "external_pr_merged"} {
 		var count int
 		if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action=$2 AND actor_type='system'`, child, action).Scan(&count); err != nil {
 			t.Fatalf("count activity %s: %v", action, err)
@@ -1053,6 +1142,17 @@ func TestCompleteIssueFromExternalPRWritesActivityNotIssueComments(t *testing.T)
 			t.Fatalf("activity %s count = %d, want 1", action, count)
 		}
 	}
+	var completionActivities, workCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action='issue_completed_by_external_pr'`, child).Scan(&completionActivities); err != nil {
+		t.Fatalf("count direct completion activity: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pr_reconcile_work WHERE issue_id=$1 AND state='pending'`, child).Scan(&workCount); err != nil {
+		t.Fatalf("count queued terminal work: %v", err)
+	}
+	if completionActivities != 0 || workCount != 1 {
+		t.Fatalf("direct completion activity=%d queued work=%d, want 0/1", completionActivities, workCount)
+	}
+	assertIssueStatus(t, child, "todo")
 }
 
 func registerExternalPRViaHandler(body externalPullRequestLinkRequest) int {
@@ -1060,10 +1160,18 @@ func registerExternalPRViaHandler(body externalPullRequestLinkRequest) int {
 }
 
 func registerExternalPRViaHandlerWithToken(body externalPullRequestLinkRequest, token string) int {
-	req := newRequest(http.MethodPost, "/api/integrations/external-pr/links", body)
+	path := "/api/integrations/external-pr/links"
+	if body.State == "merged" {
+		path = "/api/integrations/external-pr/complete-from-merge"
+	}
+	req := newRequest(http.MethodPost, path, body)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
-	testHandler.RegisterExternalPullRequestLink(w, req)
+	if body.State == "merged" {
+		testHandler.CompleteIssueFromExternalPR(w, req)
+	} else {
+		testHandler.RegisterExternalPullRequestLink(w, req)
+	}
 	return w.Code
 }
 
@@ -1074,6 +1182,8 @@ func externalPRCompletionReq(workspaceID, issueID string, number int32) external
 		Provider:         "ags",
 		IssueID:          issueID,
 		WorkspaceID:      workspaceID,
+		Workspace:        handlerTestWorkspaceSlug,
+		IssueKey:         "HAN-" + fmt.Sprint(number),
 		ExternalRepo:     repository,
 		ExternalNumber:   number,
 		ExternalURL:      fmt.Sprintf("http://ags.local/pull/%d", number),
@@ -1081,7 +1191,7 @@ func externalPRCompletionReq(workspaceID, issueID string, number int32) external
 		MergeRepo:        repository,
 		MergeNumber:      number,
 		MergeURL:         fmt.Sprintf("http://forgejo.local/pulls/%d", number),
-		MergedSHA:        fmt.Sprintf("sha-%d", number),
+		MergedSHA:        strings.Repeat(fmt.Sprintf("%x", number%16), 40),
 		CompletionIntent: &intent,
 		LinkConfidence:   "authoritative",
 		State:            "merged",

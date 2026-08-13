@@ -331,6 +331,14 @@ DELETE FROM comment WHERE comment.workspace_id = $1;
 
 -- name: DeleteWorkspaceIssueRoots :exec
 WITH
+-- The continuation projection has no FK by design; remove it before the
+-- workspace-owned Issue rows in the same application transaction.
+deleted_external_pr_reconcile_work AS (
+    DELETE FROM external_pr_reconcile_work WHERE workspace_id = $1
+),
+deleted_external_pr_reconcile_finalization AS (
+    DELETE FROM external_pr_reconcile_finalization WHERE workspace_id = $1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),

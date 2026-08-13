@@ -1617,7 +1617,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			_, completion, evalErr := h.evaluatePullRequestCompletionLocked(ctx, qtx, issueByID[key], "github_pr_terminal", nil)
+			_, completion, evalErr := h.evaluatePullRequestCompletionLocked(ctx, qtx, issueByID[key], "github_pr_terminal", nil, pgtype.UUID{}, "")
 			if evalErr != nil {
 				return fmt.Errorf("evaluate terminal Issue %s: %w", key, evalErr)
 			}
@@ -1635,7 +1635,9 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		return fmt.Errorf("commit PR fact transaction: %w", err)
 	}
 	for _, completion := range committed {
-		h.finalizePullRequestCompletion(ctx, completion)
+		if err := h.finalizePullRequestCompletionIntent(ctx, completion.finalization.ID); err != nil {
+			slog.Warn("github PR completion finalization failed", "error", err, "issue_id", uuidToString(completion.updated.ID))
+		}
 	}
 
 	linkedIssueIDs := make([]string, 0, len(issueByID))

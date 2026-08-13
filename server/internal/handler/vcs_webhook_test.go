@@ -162,6 +162,7 @@ func TestVCSWebhookSerializesStateAndRemovedIdentifierMetadata(t *testing.T) {
 	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "vcs-public-terminal-token")
 	externalClosed := externalPRCompletionReq(testWorkspaceID, issue.ID, nextCompletionPolicyPRNumber())
 	externalClosed.State = "closed"
+	externalClosed.MergedSHA = ""
 	externalIntent := false
 	externalClosed.CompletionIntent = &externalIntent
 	resultCh := make(chan int, 1)
