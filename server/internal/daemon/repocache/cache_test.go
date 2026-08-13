@@ -66,6 +66,22 @@ func TestGitEnv(t *testing.T) {
 	}
 }
 
+func TestGitEnvForcesDeterministicLocale(t *testing.T) {
+	// Git localizes stderr, while branch-collision handling must classify its
+	// diagnostics consistently on every daemon host.
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+
+	var locale string
+	for _, entry := range gitEnv() {
+		if strings.HasPrefix(entry, "LC_ALL=") {
+			locale = strings.TrimPrefix(entry, "LC_ALL=")
+		}
+	}
+	if locale != "C" {
+		t.Fatalf("gitEnv() effective LC_ALL = %q, want C", locale)
+	}
+}
+
 func TestGitEnvPreservesExistingConfig(t *testing.T) {
 	// GIT_CONFIG_COUNT env vars are process-wide; cannot use t.Setenv in
 	// parallel tests, so run sequentially.
