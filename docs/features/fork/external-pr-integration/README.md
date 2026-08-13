@@ -164,3 +164,14 @@ MULTICA_DELEGATED_PR_MERGE_ENABLED
 
 Router integration tests own the retired assertion-route `404` contract；AGS 与 Agent Kit
 分别负责其自身 legacy exchange/gateway 与 CLI fallback 的退休证明。
+
+## Mini deployment applicability
+
+Mini has run this capability from exact generation tip `f219f4513` since the accepted
+`fork-mini-v0.4.22-r1` deployment. Runtime evidence includes successful
+`external_pr_reconcile` scheduler executions, durable work/finalization state readback,
+401 responses for unauthenticated service POSTs, and 404 for the retired workload-assertion
+POST. Source tests remain the authority for crash windows and completion semantics; idle
+scheduler ticks prove registration and execution, not an end-to-end provider merge during the
+deployment window. See the [generation manifest](../../../releases/fork-generations/v0.4.22.md)
+for image IDs, DB/uploads boundaries, rollback, receipt location, and non-Mini claim limits.

@@ -12,10 +12,12 @@ Each file records one Multica fork generation frozen on a synced upstream base
 ## Active generation (single current formal home)
 
 - **[`v0.4.22`](v0.4.22.md)** — formal generation frozen on official tag **`v0.4.22`**, branch `fork/v0.4.22`.
-  - shape: `v0.4.22@8bd49bba8` + 6 fork-only tip commits (bootstrap → replay → mobile-ci → remediate → docs → declare-active)
-  - published formal tip: `8e7367eb8` (`v0.4.22-8-g8e7367eb8`) on `origin/fork/v0.4.22`
-  - includes best-effort daemon `MULTICA_RUN_ID` injection (ExecutionID or Task ID)
-  - source/CI publication is separate from runtime redeploy; live mini backend may still be a prior generation until a deployment receipt exists
+  - deployed code shape: `v0.4.22@8bd49bba8` + 30 linear fork-only commits through `f219f4513`
+  - immutable Mini runtime authority: `fork-mini-v0.4.22-r1@f219f4513` (`v0.4.22-30-gf219f4513`)
+  - the generation branch may contain later receipt-only documentation; it does not silently change deployed runtime revision
+  - backend/frontend/CLI/daemon use exact source `f219f4513`; owner-only deployment receipt is recorded in [`v0.4.22.md`](v0.4.22.md)
+  - includes best-effort daemon `MULTICA_RUN_ID` injection and durable External PR silent-continuation reconciliation
+  - imile and registry publication remain separate, unclaimed transitions
 
 ## Previous generations (rollback / historical)
 
