@@ -59,7 +59,7 @@ The installer:
 2. refuses replacement while the selected daemon reports active tasks;
 3. builds `server/cmd/multica` from the current exact source;
 4. stores the binary under `~/.local/lib/multica/<commit>-<version>/multica`;
-5. uses the candidate binary to verify that the selected profile can authenticate to its configured Server before changing the global command or running daemon;
+5. clears checkout-local `MULTICA_SERVER_URL`, `MULTICA_APP_URL`, and `MULTICA_WORKSPACE_ID` overrides, then uses the candidate binary to verify that the selected profile can authenticate to its configured Server before changing the global command or running daemon;
 6. preserves the prior global command under `~/.local/lib/multica/backups/`;
 7. atomically switches `~/.local/bin/multica` to the new immutable binary;
 8. persists `disable_auto_update=true` for the selected profile so the official release updater cannot replace fork authority;

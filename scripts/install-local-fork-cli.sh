@@ -67,6 +67,11 @@ bash scripts/validate-cli-build-version.sh "$version"
 target_dir="$INSTALL_ROOT/${commit}-${version}"
 target_bin="$target_dir/multica"
 
+profile_cli() {
+  env -u MULTICA_SERVER_URL -u MULTICA_APP_URL -u MULTICA_WORKSPACE_ID \
+    "$@" --profile "$PROFILE"
+}
+
 cat <<EOF
 source:       $ROOT_DIR
 commit:       $commit
@@ -86,7 +91,7 @@ fi
 current_status='{"status":"stopped"}'
 daemon_was_running=false
 if [[ -x "$GLOBAL_BIN" ]]; then
-  current_status="$($GLOBAL_BIN --profile "$PROFILE" daemon status --output json)"
+  current_status="$(profile_cli "$GLOBAL_BIN" daemon status --output json)"
 fi
 read -r daemon_status active_tasks < <(python3 -c '
 import json, sys
@@ -120,8 +125,13 @@ fi
 
 # Prove the candidate can load this profile and reach its configured server
 # before changing either the stable command or the running daemon.
-"$target_bin" --profile "$PROFILE" auth status >/dev/null
-"$target_bin" --profile "$PROFILE" config set disable_auto_update true >/dev/null
+auth_output="$(profile_cli "$target_bin" auth status 2>&1)"
+if ! grep -Fq "Server:" <<<"$auth_output" || ! grep -Fq "User:" <<<"$auth_output"; then
+  echo "candidate failed profile authentication preflight:" >&2
+  printf '%s\n' "$auth_output" >&2
+  exit 1
+fi
+profile_cli "$target_bin" config set disable_auto_update true >/dev/null
 
 timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
 backup_dir="$INSTALL_ROOT/backups/$timestamp-${short_commit}"
@@ -149,7 +159,7 @@ rollback() {
   fi
   if [[ -n "$previous_bin" && ( -e "$previous_bin" || -L "$previous_bin" ) ]]; then
     mv "$previous_bin" "$GLOBAL_BIN"
-    "$GLOBAL_BIN" --profile "$PROFILE" daemon restart >/dev/null 2>&1 || true
+    profile_cli "$GLOBAL_BIN" daemon restart >/dev/null 2>&1 || true
     echo "restored previous global CLI: $GLOBAL_BIN" >&2
   else
     echo "no previous global CLI existed; failed candidate retained at $failed_dir/multica" >&2
@@ -158,12 +168,12 @@ rollback() {
 }
 
 if "$daemon_was_running"; then
-  "$GLOBAL_BIN" --profile "$PROFILE" daemon restart || rollback "daemon restart failed"
+  profile_cli "$GLOBAL_BIN" daemon restart || rollback "daemon restart failed"
 else
-  "$GLOBAL_BIN" --profile "$PROFILE" daemon start || rollback "daemon start failed"
+  profile_cli "$GLOBAL_BIN" daemon start || rollback "daemon start failed"
 fi
 
-after_status="$($GLOBAL_BIN --profile "$PROFILE" daemon status --output json)" || rollback "daemon status failed"
+after_status="$(profile_cli "$GLOBAL_BIN" daemon status --output json)" || rollback "daemon status failed"
 if ! python3 -c '
 import json, sys
 expected = sys.argv[1]
