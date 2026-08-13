@@ -435,27 +435,27 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				))
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
-				// One-shot union_id backfill for installations created
-				// before migration 112 added bot_union_id. Runs off the
-				// hot startup path so a slow Lark round-trip cannot block
-				// HTTP listener boot. New installs already write
-				// bot_union_id during the device-flow finalize, so this
-				// is bridge code — it will simply find no rows to update
-				// on a fresh deployment and exit. MUL-2671.
-				go lark.BackfillBotUnionIDs(context.Background(), cs, larkClient, installSvc, slog.Default())
+				// One-shot migration backfills are process-start side effects and
+				// require a real database. NewRouter(nil, ...) is supported by
+				// pure router-wiring tests, including when the host environment
+				// enables Lark, so never launch DB-backed goroutines for that
+				// construction mode.
+				if pool != nil {
+					// Backfill installations created before migration 112 added
+					// bot_union_id. Runs off the hot startup path so a slow Lark
+					// round-trip cannot block HTTP listener boot. New installs
+					// already write bot_union_id during device-flow finalize.
+					// MUL-2671.
+					go lark.BackfillBotUnionIDs(context.Background(), cs, larkClient, installSvc, slog.Default())
 
-				// Upgrade repair for deployments that ran the whole
-				// integration against Lark international via the deployment-
-				// wide base-URL override before per-installation region
-				// existed: migration 116 backfilled their rows to 'feishu',
-				// so relabel them to 'lark' (their true cloud) before the
-				// operator clears the override. No-op on mainland / fresh
-				// deployments. Off the hot startup path like the union_id
-				// backfill. MUL-3083.
-				go lark.BackfillRegionFromLegacyOverride(context.Background(), cs,
-					strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
-					strings.TrimSpace(os.Getenv("MULTICA_LARK_CALLBACK_BASE_URL")),
-					slog.Default())
+					// Repair deployments that used the deployment-wide Lark
+					// international override before per-installation region existed.
+					// No-op on mainland and fresh deployments. MUL-3083.
+					go lark.BackfillRegionFromLegacyOverride(context.Background(), cs,
+						strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
+						strings.TrimSpace(os.Getenv("MULTICA_LARK_CALLBACK_BASE_URL")),
+						slog.Default())
+				}
 
 				// Device-flow registration service: end-to-end install
 				// pipeline that talks to accounts.feishu.cn (RFC 8628)

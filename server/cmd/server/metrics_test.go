@@ -12,6 +12,10 @@ import (
 )
 
 func TestMainRouterDoesNotExposePrometheusMetrics(t *testing.T) {
+	// Keep this pure-router test hermetic while exercising the production Lark
+	// wiring path. Router construction with no database must not launch DB-backed
+	// migration backfills in background goroutines.
+	t.Setenv("MULTICA_LARK_SECRET_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	router := NewRouter(nil, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil)
 
 	rec := httptest.NewRecorder()
