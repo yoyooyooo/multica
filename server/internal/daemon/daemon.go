@@ -6110,6 +6110,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	// Platform Git identity wins after custom_env so agents cannot override
+	// author/committer attribution for ordinary Multica tasks (AGS-T022 Stage 1).
+	applyPlatformGitIdentity(agentEnv, task, agentName)
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -7550,7 +7553,8 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL":
 		return true
 	}
 	return false
