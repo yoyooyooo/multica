@@ -172,6 +172,12 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		// Reasonix credentials/config remain tool-owned and may use a custom
 		// home; only the daemon-owned state overlay is blocked above.
 		{key: "REASONIX_HOME", want: false},
+		// AGS-T022 Stage 1: platform owns Git author/committer identity.
+		{key: "GIT_AUTHOR_NAME", want: true},
+		{key: "GIT_AUTHOR_EMAIL", want: true},
+		{key: "GIT_COMMITTER_NAME", want: true},
+		{key: "GIT_COMMITTER_EMAIL", want: true},
+		{key: "git_author_name", want: true},
 	}
 
 	for _, tt := range tests {
