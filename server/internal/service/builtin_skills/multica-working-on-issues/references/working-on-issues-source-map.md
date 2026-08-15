@@ -64,11 +64,12 @@ former assertion, human delegation, AGS introspection/consume/effect, and CLI
 Access Grant is internal to ags-cli launcher / AGS service—not an Agent command
 tree. Multica daemon applies the complete AGS shim pair at the Task environment
 boundary; coding-agent plugins do not own profile or PATH injection. External PR
-association / link-token is best-effort provenance and must not hard-block a
-legitimate PR create. Wrong target/repo/operation, identity binding conflict,
-invalid/revoked/expired authority, AGS repository permission, protected refs and
-exact effects are hard denials before provider I/O. Multica current-context facts
-are not authorization.
+association / link-token is best-effort provenance and does not rewrite a source
+operation result. Before request-level AGS transport is bound, however, every Task
+broker error stops before stock-gh/provider I/O. Wrong target/repo/operation,
+identity binding conflict, invalid/revoked/expired authority, AGS repository
+permission, protected refs and exact effects are hard denials. Multica
+current-context facts are not authorization.
 
 ## Two distinct webhook paths: link vs close-intent
 
