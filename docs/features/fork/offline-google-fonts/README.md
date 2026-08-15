@@ -6,7 +6,7 @@
 - Accepted source target: `fork/v0.4.22`
 - Donor: Mini deployment `20260815T151931Z-fork-v0.4.22-07427b29d-mini` offline-font mock that produced `multica-web:fork-v0.4.22-07427b29d-mini-r2`
 
-This is a source/build contract. It does not by itself change the running Mini images.
+Mini r3 now builds the frontend from this in-repo mock. The live image is `multica-web:fork-v0.4.22-aba2a41c6-mini-r3`.
 
 ## Problem
 
