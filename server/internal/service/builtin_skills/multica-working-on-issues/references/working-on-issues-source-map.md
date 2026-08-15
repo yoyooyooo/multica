@@ -43,6 +43,7 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Provider-neutral task-token current execution context | `server/internal/handler/current_execution_context.go` (`GetCurrentExecutionContext`, `assembleCurrentExecutionContext`) |
 | External PR link token | `server/internal/handler/external_pr_link_token.go` (`CreateExternalPRLinkToken`) |
 | Canonical Run propagation into Agent env | `server/internal/handler/agent.go` (`AgentTaskResponse.ExecutionID`, `taskToResponse`), `server/internal/daemon/types.go` (`Task.ExecutionID`), `server/internal/daemon/daemon.go` (`taskCanonicalRunID`, `MULTICA_RUN_ID`) |
+| Provider-neutral AGS shim PATH boundary | `server/internal/daemon/daemon.go` (`prependTaskToolShimPath` and Task `agentEnv["PATH"]` assembly); requires a complete `git` + `gh` pair under `~/.ags-cli/shims`, then includes `~/.local/bin` when its managed `ags-cli` exists; incomplete pair leaves PATH unchanged |
 | Route wiring and retired-route `404` contract | `server/cmd/server/router.go`, `server/cmd/server/external_pr_routes_integration_test.go` |
 | Historical assertion-authority / merge-delegation schema | retired by forward migrations `292`–`299` (T016); no live tables, sqlc queries, or workspace/issue cleanup paths remain; roll back only via pre-299 DB restore |
 | Typed external-PR terminal continuation | `server/internal/handler/external_pr_reconcile.go`, `external_pr_reconcile_enqueue.go`, `server/pkg/db/queries/external_pr_reconcile.sql`; durable work is narrow `external_pr_terminal`, while the scheduler only leases bounded sweeps |
@@ -59,12 +60,15 @@ Multica no longer issues AGS workload assertions or `pr.merge` delegations. The
 former assertion, human delegation, AGS introspection/consume/effect, and CLI
 `issue merge` routes are absent and must return `404`.
 
-**Agent-facing surface (Program A 0.2.0 alignment):** ordinary `git` + `gh`
-only. Access Grant is internal to ags-cli launcher / AGS service—not an Agent
-command tree. External PR association / link-token is best-effort provenance
-and must not hard-block legitimate PR create. Real denials are AGS repository
-permission / protected / exact effect. Multica current-context facts are not
-authorization.
+**Agent-facing surface (Program A alignment):** ordinary `git` + `gh` only.
+Access Grant is internal to ags-cli launcher / AGS service—not an Agent command
+tree. Multica daemon applies the complete AGS shim pair at the Task environment
+boundary; coding-agent plugins do not own profile or PATH injection. External PR
+association / link-token is best-effort provenance and must not hard-block a
+legitimate PR create. Wrong target/repo/operation, identity binding conflict,
+invalid/revoked/expired authority, AGS repository permission, protected refs and
+exact effects are hard denials before provider I/O. Multica current-context facts
+are not authorization.
 
 ## Two distinct webhook paths: link vs close-intent
 
