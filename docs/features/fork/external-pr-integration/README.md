@@ -15,7 +15,7 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 
 | 路由 | 调用方与认证 | 作用 |
 |---|---|---|
-| `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v2` 最小事实：Workspace/Agent/Task ids、`claim.generation`（`run.id` dual-read 别名）和可选 Issue/Squad/Runtime/Trigger ids；无 display enrichment |
+| `GET /api/integrations/current-execution-context` | still-running Task token | 返回 `multica.current-execution-context.v2` 最小事实：Workspace/Agent/Task ids、`claim.generation`（`run.id` dual-read 别名）和可选 Issue/Squad/Runtime/Trigger ids；当 Task Runtime 已绑定 daemon 时，`runtime.daemon_id` 来自服务端 Runtime registration；无 display enrichment |
 | `POST /api/integrations/external-pr/link-token` | still-running Task token | **兼容入口（T017 residual）**：签发 task-bound correlation token；不授予仓库操作权限；owner=Multica fork maintainer；目标退役：完整 404 + AGS verify/assertion 字段同代清理（登记于 evidence `external-pr-link-token-census.md`） |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
 | `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 幂等登记 merged 事实并返回 durable reconcile acknowledgement；Issue 仅由 worker 完成 |
@@ -34,7 +34,7 @@ Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context �
 - operation、capability 或 merge method；
 - AGS Session、Access Grant、provider token 或其他凭据。
 
-Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为 claim generation / dual-read `run.id` 坐标交给daemon；daemon best-effort 注入 `MULTICA_RUN_ID`，缺失不得阻断普通 Agent 启动。该响应可作为 AGS 内部绑定 Task/claim generation 的输入，但不是授权证明，也不是 Agent 命令面。
+Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为 claim generation / dual-read `run.id` 坐标交给daemon；daemon best-effort 注入 `MULTICA_RUN_ID`，缺失不得阻断普通 Agent 启动。可选 `runtime.daemon_id` 由服务端通过 Task 的 `runtime_id` 精确读取同 Workspace Runtime registration，调用方请求头不能提供或覆盖它；Runtime 缺失、未绑定 daemon 或已不可解析时仅省略该字段，不猜测机器身份。该响应可作为 AGS 内部绑定 Task/claim generation 与 daemon 的输入，但不是授权证明，也不是 Agent 命令面。
 
 **普通 Agent 协作面（与当前 Program A 对齐）：** 只使用 `git` 与 `gh`（Runtime shim → `ags-cli gh`）。Multica daemon只在`~/.ags-cli/shims`同时存在`git`与`gh`时，于Task子进程PATH前置该目录；存在`~/.local/bin/ags-cli`时紧随shims加入其managed bin，防止shim解析到陈旧tool-manager link。该边界对Pi/Codex/Claude等provider一致，不依赖provider插件或profile注入。Access Grant由launcher/服务自动issue/reuse，**禁止**要求Agent先跑grant/session/access。Multica External PR association / link-token为best-effort关联，不改写已经完成的source operation；但Task的request-level AGS transport尚未绑定时，任何broker error都必须在stock-gh/provider I/O前停止。Wrong target/repo/operation、identity binding conflict、invalid/revoked/expired authority、AGS仓库权限、protected与exact effect（如merge）是hard denial，并且不得降级到Human profile、system `gh`或Provider credential。
 
