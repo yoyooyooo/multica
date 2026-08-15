@@ -10,6 +10,7 @@ See [fork generations](../../releases/fork-generations/README.md).
 
 - [External PR integration, durable silent continuation and current execution context](external-pr-integration/README.md)
 - [Pi process tree supervision](pi-process-tree-supervision/README.md)
+- [Offline Google Fonts for web image builds](offline-google-fonts/README.md)
 - Access-Grant-only Multica/AGS authority cutover (no Workload Assertion / public Session / legacy merge gateway)
 - Best-effort Multica daemon `MULTICA_RUN_ID` injection (ExecutionID or Task ID; never blocks task start)
 

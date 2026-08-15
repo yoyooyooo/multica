@@ -1,0 +1,54 @@
+{
+  "sourceFiles": [
+    "apps/web/app/layout.tsx",
+    "apps/web/app/(landing)/layout.tsx"
+  ],
+  "calls": [
+    {
+      "functionName": "Inter",
+      "options": {
+        "subsets": ["latin"],
+        "style": ["normal", "italic"],
+        "variable": "--font-inter"
+      }
+    },
+    {
+      "functionName": "Geist_Mono",
+      "options": {
+        "subsets": ["latin"],
+        "variable": "--font-mono",
+        "fallback": [
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "Consolas",
+          "monospace"
+        ]
+      }
+    },
+    {
+      "functionName": "Source_Serif_4",
+      "options": {
+        "subsets": ["latin"],
+        "style": ["normal", "italic"],
+        "variable": "--font-serif",
+        "fallback": [
+          "ui-serif",
+          "Iowan Old Style",
+          "Apple Garamond",
+          "Baskerville",
+          "Times New Roman",
+          "serif"
+        ]
+      }
+    },
+    {
+      "functionName": "Instrument_Serif",
+      "options": {
+        "subsets": ["latin"],
+        "weight": "400",
+        "variable": "--font-instrument-serif"
+      }
+    }
+  ]
+}
