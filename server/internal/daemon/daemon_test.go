@@ -530,6 +530,62 @@ func TestTaskCanonicalRunID(t *testing.T) {
 	}
 }
 
+func TestPrependTaskToolShimPathRequiresCompleteBootstrapPair(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inherited := filepath.Join(homeDir, "bin")
+	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != inherited {
+		t.Fatalf("missing shims changed PATH: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != inherited {
+		t.Fatalf("partial shim pair changed PATH: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "gh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := shimDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != want {
+		t.Fatalf("complete shim pair PATH=%q, want %q", got, want)
+	}
+	managedBinDir := filepath.Join(homeDir, ".local", "bin")
+	if err := os.MkdirAll(managedBinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedBinDir, "ags-cli"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want = shimDir + string(os.PathListSeparator) + managedBinDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != want {
+		t.Fatalf("managed CLI PATH=%q, want %q", got, want)
+	}
+}
+
+func TestPrependTaskToolShimPathAcceptsWindowsLaunchers(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"git.cmd", "gh.exe"} {
+		if err := os.WriteFile(filepath.Join(shimDir, name), []byte("shim"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := prependTaskToolShimPath("", homeDir, "windows"); got != shimDir {
+		t.Fatalf("Windows shim PATH=%q, want %q", got, shimDir)
+	}
+}
+
 func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 	t.Parallel()
 

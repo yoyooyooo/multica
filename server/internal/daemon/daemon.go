@@ -156,11 +156,11 @@ func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesR
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
 		// Best-effort provenance. Absence of a distinct ExecutionID falls back to Task ID.
-		"MULTICA_RUN_ID":       taskCanonicalRunID(task),
-		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
-		"TMPDIR":               tempDir,
-		"TMP":                  tempDir,
-		"TEMP":                 tempDir,
+		"MULTICA_RUN_ID":    taskCanonicalRunID(task),
+		"MULTICA_TASK_SLOT": strconv.Itoa(slot),
+		"TMPDIR":            tempDir,
+		"TMP":               tempDir,
+		"TEMP":              tempDir,
 	}
 }
 
@@ -6062,7 +6062,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// multica binary so that `multica` commands in the agent always resolve.
 	if selfBin, err := resolveSelfExecutable(); err == nil {
 		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		agentPath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		// AGS bootstrap owns this optional, credential-free shim directory.
+		// Prepending it at the Task environment boundary makes ordinary git/gh
+		// routing consistent for every backend without provider-specific plugins
+		// or inherited Human profiles. Hosts without AGS bootstrap are unchanged.
+		if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
+			agentPath = prependTaskToolShimPath(agentPath, homeDir, runtime.GOOS)
+		}
+		agentEnv["PATH"] = agentPath
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
@@ -7542,6 +7550,43 @@ func socketSafeTempBaseDir() string {
 		}
 	}
 	return os.TempDir()
+}
+
+// prependTaskToolShimPath adds AGS's bootstrap-owned ordinary git/gh surface
+// only when both shims are present. Requiring the pair avoids a partial route in
+// which Git and PR operations could acquire different identities. The per-user
+// bin directory follows the shims so their `exec ags-cli` resolves the managed
+// active release before tool-manager links such as Volta. Native Windows bootstrap
+// may materialize cmd/bat/exe launchers; POSIX bootstrap uses bare names.
+func prependTaskToolShimPath(inherited, homeDir, goos string) string {
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	extensions := []string{""}
+	if goos == "windows" {
+		extensions = []string{".exe", ".cmd", ".bat", ""}
+	}
+	hasTool := func(dir, tool string) bool {
+		for _, extension := range extensions {
+			info, err := os.Stat(filepath.Join(dir, tool+extension))
+			if err == nil && !info.IsDir() {
+				return true
+			}
+		}
+		return false
+	}
+	for _, tool := range []string{"git", "gh"} {
+		if !hasTool(shimDir, tool) {
+			return inherited
+		}
+	}
+	paths := []string{shimDir}
+	managedBinDir := filepath.Join(homeDir, ".local", "bin")
+	if hasTool(managedBinDir, "ags-cli") {
+		paths = append(paths, managedBinDir)
+	}
+	if inherited != "" {
+		paths = append(paths, inherited)
+	}
+	return strings.Join(paths, string(os.PathListSeparator))
 }
 
 // isBlockedEnvKey returns true if the key must not be overridden by user-

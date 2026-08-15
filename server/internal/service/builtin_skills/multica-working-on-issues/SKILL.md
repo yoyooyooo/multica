@@ -117,13 +117,20 @@ not a command surface. Multica current-execution-context, task tokens, metadata,
 and external-PR link tokens are **not** repository authority; that context does not authorize repository operations.
 The canonical actor is resolved inside the launcher/service path. Ordinary writes
 still require a short-lived Access Grant backed by a live native repository grant;
-Agents do not request or manage either artifact directly.
+Agents do not request or manage either artifact directly. The daemon, not a
+provider-specific Pi/Codex/Claude plugin, prepends the bootstrap-owned
+`~/.ags-cli/shims` directory to the Task PATH only when both `git` and `gh` are
+present; when `~/.local/bin/ags-cli` exists, that managed bin directory follows
+the shims so they do not resolve a stale tool-manager link. Do not source an AGS
+profile or patch PATH yourself.
 
 Multica ↔ AGS association (Issue linkage / link-token) is **best-effort
-provenance**: association failure may warn but must not block a legitimate
-`git push` / `gh pr create` when AGS repository write permission exists.
-True denials come from AGS repository permission, protected branch, or exact
-effects (for example merge)—not from missing Multica link-token or Grant CLI.
+provenance**: typed association unavailability may warn but must not block a
+legitimate `git push` / `gh pr create` when AGS repository write permission
+exists. Wrong target/repository/operation, identity binding conflict, invalid or
+expired/revoked authority, protected branch, and exact effects (for example
+merge) are real denials and fail closed before provider I/O—not reasons to fall
+back to a Human profile, system `gh`, or provider credential.
 
 Do not route repository operations through retired Multica assertion-authority
 or `pr.merge` delegation paths (those routes return 404).
