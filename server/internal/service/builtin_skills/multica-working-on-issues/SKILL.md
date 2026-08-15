@@ -2,7 +2,7 @@
 name: multica-working-on-issues
 description: "Use when acting on a Multica issue beyond what the brief covers: PR linking vs close intent, reading a linked PR's real state, metadata keys, status-change side effects, sub-issue todo vs backlog."
 user-invocable: false
-allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
+allowed-tools: Bash(multica *), Bash(ags-cli *), Bash(git *), Bash(gh *)
 ---
 
 # Working on Multica issues
@@ -99,30 +99,30 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
-## Repository work uses ordinary git / gh; AGS is the real gate
+## Repository work uses `ags-cli git` / `ags-cli pr`; AGS is the real gate
 
-For code-changing issue work, use ordinary tools only:
+For AGS remotes, use the direct CLI. Official Daemon plus global `ags-cli` is
+enough; a Shim PATH is optional compatibility, not a required contract.
 
 ```bash
-git status / add / commit / push
-gh pr create --fill          # Runtime shim → ags-cli gh → AGS engine
-gh pr view --json ...
-gh pr checks
-gh pr comment ...
+ags-cli git status / add / commit / push
+ags-cli pr create --fill
+ags-cli pr view --json ...
+ags-cli pr checks
+ags-cli pr comment ...
+ags-cli pr merge --match-head-commit <40-sha>   # only if this Agent is allowlisted
 ```
 
-Do **not** call `ags-cli grant|session|access|pr` (or similar) as an Agent
-workflow. Access Grant issue/reuse is an **internal** launcher/service material,
-not a command surface. Multica current-execution-context, task tokens, metadata,
-and external-PR link tokens are **not** repository authority; that context does not authorize repository operations.
-The canonical actor is resolved inside the launcher/service path. Ordinary writes
-still require a short-lived Access Grant backed by a live native repository grant;
-Agents do not request or manage either artifact directly. The daemon, not a
-provider-specific Pi/Codex/Claude plugin, prepends the bootstrap-owned
-`~/.ags-cli/shims` directory to the Task PATH only when both `git` and `gh` are
-present; when `~/.local/bin/ags-cli` exists, that managed bin directory follows
-the shims so they do not resolve a stale tool-manager link. Do not source an AGS
-profile or patch PATH yourself.
+GitHub remotes keep official `git` / `gh`. GitLab remotes keep official `git` /
+`glab`. Do **not** call `ags-cli grant|session|access|ctl` (or similar) as an
+Agent workflow. Access Grant issue/reuse is an **internal** launcher/service
+material, not a command surface. Multica current-execution-context, task tokens,
+metadata, and external-PR link tokens are **not** repository authority; that
+context does not authorize repository operations.
+The canonical actor is resolved inside the launcher/service path. Ordinary
+workload writes still use a short-lived internal Access Grant; Agents do not
+request or manage that artifact. Do not source an AGS profile or patch PATH
+yourself.
 
 Multica ↔ AGS Issue linkage / link-token is **best-effort provenance** and
 cannot rewrite an already completed repository operation. That does not permit a
