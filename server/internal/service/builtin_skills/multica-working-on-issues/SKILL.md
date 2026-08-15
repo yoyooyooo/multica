@@ -124,13 +124,14 @@ present; when `~/.local/bin/ags-cli` exists, that managed bin directory follows
 the shims so they do not resolve a stale tool-manager link. Do not source an AGS
 profile or patch PATH yourself.
 
-Multica ↔ AGS association (Issue linkage / link-token) is **best-effort
-provenance**: typed association unavailability may warn but must not block a
-legitimate `git push` / `gh pr create` when AGS repository write permission
-exists. Wrong target/repository/operation, identity binding conflict, invalid or
-expired/revoked authority, protected branch, and exact effects (for example
-merge) are real denials and fail closed before provider I/O—not reasons to fall
-back to a Human profile, system `gh`, or provider credential.
+Multica ↔ AGS Issue linkage / link-token is **best-effort provenance** and
+cannot rewrite an already completed repository operation. That does not permit a
+Task to run stock `gh` before request-level AGS transport is bound: every broker
+error stops before provider I/O with the operation not attempted. Wrong
+target/repository/operation, identity binding conflict, invalid or expired/revoked
+authority, protected branch, and exact effects (for example merge) are hard
+denials—not reasons to fall back to a Human profile, system `gh`, or provider
+credential.
 
 Do not route repository operations through retired Multica assertion-authority
 or `pr.merge` delegation paths (those routes return 404).
