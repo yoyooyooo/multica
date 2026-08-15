@@ -52,7 +52,6 @@ func TestGetCurrentExecutionContextFallsBackGenerationToTaskID(t *testing.T) {
 	}
 }
 
-
 func authorizeCurrentExecutionContextTestTask(t *testing.T, req *http.Request, agentID, taskID string) string {
 	t.Helper()
 	tokenHash := uuid.NewString()
@@ -105,7 +104,6 @@ func TestGetCurrentExecutionContextRejectsStaleGenerationToken(t *testing.T) {
 	}
 }
 
-
 func TestGetCurrentExecutionContextRequiresTaskTokenActor(t *testing.T) {
 	req := newCurrentExecutionContextRequest()
 	req.Header.Set("X-Actor-Source", "member")
@@ -131,7 +129,23 @@ func TestGetCurrentExecutionContextReturnsOnlyTokenBoundServerFacts(t *testing.T
 	}
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM squad WHERE id=$1`, squadID) })
 
+	daemonID := uuid.NewString()
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, owner_id, last_seen_at
+		)
+		VALUES ($1, $2, 'current execution context runtime', 'local', 'pi', 'online', '{}'::jsonb, '{}'::jsonb, $3, now())
+		RETURNING id
+	`, testWorkspaceID, daemonID, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("create context runtime: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id=$1`, runtimeID) })
+
 	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue SET runtime_id=$2 WHERE id=$1`, taskID, runtimeID); err != nil {
+		t.Fatalf("bind task to context runtime: %v", err)
+	}
 	req := newCurrentExecutionContextRequest()
 	tokenHash := authorizeCurrentExecutionContextTestTask(t, req, agentID, taskID)
 	executionID := uuid.NewString()
@@ -214,7 +228,7 @@ func TestGetCurrentExecutionContextReturnsOnlyTokenBoundServerFacts(t *testing.T
 	if squad := response["squad"].(map[string]any); squad["id"] != squadID || squad["name"] != nil || squad["details_available"] != nil {
 		t.Fatalf("squad=%#v", squad)
 	}
-	if runtime := response["runtime"].(map[string]any); runtime["id"] == "" || runtime["name"] != nil || runtime["provider"] != nil || runtime["status"] != nil {
+	if runtime := response["runtime"].(map[string]any); runtime["id"] != runtimeID || runtime["daemon_id"] != daemonID || runtime["name"] != nil || runtime["provider"] != nil || runtime["status"] != nil {
 		t.Fatalf("runtime=%#v", runtime)
 	}
 	trigger := response["trigger"].(map[string]any)

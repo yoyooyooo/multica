@@ -68,7 +68,8 @@ type currentExecutionSquad struct {
 }
 
 type currentExecutionRuntime struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	DaemonID string `json:"daemon_id,omitempty"`
 }
 
 type currentExecutionTrigger struct {
@@ -228,11 +229,14 @@ func assembleCurrentExecutionContext(ctx context.Context, queries *db.Queries, r
 	}
 	if task.RuntimeID.Valid {
 		response.Runtime = &currentExecutionRuntime{ID: uuidToString(task.RuntimeID)}
+		if runtime, err := queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
+			ID: task.RuntimeID, WorkspaceID: resolved.WorkspaceID,
+		}); err == nil && runtime.DaemonID.Valid {
+			response.Runtime.DaemonID = strings.TrimSpace(runtime.DaemonID.String)
+		}
 	}
 	response.Trigger = currentExecutionTriggerFromTask(task)
 	// T018: do not hydrate display names onto attribution; IDs/source only.
-	_ = ctx
-	_ = queries
 	return response, nil
 }
 

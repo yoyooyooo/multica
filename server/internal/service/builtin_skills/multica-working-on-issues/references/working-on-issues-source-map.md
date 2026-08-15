@@ -50,7 +50,7 @@ by `currentGitHubSnapshotAvailable`; VCS check state is folded by
 | Basic link vs Forgejo canonical projection | `server/internal/handler/external_pr_integration.go` (`validateExternalPRMergeProjection`); basic provider-neutral facts do not imply instance-bound Forgejo projection facts |
 
 `GET /api/integrations/current-execution-context` has no request selectors and
-returns schema `multica.current-execution-context.v2`: minimal Workspace/Agent/Task ids, claim.generation (run.id dual-read), optional Issue/Squad/Runtime/Trigger ids without display enrichment. Formerly: bounded Workspace, Agent,
+returns schema `multica.current-execution-context.v2`: minimal Workspace/Agent/Task ids, claim.generation (run.id dual-read), optional Issue/Squad/Runtime/Trigger ids without display enrichment. When the Task runtime resolves in the same Workspace and has a registered daemon, `runtime.daemon_id` is projected from that server-side Runtime row; it is omitted rather than inferred when unavailable. Formerly: bounded Workspace, Agent,
 Task/Run, optional Issue/Squad/Runtime/Trigger, and attribution facts from the
 authenticated running task. It never emits assertions, Policy Classes,
 operations, capabilities, Sessions, Grants, or credentials. Terminal, revoked,
