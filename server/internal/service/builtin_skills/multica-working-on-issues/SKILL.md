@@ -110,7 +110,7 @@ ags-cli pr create --fill
 ags-cli pr view --json ...
 ags-cli pr checks
 ags-cli pr comment ...
-ags-cli pr merge --match-head-commit <40-sha>   # only if this Agent is allowlisted
+ags-cli pr merge --match-head-commit <40-sha>   # only when AGS_ACCESS_ROLE=maintainer|admin
 ```
 
 GitHub remotes keep official `git` / `gh`. GitLab remotes keep official `git` /
@@ -120,9 +120,11 @@ material, not a command surface. Multica current-execution-context, task tokens,
 metadata, and external-PR link tokens are **not** repository authority; that
 context does not authorize repository operations.
 The canonical actor is resolved inside the launcher/service path. Ordinary
-workload writes still use a short-lived internal Access Grant; Agents do not
-request or manage that artifact. Do not source an AGS profile or patch PATH
-yourself.
+workload writes use a short-lived Access Grant internally; Agents do not
+request or manage that artifact. Where an operation requires it, AGS may
+revalidate a live native repository grant internally, but that fact is not an
+Agent-facing configuration or troubleshooting step. Do not source an AGS
+profile or patch PATH yourself.
 
 Multica ↔ AGS Issue linkage / link-token is **best-effort provenance** and
 cannot rewrite an already completed repository operation. That does not permit a
