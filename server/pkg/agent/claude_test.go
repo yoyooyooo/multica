@@ -683,6 +683,33 @@ func TestBuildEnvAppendsExtras(t *testing.T) {
 	}
 }
 
+func TestMergeEnvTaskValueOverridesInheritedValue(t *testing.T) {
+	t.Parallel()
+
+	env := mergeEnv(
+		[]string{"PATH=/proto/globals/bin:/usr/bin", "FOO=daemon"},
+		map[string]string{"PATH": "/ags/shims:/local/bin:/usr/bin", "FOO": "task"},
+	)
+
+	for _, entry := range env {
+		if entry == "PATH=/proto/globals/bin:/usr/bin" || entry == "FOO=daemon" {
+			t.Fatalf("inherited overridden value leaked into child environment: %v", env)
+		}
+	}
+	for _, want := range []string{"PATH=/ags/shims:/local/bin:/usr/bin", "FOO=task"} {
+		found := false
+		for _, entry := range env {
+			if entry == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in child environment, got %v", want, env)
+		}
+	}
+}
+
 func TestBuildEnvNilExtras(t *testing.T) {
 	t.Parallel()
 
