@@ -72,8 +72,10 @@ every Task broker error stops before stock-gh/provider I/O. Wrong
 target/repo/operation, identity binding conflict, invalid/revoked/expired
 authority, AGS repository permission, protected refs and exact effects are hard
 denials. Multica current-context facts are not authorization. Workload
-`pr.merge` additionally requires the T025 exact Agent ID allowlist plus
-`AGS_ACCESS_ROLE=maintainer` intent; env cannot self-grant.
+`pr.merge` additionally requires the explicit Agent custom-env role
+`AGS_ACCESS_ROLE=maintainer` or `AGS_ACCESS_ROLE=admin`; both roles have the
+same single-operation effect and add no other privileged operation. There is no
+T025 Agent allowlist, numeric principal, or policy-class elevation gate.
 
 ## Two distinct webhook paths: link vs close-intent
 
