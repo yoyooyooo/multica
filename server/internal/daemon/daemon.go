@@ -6056,22 +6056,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
+	// Ensure the Multica and managed AGS CLIs are on PATH inside the agent's
+	// environment. Some runtimes run in an isolated sandbox that may not inherit
+	// the daemon's PATH.
+	agentPath := os.Getenv("PATH")
 	if selfBin, err := resolveSelfExecutable(); err == nil {
 		binDir := filepath.Dir(selfBin)
-		agentPath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
-		// AGS bootstrap owns this optional, credential-free shim directory.
-		// Prepending it at the Task environment boundary makes ordinary git/gh
-		// routing consistent for every backend without provider-specific plugins
-		// or inherited Human profiles. Hosts without AGS bootstrap are unchanged.
-		if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
-			agentPath = prependTaskToolShimPath(agentPath, homeDir, runtime.GOOS)
-		}
-		agentEnv["PATH"] = agentPath
+		agentPath = binDir + string(os.PathListSeparator) + agentPath
 	}
+	if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
+		enableShims := task.Agent != nil && task.Agent.CustomEnv["AGS_CLI_SHIM"] == "1"
+		agentPath = prependTaskToolPath(agentPath, homeDir, runtime.GOOS, enableShims)
+	}
+	agentEnv["PATH"] = agentPath
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {
@@ -7552,13 +7549,12 @@ func socketSafeTempBaseDir() string {
 	return os.TempDir()
 }
 
-// prependTaskToolShimPath adds AGS's bootstrap-owned ordinary git/gh surface
-// only when both shims are present. Requiring the pair avoids a partial route in
-// which Git and PR operations could acquire different identities. The per-user
-// bin directory follows the shims so their `exec ags-cli` resolves the managed
-// active release before tool-manager links such as Volta. Native Windows bootstrap
-// may materialize cmd/bat/exe launchers; POSIX bootstrap uses bare names.
-func prependTaskToolShimPath(inherited, homeDir, goos string) string {
+// prependTaskToolPath always exposes the managed AGS CLI for direct use. The
+// bootstrap-owned ordinary git/gh surface is added only when the Agent opts in
+// and both shims exist, avoiding a partial route with split Git/PR identities.
+// Native Windows bootstrap may materialize cmd/bat/exe launchers; POSIX
+// bootstrap uses bare names.
+func prependTaskToolPath(inherited, homeDir, goos string, enableShims bool) string {
 	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
 	extensions := []string{""}
 	if goos == "windows" {
@@ -7573,12 +7569,19 @@ func prependTaskToolShimPath(inherited, homeDir, goos string) string {
 		}
 		return false
 	}
-	for _, tool := range []string{"git", "gh"} {
-		if !hasTool(shimDir, tool) {
-			return inherited
+	paths := make([]string, 0, 3)
+	if enableShims {
+		completePair := true
+		for _, tool := range []string{"git", "gh"} {
+			if !hasTool(shimDir, tool) {
+				completePair = false
+				break
+			}
+		}
+		if completePair {
+			paths = append(paths, shimDir)
 		}
 	}
-	paths := []string{shimDir}
 	managedBinDir := filepath.Join(homeDir, ".local", "bin")
 	if hasTool(managedBinDir, "ags-cli") {
 		paths = append(paths, managedBinDir)

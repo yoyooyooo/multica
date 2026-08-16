@@ -530,7 +530,7 @@ func TestTaskCanonicalRunID(t *testing.T) {
 	}
 }
 
-func TestPrependTaskToolShimPathRequiresCompleteBootstrapPair(t *testing.T) {
+func TestPrependTaskToolPathDefaultsToDirectCLIAndRequiresCompleteShimPair(t *testing.T) {
 	t.Parallel()
 
 	homeDir := t.TempDir()
@@ -539,20 +539,23 @@ func TestPrependTaskToolShimPathRequiresCompleteBootstrapPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	inherited := filepath.Join(homeDir, "bin")
-	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != inherited {
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != inherited {
 		t.Fatalf("missing shims changed PATH: %q", got)
 	}
 	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != inherited {
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != inherited {
 		t.Fatalf("partial shim pair changed PATH: %q", got)
 	}
 	if err := os.WriteFile(filepath.Join(shimDir, "gh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != inherited {
+		t.Fatalf("default mode enabled complete shim pair: %q", got)
+	}
 	want := shimDir + string(os.PathListSeparator) + inherited
-	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != want {
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != want {
 		t.Fatalf("complete shim pair PATH=%q, want %q", got, want)
 	}
 	managedBinDir := filepath.Join(homeDir, ".local", "bin")
@@ -562,13 +565,17 @@ func TestPrependTaskToolShimPathRequiresCompleteBootstrapPair(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(managedBinDir, "ags-cli"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	want = managedBinDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != want {
+		t.Fatalf("direct managed CLI PATH=%q, want %q", got, want)
+	}
 	want = shimDir + string(os.PathListSeparator) + managedBinDir + string(os.PathListSeparator) + inherited
-	if got := prependTaskToolShimPath(inherited, homeDir, "linux"); got != want {
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != want {
 		t.Fatalf("managed CLI PATH=%q, want %q", got, want)
 	}
 }
 
-func TestPrependTaskToolShimPathAcceptsWindowsLaunchers(t *testing.T) {
+func TestPrependTaskToolPathAcceptsWindowsLaunchers(t *testing.T) {
 	t.Parallel()
 
 	homeDir := t.TempDir()
@@ -581,7 +588,7 @@ func TestPrependTaskToolShimPathAcceptsWindowsLaunchers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := prependTaskToolShimPath("", homeDir, "windows"); got != shimDir {
+	if got := prependTaskToolPath("", homeDir, "windows", true); got != shimDir {
 		t.Fatalf("Windows shim PATH=%q, want %q", got, shimDir)
 	}
 }
