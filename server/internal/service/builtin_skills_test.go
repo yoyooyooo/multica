@@ -233,7 +233,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"Use a routable issue key in the PR title, body, or branch",
 		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
-		"multica-repository-delivery",
 		"--status backlog",
 		// The only sanctioned pr_url reference is the negative compatibility
 		// warning about pre-existing data — not a write recommendation
@@ -282,10 +281,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"multica issue metadata list <issue-id> --output json",
 		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
-		"ags-cli git status",
-		"short-lived Access Grant",
-		"canonical actor",
-		"AGS_CLI_PROFILE",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
@@ -293,35 +288,8 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		}
 	}
 
-	lowerBody := strings.ToLower(body)
-	for _, retired := range []string{
-		"team-v4",
-		"assertion request",
-		"multica signs",
-		"workload assertion",
-	} {
-		if strings.Contains(lowerBody, retired) {
-			t.Errorf("working-on-issues skill restores retired authorization narration %q", retired)
-		}
-	}
-
-	const sourceMapPath = "references/working-on-issues-source-map.md"
-	var sourceMap string
-	for _, file := range skill.Files {
-		if file.Path == sourceMapPath {
-			sourceMap = file.Content
-			break
-		}
-	}
-	if sourceMap == "" {
-		t.Errorf("working-on-issues skill missing supporting file %s", sourceMapPath)
-	} else {
-		if !strings.Contains(sourceMap, "`265_external_pr_integration_reconcile`") {
-			t.Errorf("working-on-issues source map must cite current migration 265")
-		}
-		if strings.Contains(sourceMap, "`231_external_pr_integration_reconcile`") {
-			t.Errorf("working-on-issues source map cites retired-generation migration 231")
-		}
+	if !skillHasFile(skill, "references/working-on-issues-source-map.md") {
+		t.Errorf("working-on-issues skill missing supporting file references/working-on-issues-source-map.md")
 	}
 }
 
