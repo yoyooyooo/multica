@@ -60,22 +60,11 @@ Multica no longer issues AGS workload assertions or `pr.merge` delegations. The
 former assertion, human delegation, AGS introspection/consume/effect, and CLI
 `issue merge` routes are absent and must return `404`.
 
-**Agent-facing surface (Program A alignment):** ordinary `ags-cli git` /
-`ags-cli pr` for AGS remotes; official `gh` / `glab` only for GitHub/GitLab
-remotes. Access Grant is internal to ags-cli launcher / AGS service—not an Agent
-command tree. Multica daemon may still prepend the complete AGS shim pair as an
-owner-controlled convenience; official Daemon plus direct `ags-cli` must work
-without it. Coding-agent plugins do not own profile or PATH injection. External
-PR association / link-token is best-effort provenance and does not rewrite a
-source operation result. Before request-level AGS transport is bound, however,
-every Task broker error stops before stock-gh/provider I/O. Wrong
-target/repo/operation, identity binding conflict, invalid/revoked/expired
-authority, AGS repository permission, protected refs and exact effects are hard
-denials. Multica current-context facts are not authorization. Workload
-`pr.merge` additionally requires the explicit Agent custom-env role
-`AGS_ACCESS_ROLE=maintainer` or `AGS_ACCESS_ROLE=admin`; both roles have the
-same single-operation effect and add no other privileged operation. There is no
-T025 Agent allowlist, numeric principal, or policy-class elevation gate.
+**Agent-facing repository CLI** now lives in `multica-repository-delivery`.
+This source map keeps Multica Issue/PR-link and completion-policy authority
+only. External PR association / link-token is best-effort provenance and does
+not rewrite a source operation result. Multica current-context facts are not
+repository authorization.
 
 ## Two distinct webhook paths: link vs close-intent
 
