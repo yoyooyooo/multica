@@ -233,6 +233,7 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"Use a routable issue key in the PR title, body, or branch",
 		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
+		"multica-repository-delivery",
 		"--status backlog",
 		// The only sanctioned pr_url reference is the negative compatibility
 		// warning about pre-existing data — not a write recommendation
@@ -281,6 +282,9 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"multica issue metadata list <issue-id> --output json",
 		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+		"ags-cli git status",
+		"short-lived Access Grant",
+		"AGS_CLI_PROFILE",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
