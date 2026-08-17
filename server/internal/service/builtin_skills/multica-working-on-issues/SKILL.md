@@ -12,8 +12,6 @@ intent, reading linked-PR state, metadata keys, status side effects, and
 sub-issue enqueue behavior.
 
 For building mention links, load `multica-mentioning` instead — not this skill.
-For opening, updating, checking, or merging a repository PR, load
-`multica-repository-delivery` instead — not this skill.
 
 Every contract below is traced to source in
 `references/working-on-issues-source-map.md`.
