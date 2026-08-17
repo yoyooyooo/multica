@@ -7,8 +7,11 @@ allowed-tools: Bash(ags-cli *), Bash(git *), Bash(gh *), Bash(glab *)
 
 # Repository delivery
 
-Use the CLI that matches the repository origin. The runtime already supplies
+AGS remotes use AGS as the Git/PR authority. The runtime already supplies
 workload identity; do not configure credentials, profiles, or route URLs.
+Issue linking and close intent stay in `multica-working-on-issues`.
+
+Use the CLI that matches the repository origin.
 
 ```text
 AGS origin    -> ags-cli git / ags-cli pr

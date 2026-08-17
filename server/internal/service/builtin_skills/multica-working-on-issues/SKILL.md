@@ -2,7 +2,7 @@
 name: multica-working-on-issues
 description: "Use when acting on a Multica issue beyond what the brief covers: PR linking vs close intent, reading a linked PR's real state, metadata keys, status-change side effects, sub-issue todo vs backlog."
 user-invocable: false
-allowed-tools: Bash(multica *)
+allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
 
 # Working on Multica issues
@@ -12,8 +12,6 @@ intent, reading linked-PR state, metadata keys, status side effects, and
 sub-issue enqueue behavior.
 
 For building mention links, load `multica-mentioning` instead — not this skill.
-For opening, updating, checking, or merging a repository PR, load
-`multica-repository-delivery` instead — not this skill.
 
 Every contract below is traced to source in
 `references/working-on-issues-source-map.md`.
@@ -49,21 +47,8 @@ Fix login MUL-2759                                 # links only — keyword not 
 
 Consequence: a bare title prefix or a branch reference links the PR but does not
 close the issue on merge. A closing keyword immediately adjacent to the issue key
-records close intent; on merge, that close intent can move the linked Issue to
-`done` only when it is a leaf child (has a parent and no children) and the exact
-completion policy allows it.
-
-**Record-only completion.** If the linked issue metadata contains
-`external_pr_completion_policy=record_only`, GitHub, Forgejo, Gitea, and GitLab
-webhooks still update the provider PR mirror and link row, but they never
-auto-advance the issue to `done`. A child therefore cannot close its Stage
-barrier or wake its parent from the provider merge alone. The workflow that owns
-the additional completion gate must perform an explicit terminal transition
-after its independent evidence is accepted. Missing policy, the exact empty
-string, or exact `leaf_child_only` retains normal leaf-child close-intent
-behavior. Every other value—including unknown strings, null/non-string legacy
-rows, case variants, and values with whitespace—fails closed and requires policy
-repair or an explicit terminal transition.
+records close intent; on merge, that close intent can move the linked issue to
+`done`.
 
 **Reference-only links (hidden from the PR list).** A key that appears **only**
 as a bare mention in the body — no closing keyword, and not in the title or
@@ -151,13 +136,6 @@ whatever your workflow needs — the platform curates no vocabulary; pick short
 snake_case names and reuse them consistently within your workspace.
 
 Never store secrets, tokens, or API keys in metadata.
-
-`external_pr_completion_policy=record_only` is a special lifecycle policy, not
-an ordinary status note: set it before PR linkage when the workflow requires
-provider merge facts without provider-driven terminal completion. Removing it,
-setting the exact empty string, or setting exact `leaf_child_only` restores normal
-close-intent auto-completion for future events; no other value does.
-
 Not metadata: logs or summaries; runtime bookkeeping such as timestamps,
 attempt counts, or agent IDs; or other single-run details such as
 files touched and investigation notes — those belong in the result comment.
@@ -173,9 +151,10 @@ string|number|bool` to force a type.
 ## Custom properties: typed workflow state
 
 Workspaces may define custom issue properties (Severity, Environment, QA
-Status, ...). Properties are the typed, user-visible sibling of metadata:
-values are validated against the definition (select options, date format,
-http(s) URL), visible in the issue sidebar, and addressed by name.
+Status, Reviewer, ...). Properties are the typed, user-visible sibling of
+metadata: values are validated against the definition (select options, date
+format, http(s) URL, member reference), visible in the issue sidebar, and
+addressed by name.
 
 - Read what exists before writing: `multica property list` shows the catalog;
   `multica issue property list <issue-id>` shows values set on the issue.
@@ -184,10 +163,15 @@ http(s) URL), visible in the issue sidebar, and addressed by name.
 ```bash
 multica issue property set <issue-id> --name Environment --value staging
 multica issue property set <issue-id> --name Platforms --value "iOS,Android"
+multica issue property set <issue-id> --name Reviewer --value Bohan
 multica issue property unset <issue-id> --name Environment
 ```
 
 - A validation error lists the legal options — fix the value and retry.
+- `actor` / `multi_actor` properties (Reviewer, Escalation contact, ...) hold
+  workspace members only. `--value` takes a member name, email, UUID, short id,
+  or an explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
+  (duplicates dropped, order kept, max 20).
 - Definitions may include an optional catalog icon for visual identification;
   it does not change the property's type or value validation.
 - Agents cannot create or edit property definitions (owner/admin humans only).
@@ -214,13 +198,8 @@ on it. These are the contracts, not advice:
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
-  carries close intent (`Closes MUL-XXXX`), it advances a leaf-child Issue to
-  `done` itself on merge — you do not also need to flip that leaf manually. A
-  top-level Issue or an Issue with children never auto-completes from a provider.
-  The
-  exception is `external_pr_completion_policy=record_only`: the provider merge
-  is recorded, but the issue and Stage remain active until an explicit terminal
-  transition.
+  carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
+  itself on merge — you do not also need to flip it manually.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going (MUL-4465). To stop a running task,
@@ -228,6 +207,26 @@ on it. These are the contracts, not advice:
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
   `todo` when no active task / retry remains — that is the main server-owned
   status write on the agent-run path.
+
+## Claim ownership without duplicating a run
+
+Assigning an active issue to an agent normally starts a run. When the work is
+already underway and the write only records ownership or progress, pass
+`--no-start` on every command in that flow — suppressing the assignment alone
+does not suppress a later status update:
+
+```bash
+multica issue assign <issue-id> --to-id <agent-id> --no-start
+multica issue update <issue-id> --assignee-id <agent-id> --no-start
+multica issue status <issue-id> in_progress --no-start
+```
+
+Before self-assigning, check the target issue's comment history for an existing
+claim and any `## Active sibling runs` block (its `run-messages` commands show
+work in flight). The server also suppresses a trusted self-assignment when the
+exact target `(issue, agent)` pair already has a non-terminal task, but it
+deliberately keeps same-agent handoffs to a fresh issue starting runs: cross-issue
+serial chains and triage batches rely on that.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
@@ -280,6 +279,12 @@ multica issue children <parent-id>             # sub-issues grouped by stage
 multica issue status <stage-2-child-id> todo   # promote when its deps are met
 ```
 
+`issue children --output json` reports per-stage `done` counts. A workspace may
+define custom statuses beyond the 7 built-ins; a custom status counts as done
+here when its category is `done` or `cancelled`, which is what `status_category`
+on each child carries. Read `status_category` rather than matching `status`
+against the built-in names.
+
 Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
 breakdown, leave it `backlog` and comment to confirm first.
@@ -309,11 +314,10 @@ multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --s
 
 ## References
 
-`references/working-on-issues-source-map.md` — current file + symbol/query
-authority for every contract above: the `pull-requests` CLI and route, the PR response field list,
+`references/working-on-issues-source-map.md` — accurate `file:line` for every
+contract above: the `pull-requests` CLI and route, the PR response field list,
 `derivePRState`, the two-path link (`extractIdentifiers`) vs close-intent
 (`extractClosingIdentifiers`) proof, the backlog enqueue lines, child-done
 notify, the stage column / `stageBarrierClosed` barrier and the `--stage` /
-`issue children` CLI, and the metadata CLI. Re-run its verification commands
-before depending on a symbol after a refactor; exact line offsets are not part
-of the contract.
+`issue children` CLI, and the metadata CLI. Re-derive before depending on an
+exact line.
