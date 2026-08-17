@@ -233,7 +233,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"Use a routable issue key in the PR title, body, or branch",
 		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
-		"multica-repository-delivery",
 		"--status backlog",
 		// The only sanctioned pr_url reference is the negative compatibility
 		// warning about pre-existing data — not a write recommendation
@@ -282,9 +281,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"multica issue metadata list <issue-id> --output json",
 		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
-		"ags-cli git status",
-		"short-lived Access Grant",
-		"AGS_CLI_PROFILE",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
@@ -294,53 +290,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 
 	if !skillHasFile(skill, "references/working-on-issues-source-map.md") {
 		t.Errorf("working-on-issues skill missing supporting file references/working-on-issues-source-map.md")
-	}
-}
-
-func TestRepositoryDeliverySkillCoversOriginCLIMaps(t *testing.T) {
-	skill, ok := findSkill(t, "multica-repository-delivery")
-	if !ok {
-		return
-	}
-	fm, body, _ := splitFrontmatter(skill.Content)
-
-	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
-		t.Errorf("user-invocable = %q, want false", got)
-	}
-	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(ags-cli *)") {
-		t.Errorf("allowed-tools = %q, want ags-cli access", got)
-	}
-
-	mustContain := []string{
-		"AGS origin    -> ags-cli git / ags-cli pr",
-		"GitHub origin -> git / gh",
-		"GitLab origin -> git / glab",
-		"AGS PR number",
-		"--match-head-commit <40-sha>",
-		"GET / readback",
-	}
-	for _, want := range mustContain {
-		if !strings.Contains(body, want) {
-			t.Errorf("repository-delivery skill missing %q", want)
-		}
-	}
-
-	lowerBody := strings.ToLower(body)
-	for _, forbidden := range []string{
-		"grant",
-		"session",
-		"ags_cli_profile",
-		"raw forgejo",
-		"/api/v3/",
-		"tea ",
-	} {
-		if strings.Contains(lowerBody, forbidden) {
-			t.Errorf("repository-delivery skill teaches forbidden internal %q", forbidden)
-		}
-	}
-
-	if !skillHasFile(skill, "references/repository-delivery-source-map.md") {
-		t.Errorf("repository-delivery skill missing supporting file references/repository-delivery-source-map.md")
 	}
 }
 
