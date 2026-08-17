@@ -1,6 +1,6 @@
 # Fork capabilities
 
-The active generation is **`fork/v0.4.22`**, frozen on official upstream **`v0.4.22`**. Mini currently runs exact source `aba2a41c6` under immutable deployment tag `fork-mini-v0.4.22-r3`; runtime evidence and claim limits live in the [generation manifest](../../releases/fork-generations/v0.4.22.md).
+The active generation is **`fork/v0.4.22`**, frozen on official upstream **`v0.4.22`**. Mini currently runs exact source `409bdc0ee` under immutable deployment tag `fork-mini-v0.4.22-r4`; runtime evidence and claim limits live in the [generation manifest](../../releases/fork-generations/v0.4.22.md).
 
 See [fork generations](../../releases/fork-generations/README.md).
 

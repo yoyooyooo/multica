@@ -12,10 +12,10 @@ Each file records one Multica fork generation frozen on a synced upstream base
 ## Active generation (single current formal home)
 
 - **[`v0.4.22`](v0.4.22.md)** — formal generation frozen on official tag **`v0.4.22`**, branch `fork/v0.4.22`.
-  - deployed code shape: `v0.4.22@8bd49bba8` + 30 linear fork-only commits through `f219f4513`
-  - immutable Mini runtime authority: `fork-mini-v0.4.22-r1@f219f4513` (`v0.4.22-30-gf219f4513`)
+  - deployed code shape: `v0.4.22@8bd49bba8` + linear fork-only commits through `409bdc0ee`
+  - immutable Mini runtime authority: `fork-mini-v0.4.22-r4@409bdc0ee` (`v0.4.22-46-g409bdc0ee`)
   - the generation branch may contain later receipt-only documentation; it does not silently change deployed runtime revision
-  - backend/frontend/CLI/daemon use exact source `f219f4513`; owner-only deployment receipt is recorded in [`v0.4.22.md`](v0.4.22.md)
+  - backend/frontend/CLI/daemon use exact source `409bdc0ee`; owner-only deployment receipt is recorded in [`v0.4.22.md`](v0.4.22.md)
   - includes best-effort daemon `MULTICA_RUN_ID` injection and durable External PR silent-continuation reconciliation
   - imile and registry publication remain separate, unclaimed transitions
 
