@@ -1,12 +1,12 @@
 # Fork capabilities
 
-The active generation is **`fork/v0.4.22`**, frozen on official upstream **`v0.4.22`**. Mini currently runs exact source `409bdc0ee` under immutable deployment tag `fork-mini-v0.4.22-r4`; runtime evidence and claim limits live in the [generation manifest](../../releases/fork-generations/v0.4.22.md).
+The active generation is **`fork/upstream-main-20260821`**, frozen on `upstream/main@8f9c766e4` (nearest official tag **`v0.4.32`**). Mini currently runs exact source `de66369a4` under immutable deployment tag `fork-mini-upstream-main-20260821-r1`; runtime evidence and claim limits live in the [generation manifest](../../releases/fork-generations/upstream-main-20260821.md).
 
 See [fork generations](../../releases/fork-generations/README.md).
 
 ## Current active generation
 
-**`fork/v0.4.22`** owns these additive capabilities:
+**`fork/upstream-main-20260821`** owns these additive capabilities:
 
 - [External PR integration, durable silent continuation and current execution context](external-pr-integration/README.md)
 - [Pi process tree supervision](pi-process-tree-supervision/README.md)
@@ -18,6 +18,7 @@ Clean history expectation: upstream base first; **fork-only commits always at th
 
 ## Previous generations
 
+- `fork/v0.4.22` (previous Mini live / rollback)
 - `fork/upstream-main-20260808` (v0.4.21-era freeze)
 - `fork/v0.4.12` and older
 

@@ -2,9 +2,9 @@
 
 ## Status and authority
 
-**Candidate generation** under the rule “formal = latest synced upstream version,” owner-authorized to freeze `upstream/main` rather than exact tag `v0.4.32`.
+**Current formal generation** under the rule “formal = latest synced upstream version,” owner-authorized to freeze `upstream/main` rather than exact tag `v0.4.32`.
 
-This file does **not** claim Mini or imile runtime switch. Live Mini remains `fork-mini-v0.4.22-r4@409bdc0ee` until a separate deployment receipt exists.
+Mini was switched on 2026-08-21 to exact source `de66369a4908298ff1e7467b42d28f4b1c63bcf3` (`v0.4.32-3-gde66369a4`) under immutable tag `fork-mini-upstream-main-20260821-r1`. This does not imply imile runtime convergence until a separate imile receipt exists.
 
 - generation branch: `fork/upstream-main-20260821`
 - integration/work branch: `feature/upstream-main-20260821-fork-replay`
@@ -67,6 +67,32 @@ The final source must prove:
 - backend and frontend are built from one exact clean commit;
 - Mini preserves `multica_pgdata`, network identity, and uploads bind mount.
 
+## Accepted Mini deployment
+
+Mini was switched on 2026-08-21 to exact source `de66369a4908298ff1e7467b42d28f4b1c63bcf3` using immutable tag `fork-mini-upstream-main-20260821-r1`:
+
+- backend local image ID: `sha256:c3a92be6c0aa91475e87ee345295a5e9d95c26ec65f04c68cd6b0aefa9ed30af`;
+- frontend local image ID: `sha256:c1a7002cb238fa59c26d0e30ccf8982dfc4dcacb43778b175eae91a6119ab193`;
+- both images carry revision `de66369a4`, version `v0.4.32-3-gde66369a4`, and deployment label `fork-mini-upstream-main-20260821-r1`;
+- CLI/daemon report the same version; backend `/readyz` reports DB and migrations `ok`; `/` and `/login` return 200;
+- retired workload-assertion / delegated-merge routes return exact `404`;
+- `multica_pgdata` and `multica_default` identities were preserved;
+- migration ledger grew 415 → 532 by applying 117 upstream versions through `397_plugin_installation_package_version_index` while retaining fork ceiling `316_external_pr_reconcile_finalization_primary_key`;
+- backend image was built from deploy-local `golang:1.26.6-alpine` because `golang:1.26-alpine` resolved to 1.26.5 against `go.mod` 1.26.6.
+
+Owner-only deployment receipt:
+
+```text
+/Users/yoyo/.local/state/multica/deployments/20260821T112728Z-fork-upstream-main-20260821-de66369a4-mini/deployment-receipt.json
+SHA-256: fc4f9669581c631067e6b85b58dd55f24cbfd67d69e079433c6676a054d276be
+```
+
+Rollback images are the previous live r4 pair (`409bdc0ee`) plus the frozen dump in that receipt directory.
+
 ## Claim limit
 
-This manifest records **candidate** generation identity only. It does not prove CI, source acceptance, publication, Mini/imile deployment, or that live hosts have moved off `409bdc0ee`.
+This document is the **single current formal generation home**. Source replay, Mini runtime, and imile runtime each retain their own evidence. It does **not** claim:
+
+- imile or any other host has converged to this generation;
+- registry-published image digests exist;
+- GitHub default branch has switched.
