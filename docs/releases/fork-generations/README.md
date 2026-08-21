@@ -13,8 +13,9 @@ Each file records one Multica fork generation frozen on a synced upstream base
 
 - **[`upstream-main-20260821`](upstream-main-20260821.md)** — owner-authorized freeze of `upstream/main@8f9c766e4` (nearest tag `v0.4.32`), branch `fork/upstream-main-20260821`.
   - immutable Mini runtime authority: `fork-mini-upstream-main-20260821-r1@de66369a4` (`v0.4.32-3-gde66369a4`)
-  - receipt-only documentation may follow the live tag; it does not silently change Mini runtime revision
-  - imile and registry publication remain separate, unclaimed transitions
+  - receipt-only documentation may follow the live tag; it does not silently change deployed runtime revision
+  - imile runtime: `fork-imile-upstream-main-20260821-r1@de66369a4` (native amd64)
+  - registry publication remains unclaimed
 
 ## Previous generations (rollback / historical)
 

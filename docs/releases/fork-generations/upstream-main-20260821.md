@@ -4,7 +4,7 @@
 
 **Current formal generation** under the rule “formal = latest synced upstream version,” owner-authorized to freeze `upstream/main` rather than exact tag `v0.4.32`.
 
-Mini was switched on 2026-08-21 to exact source `de66369a4908298ff1e7467b42d28f4b1c63bcf3` (`v0.4.32-3-gde66369a4`) under immutable tag `fork-mini-upstream-main-20260821-r1`. This does not imply imile runtime convergence until a separate imile receipt exists.
+Mini was switched on 2026-08-21 to exact source `de66369a4908298ff1e7467b42d28f4b1c63bcf3` (`v0.4.32-3-gde66369a4`) under immutable tag `fork-mini-upstream-main-20260821-r1`. imile-win was switched the same day to the same source under `fork-imile-upstream-main-20260821-r1` (native linux/amd64 build, not Mini arm64 image import).
 
 - generation branch: `fork/upstream-main-20260821`
 - integration/work branch: `feature/upstream-main-20260821-fork-replay`
@@ -89,10 +89,29 @@ SHA-256: fc4f9669581c631067e6b85b58dd55f24cbfd67d69e079433c6676a054d276be
 
 Rollback images are the previous live r4 pair (`409bdc0ee`) plus the frozen dump in that receipt directory.
 
+## Accepted imile-win deployment
+
+imile-win was switched on 2026-08-21 to the same exact source `de66369a4` using immutable tag `fork-imile-upstream-main-20260821-r1`:
+
+- backend local image ID: `sha256:a218b4178c29296162dd960a286eaa400c9c9c7fe8e552fdbce2f3d6f04da72e`;
+- frontend local image ID: `sha256:8e8bf51dc994b09e9e72c5434fa68c0a9d5cba348e43aef8ca2f822cae043c12`;
+- images were built on imile-win as `linux/amd64` from `$DEPLOY/source` at `de66369a4`;
+- CLI/daemon report `v0.4.32-3-gde66369a4`; daemon `device_name=imile-win`;
+- `/readyz` db+migrations `ok`; `/` and `/login` 200; retired routes 404;
+- `multica_pgdata` and `multica_default` preserved;
+- ledger 398 → 515 (+117) through `397_plugin_installation_package_version_index`, fork ceiling 316 retained.
+
+Owner-only deployment receipt:
+
+```text
+/root/.local/state/multica/deployments/20260821T112728Z-fork-upstream-main-20260821-de66369a4-imile/deployment-receipt.json
+SHA-256: 411e5160def8cafe6dd2a1930cd6ded58c3d52287df6972b71003925a96e7510
+```
+
 ## Claim limit
 
-This document is the **single current formal generation home**. Source replay, Mini runtime, and imile runtime each retain their own evidence. It does **not** claim:
+This document is the **single current formal generation home**. Mini and imile image IDs differ because they are native builds for arm64 vs amd64; both carry revision `de66369a4`. It does **not** claim:
 
-- imile or any other host has converged to this generation;
 - registry-published image digests exist;
-- GitHub default branch has switched.
+- GitHub default branch has switched;
+- browser click-through beyond HTTP 200.
