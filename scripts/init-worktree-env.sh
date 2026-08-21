@@ -4,8 +4,8 @@ set -euo pipefail
 ENV_FILE="${1:-.env.worktree}"
 
 if [ -f "$ENV_FILE" ] && [ "${FORCE:-0}" != "1" ]; then
-  echo "Refusing to overwrite existing $ENV_FILE. Re-run with FORCE=1 if you want to regenerate it."
-  exit 1
+  echo "Preserved existing $ENV_FILE."
+  exit 0
 fi
 
 worktree_name="${WORKTREE_NAME:-$(basename "$PWD")}"

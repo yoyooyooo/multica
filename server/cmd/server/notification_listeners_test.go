@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -313,6 +314,119 @@ func TestNotification_StatusChanged(t *testing.T) {
 	}
 	if sub2Items[0].Type != "status_changed" {
 		t.Fatalf("expected type 'status_changed', got %q", sub2Items[0].Type)
+	}
+}
+
+func TestNotification_InboxDeliveryKeyPartialUniqueScopeAndNullSemantics(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	ctx := context.Background()
+	workspaceB := uuid.NewString()
+	otherRecipient := uuid.NewString()
+	if err := testPool.QueryRow(ctx, `INSERT INTO workspace (name, slug, description) VALUES ('Inbox delivery scope', $1, 'temporary inbox delivery-key scope test') RETURNING id`, "inbox-delivery-scope-"+workspaceB[:8]).Scan(&workspaceB); err != nil {
+		t.Fatalf("create second workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE type='delivery_scope_test' AND workspace_id IN ($1, $2)`, testWorkspaceID, workspaceB)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id=$1`, workspaceB)
+	})
+
+	insert := func(workspaceID, recipientID string, key *string) {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, `
+INSERT INTO inbox_item (workspace_id, recipient_type, recipient_id, type, severity, title, delivery_key)
+VALUES ($1, 'member', $2, 'delivery_scope_test', 'info', 'delivery scope test', $3)`, workspaceID, recipientID, key); err != nil {
+			t.Fatalf("insert inbox delivery-key fixture: %v", err)
+		}
+	}
+	key := "scope-key"
+	insert(testWorkspaceID, testUserID, &key)
+	insert(testWorkspaceID, otherRecipient, &key)
+	insert(workspaceB, testUserID, &key)
+	insert(testWorkspaceID, testUserID, nil)
+	insert(testWorkspaceID, testUserID, nil)
+
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM inbox_item WHERE type='delivery_scope_test' AND delivery_key IS NOT NULL`).Scan(&count); err != nil {
+		t.Fatalf("count scoped non-null delivery keys: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("scoped non-null delivery-key rows=%d, want 3", count)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM inbox_item WHERE type='delivery_scope_test' AND delivery_key IS NULL`).Scan(&count); err != nil {
+		t.Fatalf("count nullable delivery keys: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("nullable delivery-key rows=%d, want 2", count)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO inbox_item (workspace_id, recipient_type, recipient_id, type, severity, title, delivery_key)
+VALUES ($1, 'member', $2, 'delivery_scope_test', 'info', 'duplicate delivery scope test', $3)
+ON CONFLICT (workspace_id, recipient_type, recipient_id, delivery_key)
+WHERE delivery_key IS NOT NULL DO NOTHING`, testWorkspaceID, testUserID, key); err != nil {
+		t.Fatalf("duplicate scoped delivery-key insert: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*)::int FROM inbox_item WHERE type='delivery_scope_test' AND delivery_key IS NOT NULL`).Scan(&count); err != nil {
+		t.Fatalf("recount scoped non-null delivery keys: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("duplicate changed scoped non-null rows=%d, want 3", count)
+	}
+}
+
+func TestNotification_TypedFinalizationDeliveryKeyDeduplicatesInboxSideEffect(t *testing.T) {
+	queries := db.New(testPool)
+	bus := newNotificationBus(t, queries)
+	subscriberEmail := "notif-finalization-delivery-key@multica.ai"
+	subscriberID := createTestUser(t, subscriberEmail)
+	t.Cleanup(func() { cleanupTestUser(t, subscriberEmail) })
+	issueID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() {
+		cleanupInboxForIssue(t, issueID)
+		cleanupTestIssue(t, issueID)
+	})
+	addTestSubscriber(t, issueID, "member", subscriberID, "commenter")
+	payload := map[string]any{
+		"issue": handler.IssueResponse{
+			ID: issueID, WorkspaceID: testWorkspaceID, Title: "delivery-key issue",
+			Status: "done", Priority: "medium", CreatorType: "member", CreatorID: testUserID,
+		},
+		"assignee_changed": false,
+		"status_changed":   true,
+		"prev_status":      "in_progress",
+	}
+	var inboxEvents int
+	bus.Subscribe(protocol.EventInboxNew, func(events.Event) { inboxEvents++ })
+	event := events.Event{
+		Type: protocol.EventIssueUpdated, WorkspaceID: testWorkspaceID,
+		ActorType: "system", Payload: payload,
+		DeliveryKey: "external-pr-finalization:v1:delivery-test:issue",
+	}
+	bus.Publish(event)
+	bus.Publish(event)
+	conflictPayload := map[string]any{
+		"issue": handler.IssueResponse{
+			ID: issueID, WorkspaceID: testWorkspaceID, Title: "delivery-key changed target",
+			Status: "done", Priority: "medium", CreatorType: "member", CreatorID: testUserID,
+		},
+		"assignee_changed": false,
+		"status_changed":   true,
+		"prev_status":      "todo",
+	}
+	bus.Publish(events.Event{
+		Type: protocol.EventIssueUpdated, WorkspaceID: testWorkspaceID,
+		ActorType: "system", Payload: conflictPayload, DeliveryKey: event.DeliveryKey,
+	})
+	items := inboxItemsForRecipient(t, queries, subscriberID)
+	if len(items) != 1 {
+		t.Fatalf("typed finalization replay created %d inbox rows, want 1", len(items))
+	}
+	if !items[0].DeliveryKey.Valid || items[0].DeliveryKey.String != event.DeliveryKey {
+		t.Fatalf("delivery key=%v, want %q", items[0].DeliveryKey, event.DeliveryKey)
+	}
+	if inboxEvents != 1 {
+		t.Fatalf("typed finalization replay emitted %d inbox:new events, want 1", inboxEvents)
 	}
 }
 

@@ -31,6 +31,10 @@ import (
 // caches and worktrees, so the ownership check adds no security value
 // and breaks CI environments where the runner UID differs from the
 // directory owner.
+//
+// LC_ALL=C keeps Git's machine-classified diagnostics deterministic. In
+// particular, branch-collision recovery must not depend on the daemon host's
+// language (Git localizes messages such as "a branch named ... already exists").
 func gitEnv() []string {
 	base := os.Environ()
 
@@ -49,6 +53,7 @@ func gitEnv() []string {
 	idx := strconv.Itoa(existing)
 	return append(base,
 		"GIT_TERMINAL_PROMPT=0",
+		"LC_ALL=C",
 		"GIT_CONFIG_COUNT="+strconv.Itoa(existing+1),
 		"GIT_CONFIG_KEY_"+idx+"=safe.directory",
 		"GIT_CONFIG_VALUE_"+idx+"=*",

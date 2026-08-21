@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_external_pr_receipt_workspace_issue;

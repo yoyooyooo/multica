@@ -259,6 +259,7 @@ make selfhost
 ```bash
 cd multica
 git pull
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
@@ -316,7 +317,7 @@ curl -s localhost:8080/readyz
 # {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
-HTTP 200 かつ両方のチェックが `ok` でない場合、新しいバージョンは migration を完了していません。トラフィックを流す前にバックエンドのログを確認してください。
+HTTP 200 かつ `db` と `migrations` の両方のチェックが `ok` でない場合、新しいバージョンは migration を完了していません。トラフィックを流す前にバックエンドのログを確認してください。
 
 ### Kubernetes
 

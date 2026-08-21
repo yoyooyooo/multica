@@ -38,6 +38,7 @@ import {
   EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_USER,
+  ExternalPullRequestsResponseSchema,
   InboxItemListSchema,
   InboxUnreadSummarySchema,
   IssueTriggerPreviewSchema,
@@ -70,6 +71,73 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("ExternalPullRequestsResponseSchema", () => {
+  it("parses the provider-neutral External PR projection", () => {
+    const parsed = ExternalPullRequestsResponseSchema.parse({
+      external_pull_requests: [
+        {
+          id: "ef17a8f7-8332-4568-a969-691fecfc4601",
+          workspace_id: "f763231d-9ec9-4a32-bfde-3a4fd856f61f",
+          issue_id: "69562fd5-b568-470d-851e-cd60fbb7a358",
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: 279,
+          external_url: "http://mini:6666/jackie/agent-kit/pull/279",
+          state: "closed",
+          link_confidence: "authoritative",
+          completion_intent: true,
+          merge_provider: "forgejo",
+          merge_repo: "jackie/agent-kit",
+          merge_number: 266,
+          merge_url: "http://forgejo.local/jackie/agent-kit/pulls/266",
+          merged_sha: null,
+          created_at: "2026-07-28T11:14:00Z",
+          updated_at: "2026-07-28T11:18:35Z",
+        },
+      ],
+    });
+
+    expect(parsed.external_pull_requests[0]).toMatchObject({
+      provider: "ags",
+      external_number: 279,
+      merge_provider: "forgejo",
+      merge_number: 266,
+      state: "closed",
+    });
+  });
+
+  it("defaults a missing list for deployment-order compatibility", () => {
+    expect(ExternalPullRequestsResponseSchema.parse({}).external_pull_requests).toEqual([]);
+  });
+
+  it("rejects unsafe provider PR numbers", () => {
+    const result = ExternalPullRequestsResponseSchema.safeParse({
+      external_pull_requests: [
+        {
+          id: "external-pr-1",
+          workspace_id: "ws-1",
+          issue_id: "issue-1",
+          provider: "ags",
+          external_repo: "jackie/agent-kit",
+          external_number: Number.MAX_SAFE_INTEGER + 1,
+          external_url: null,
+          state: "open",
+          link_confidence: "authoritative",
+          completion_intent: true,
+          merge_provider: null,
+          merge_repo: null,
+          merge_number: null,
+          merge_url: null,
+          merged_sha: null,
+          created_at: "2026-07-28T11:14:00Z",
+          updated_at: "2026-07-28T11:18:35Z",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",

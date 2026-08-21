@@ -84,23 +84,31 @@ INSERT INTO vcs_pull_request (
     $12, $13, $14, $15
 )
 ON CONFLICT (connection_id, repo_owner, repo_name, pr_number) DO UPDATE SET
-    workspace_id      = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.workspace_id      ELSE vcs_pull_request.workspace_id      END,
-    provider          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.provider          ELSE vcs_pull_request.provider          END,
-    title             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.title             ELSE vcs_pull_request.title             END,
-    state             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.state             ELSE vcs_pull_request.state             END,
-    html_url          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.html_url          ELSE vcs_pull_request.html_url          END,
-    branch            = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.branch            ELSE vcs_pull_request.branch            END,
-    author_login      = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.author_login      ELSE vcs_pull_request.author_login      END,
-    author_avatar_url = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.author_avatar_url ELSE vcs_pull_request.author_avatar_url END,
-    merged_at         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.merged_at         ELSE vcs_pull_request.merged_at         END,
-    closed_at         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.closed_at         ELSE vcs_pull_request.closed_at         END,
-    pr_updated_at     = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.pr_updated_at     ELSE vcs_pull_request.pr_updated_at     END,
-    additions         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.additions         ELSE vcs_pull_request.additions         END,
-    deletions         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.deletions         ELSE vcs_pull_request.deletions         END,
-    changed_files     = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.changed_files     ELSE vcs_pull_request.changed_files     END,
-    head_sha          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.head_sha          ELSE vcs_pull_request.head_sha          END,
-    updated_at        = now()
+    workspace_id      = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.workspace_id      ELSE vcs_pull_request.workspace_id      END,
+    provider          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.provider          ELSE vcs_pull_request.provider          END,
+    title             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.title             ELSE vcs_pull_request.title             END,
+    state             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.state             ELSE vcs_pull_request.state             END,
+    html_url          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.html_url          ELSE vcs_pull_request.html_url          END,
+    branch            = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.branch            ELSE vcs_pull_request.branch            END,
+    author_login      = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_login      ELSE vcs_pull_request.author_login      END,
+    author_avatar_url = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.author_avatar_url ELSE vcs_pull_request.author_avatar_url END,
+    merged_at         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.merged_at         ELSE vcs_pull_request.merged_at         END,
+    closed_at         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.closed_at         ELSE vcs_pull_request.closed_at         END,
+    pr_updated_at     = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.pr_updated_at     ELSE vcs_pull_request.pr_updated_at     END,
+    additions         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.additions         ELSE vcs_pull_request.additions         END,
+    deletions         = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.deletions         ELSE vcs_pull_request.deletions         END,
+    changed_files     = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.changed_files     ELSE vcs_pull_request.changed_files     END,
+    head_sha          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN EXCLUDED.head_sha          ELSE vcs_pull_request.head_sha          END,
+    updated_at        = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at AND (vcs_pull_request.state <> 'merged' OR EXCLUDED.state = 'merged') THEN now() ELSE vcs_pull_request.updated_at END
 RETURNING *;
+
+-- name: GetVCSPullRequestByIdentity :one
+SELECT * FROM vcs_pull_request
+WHERE connection_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: ListIssueIDsForVCSPullRequest :many
+SELECT issue_id FROM issue_vcs_pull_request
+WHERE pull_request_id = $1;
 
 -- name: ListVCSPullRequestsByIssue :many
 -- Aggregates each PR's commit statuses for its CURRENT head sha into
@@ -135,32 +143,6 @@ JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 LEFT JOIN checks c ON c.pr_id = pr.id
 WHERE ipr.issue_id = sqlc.arg('issue_id') AND NOT ipr.reference_only
 ORDER BY pr.pr_created_at DESC;
-
--- name: GetIssueCombinedPullRequestCloseAggregate :one
--- Cross-provider close gate. An issue can carry PRs from GitHub AND a
--- self-hosted VCS provider at the same time, so auto-advance has to see BOTH
--- table pairs. Reading only one (as the per-provider aggregates do) lets a
--- merged close-intent PR/MR on one provider advance an issue that still has an
--- open PR on the other — either webhook is blind to the other's in-flight work.
--- Sum the in-flight (open/draft) and merged-with-close-intent counts across
--- github_pull_request+issue_pull_request and vcs_pull_request+
--- issue_vcs_pull_request. reference_only links are excluded on both sides, so a
--- bare body mention neither counts as in-flight nor gates advance.
-WITH combined AS (
-    SELECT pr.state AS state, ipr.close_intent AS close_intent
-    FROM github_pull_request pr
-    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-    WHERE ipr.issue_id = $1 AND NOT ipr.reference_only
-    UNION ALL
-    SELECT pr.state AS state, ipr.close_intent AS close_intent
-    FROM vcs_pull_request pr
-    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
-    WHERE ipr.issue_id = $1 AND NOT ipr.reference_only
-)
-SELECT
-    COALESCE(SUM(CASE WHEN state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,
-    COALESCE(SUM(CASE WHEN state = 'merged' AND close_intent THEN 1 ELSE 0 END), 0)::bigint AS merged_with_close_intent_count
-FROM combined;
 
 -- =====================
 -- VCS commit status (CI)

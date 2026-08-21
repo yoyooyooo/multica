@@ -250,6 +250,30 @@ var concurrentIndexCleanups = map[string]string{
 	"395_plugin_package_version_package_index":                  "idx_plugin_package_version_package",
 	"396_plugin_package_file_path_index":                        "idx_plugin_package_file_path",
 	"397_plugin_installation_package_version_index":             "idx_plugin_installation_package_version",
+	// Fork-only External PR / historical delegation indexes. Filenames are
+	// dual-ledger with upstream 273–316; the runner keys by the full version.
+	"273_external_pr_link_id_unique_index":                      "idx_external_pr_link_id",
+	"274_external_pr_link_identity_index":                       "idx_external_pr_link_identity",
+	"275_external_pr_link_issue_state_index":                    "idx_external_pr_link_issue_state",
+	"276_external_pr_link_idempotency_index":                    "idx_external_pr_receipt_idempotency",
+	"278_workspace_workload_authority_workspace_id_index":       "workspace_workload_authority_workspace_id_uidx",
+	"280_external_pr_link_workspace_idempotency_index":          "idx_external_pr_link_workspace_idempotency",
+	"283_external_pr_link_issue_updated_index":                  "idx_external_pr_link_workspace_issue_updated",
+	"284_external_pr_receipt_issue_cleanup_index":               "idx_external_pr_receipt_workspace_issue",
+	"286_workload_pr_merge_delegation_id_index":                 "workload_pr_merge_delegation_id_uidx",
+	"287_workload_pr_merge_delegation_active_index":             "workload_pr_merge_delegation_current_execution_uidx",
+	"288_workload_pr_merge_delegation_consumer_intent_index":    "workload_pr_merge_delegation_consumer_intent_uidx",
+	"289_workload_pr_merge_delegation_issue_state_index":        "workload_pr_merge_delegation_issue_state_idx",
+	"290_workload_pr_merge_delegation_event_id_index":           "workload_pr_merge_delegation_event_id_uidx",
+	"291_workload_pr_merge_delegation_event_history_index":      "workload_pr_merge_delegation_event_history_idx",
+	"303_external_pr_reconcile_work_identity_index":             "external_pr_reconcile_work_identity_uidx",
+	"304_external_pr_reconcile_work_claim_index":                "external_pr_reconcile_work_claim_idx",
+	"305_external_pr_reconcile_work_issue_index":                "external_pr_reconcile_work_issue_idx",
+	"307_external_pr_reconcile_finalization_work_index":         "external_pr_reconcile_finalization_work_uidx",
+	"308_comment_external_pr_finalization_index":                "comment_external_pr_finalization_key_uidx",
+	"312_inbox_item_delivery_key_index":                         "inbox_item_delivery_key_uidx",
+	"313_external_pr_reconcile_work_id_index":                   "external_pr_reconcile_work_id_uidx",
+	"314_external_pr_reconcile_finalization_id_index":           "external_pr_reconcile_finalization_id_uidx",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -273,12 +297,26 @@ var concurrentDownIndexCleanups = map[string]string{
 	"391_drop_agent_task_queue_dispatched_prepare_index":    "idx_agent_task_queue_dispatched_prepare",
 }
 
+// historicalForkIndexCleanups are dual-ledger filenames that no longer exist
+// as current migration files but still need invalid-index recovery on Mini dumps.
+var historicalForkIndexCleanups = map[string]string{
+	"279_workload_pr_merge_delegation_id_index":              "workload_pr_merge_delegation_id_uidx",
+	"280_workload_pr_merge_delegation_active_index":          "workload_pr_merge_delegation_current_execution_uidx",
+	"281_workload_pr_merge_delegation_consumer_intent_index": "workload_pr_merge_delegation_consumer_intent_uidx",
+	"282_workload_pr_merge_delegation_issue_state_index":     "workload_pr_merge_delegation_issue_state_idx",
+	"283_workload_pr_merge_delegation_event_id_index":        "workload_pr_merge_delegation_event_id_uidx",
+	"284_workload_pr_merge_delegation_event_history_index":   "workload_pr_merge_delegation_event_history_idx",
+}
+
 var preMigrationHooks = func() map[string]preMigrationHook {
 	hooks := map[string]preMigrationHook{
 		"103_drop_legacy_daily_rollups":                         runTaskUsageHourlyHook,
 		"198_agent_task_attribution_strict_constraint_validate": runAttributionStrictHook,
 	}
 	for version, index := range concurrentIndexCleanups {
+		hooks[version] = cleanupInvalidConcurrentIndexHook(index)
+	}
+	for version, index := range historicalForkIndexCleanups {
 		hooks[version] = cleanupInvalidConcurrentIndexHook(index)
 	}
 	return hooks
@@ -478,6 +516,228 @@ func runAttributionStrictHook(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// Formal fence filename after fork/v0.4.22 renumber. Historical dual-ledger
+// dumps may still carry 275_*; both are accepted as the same fence epoch.
+const externalPRIndexReconciliationFenceVersion = "282_external_pr_index_reconciliation_fence"
+const externalPRIndexReconciliationFenceVersionLegacy = "275_external_pr_index_reconciliation_fence"
+
+// T016 dead-authority retirement is forward-only. migrate down across 299 is
+// refused; restore a pre-299 dump instead of partial schema rebuilds.
+const deadAuthorityRetirementFenceVersion = "299_retire_dead_workload_authority_tables"
+const externalPRCoreSchemaFenceVersion = "301_external_pr_core_drop_projection_and_link_idempotency"
+
+// reconciliationMigrationHooks run before the ledger skip check only until
+// the External PR index fence records the final catalog. Concurrent index
+// creation can leave an invalid same-name catalog entry, and older runners
+// using IF NOT EXISTS may already have ledgered that invalid artifact.
+var reconciliationMigrationHooks = map[string]preMigrationHook{
+	// Historical live ledger names.
+	"266_external_pr_link_id_unique_index":                reconcileMigrationIndex(externalPRIndexSpecs[0]),
+	"267_external_pr_link_identity_index":                 reconcileMigrationIndex(externalPRIndexSpecs[1]),
+	"268_external_pr_link_issue_state_index":              reconcileMigrationIndex(externalPRIndexSpecs[2]),
+	"269_external_pr_link_idempotency_index":              reconcileMigrationIndex(externalPRIndexSpecs[3]),
+	"271_workspace_workload_authority_workspace_id_index": reconcileMigrationIndex(externalPRIndexSpecs[4]),
+	"273_external_pr_link_workspace_idempotency_index":    reconcileMigrationIndex(externalPRIndexSpecs[5]),
+	"274_external_pr_legacy_idempotency_index_remove":     verifyExternalPRIndexAuthorities,
+	externalPRIndexReconciliationFenceVersionLegacy:       reconcileAndVerifyExternalPRIndexAuthorities,
+	// Formal fork/v0.4.22+ renumbered filenames.
+	"273_external_pr_link_id_unique_index":                reconcileMigrationIndex(externalPRIndexSpecs[0]),
+	"274_external_pr_link_identity_index":                 reconcileMigrationIndex(externalPRIndexSpecs[1]),
+	"275_external_pr_link_issue_state_index":              reconcileMigrationIndex(externalPRIndexSpecs[2]),
+	"276_external_pr_link_idempotency_index":              reconcileMigrationIndex(externalPRIndexSpecs[3]),
+	"278_workspace_workload_authority_workspace_id_index": reconcileMigrationIndex(externalPRIndexSpecs[4]),
+	"280_external_pr_link_workspace_idempotency_index":    reconcileMigrationIndex(externalPRIndexSpecs[5]),
+	"281_external_pr_legacy_idempotency_index_remove":     verifyExternalPRIndexAuthorities,
+	externalPRIndexReconciliationFenceVersion:             reconcileAndVerifyExternalPRIndexAuthorities,
+}
+
+var postFenceReconciliationHooks = map[string]preMigrationHook{
+	"312_inbox_item_delivery_key_index": reconcileMigrationIndex(externalPRInboxIndexSpecs[0]),
+}
+
+type migrationIndexSpec struct {
+	Name                string
+	Table               string
+	Unique              bool
+	Columns             []string
+	PredicateNormalized string
+	PredicateSQL        string
+}
+
+var externalPRCleanupIndexSpecs = []migrationIndexSpec{
+	{Name: "idx_external_pr_link_workspace_issue_updated", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "updated_at"}},
+	{Name: "idx_external_pr_receipt_workspace_issue", Table: "external_pull_request_receipt", Columns: []string{"workspace_id", "issue_id"}},
+}
+
+var externalPRReconcileIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_work_identity_uidx", Table: "external_pr_reconcile_work", Unique: true, Columns: []string{"workspace_id", "kind", "link_id", "source_revision"}},
+	{Name: "external_pr_reconcile_work_claim_idx", Table: "external_pr_reconcile_work", Columns: []string{"state", "next_attempt_at", "lease_expires_at", "updated_at"}},
+	{Name: "external_pr_reconcile_work_issue_idx", Table: "external_pr_reconcile_work", Columns: []string{"workspace_id", "issue_id", "state", "updated_at"}},
+}
+
+var externalPRFinalizationIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_finalization_work_uidx", Table: "external_pr_reconcile_finalization", Unique: true, Columns: []string{"work_id"}, PredicateNormalized: "work_idisnotnull", PredicateSQL: "work_id IS NOT NULL"},
+	{Name: "comment_external_pr_finalization_key_uidx", Table: "comment", Unique: true, Columns: []string{"finalization_key"}, PredicateNormalized: "finalization_keyisnotnull", PredicateSQL: "finalization_key IS NOT NULL"},
+}
+
+var externalPRInboxIndexSpecs = []migrationIndexSpec{
+	{Name: "inbox_item_delivery_key_uidx", Table: "inbox_item", Unique: true, Columns: []string{"workspace_id", "recipient_type", "recipient_id", "delivery_key"}, PredicateNormalized: "delivery_keyisnotnull", PredicateSQL: "delivery_key IS NOT NULL"},
+}
+
+var externalPRPrimaryKeyIndexSpecs = []migrationIndexSpec{
+	{Name: "external_pr_reconcile_work_id_uidx", Table: "external_pr_reconcile_work", Unique: true, Columns: []string{"id"}},
+	{Name: "external_pr_reconcile_finalization_id_uidx", Table: "external_pr_reconcile_finalization", Unique: true, Columns: []string{"id"}},
+}
+
+var prMergeDelegationIndexSpecs = []migrationIndexSpec{
+	{Name: "workload_pr_merge_delegation_id_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"id"}},
+	{Name: "workload_pr_merge_delegation_current_execution_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"workspace_id", "task_id", "execution_id", "operation"}, PredicateNormalized: "state=anyarray[pending_approval,approved]", PredicateSQL: "state IN ('pending_approval', 'approved')"},
+	{Name: "workload_pr_merge_delegation_consumer_intent_uidx", Table: "workload_pr_merge_delegation", Unique: true, Columns: []string{"consumer_instance_id", "consumer_intent_id"}, PredicateNormalized: "consumer_intent_idisnotnull", PredicateSQL: "consumer_intent_id IS NOT NULL"},
+	{Name: "workload_pr_merge_delegation_issue_state_idx", Table: "workload_pr_merge_delegation", Columns: []string{"workspace_id", "issue_id", "state", "updated_at"}},
+	{Name: "workload_pr_merge_delegation_event_id_uidx", Table: "workload_pr_merge_delegation_event", Unique: true, Columns: []string{"id"}},
+	{Name: "workload_pr_merge_delegation_event_history_idx", Table: "workload_pr_merge_delegation_event", Columns: []string{"delegation_id", "created_at", "id"}},
+}
+
+var externalPRIndexSpecs = []migrationIndexSpec{
+	{Name: "idx_external_pr_link_id", Table: "external_pull_request_link", Unique: true, Columns: []string{"id"}},
+	{Name: "idx_external_pr_link_identity", Table: "external_pull_request_link", Unique: true, Columns: []string{"workspace_id", "provider", "external_repo", "external_number"}},
+	{Name: "idx_external_pr_link_issue_state", Table: "external_pull_request_link", Columns: []string{"workspace_id", "issue_id", "state"}, PredicateNormalized: "state=anyarray[open,draft]andlink_confidence=authoritative"},
+	{Name: "idx_external_pr_receipt_idempotency", Table: "external_pull_request_receipt", Unique: true, Columns: []string{"workspace_id", "idempotency_key"}},
+	{Name: "workspace_workload_authority_workspace_id_uidx", Table: "workspace_workload_authority", Unique: true, Columns: []string{"workspace_id"}},
+	{Name: "idx_external_pr_link_workspace_idempotency", Table: "external_pull_request_link", Unique: true, Columns: []string{"workspace_id", "idempotency_key"}, PredicateNormalized: "idempotency_keyisnotnull"},
+}
+
+func reconcileMigrationIndex(spec migrationIndexSpec) preMigrationHook {
+	return func(ctx context.Context, pool *pgxpool.Pool) error {
+		schema, exact, exists, err := inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if exact {
+			return nil
+		}
+		if exists {
+			indexName := pgx.Identifier{schema, spec.Name}.Sanitize()
+			if _, err := pool.Exec(ctx, "DROP INDEX CONCURRENTLY "+indexName); err != nil {
+				return fmt.Errorf("remove invalid or wrong-definition index %s: %w", spec.Name, err)
+			}
+		}
+		if _, err := pool.Exec(ctx, createMigrationIndexSQL(schema, spec)); err != nil {
+			return fmt.Errorf("rebuild index %s: %w", spec.Name, err)
+		}
+		_, exact, _, err = inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if !exact {
+			return fmt.Errorf("index %s did not converge to its exact ready/valid definition", spec.Name)
+		}
+		return nil
+	}
+}
+
+func verifyExternalPRIndexAuthorities(ctx context.Context, pool *pgxpool.Pool) error {
+	for _, spec := range externalPRIndexSpecs {
+		_, exact, _, err := inspectMigrationIndex(ctx, pool, spec)
+		if err != nil {
+			return err
+		}
+		if !exact {
+			return fmt.Errorf("refuse legacy idempotency index removal: required index %s is not exact, ready, and valid", spec.Name)
+		}
+	}
+	return nil
+}
+
+func reconcileAndVerifyExternalPRIndexAuthorities(ctx context.Context, pool *pgxpool.Pool) error {
+	for _, spec := range externalPRIndexSpecs {
+		if err := reconcileMigrationIndex(spec)(ctx, pool); err != nil {
+			return err
+		}
+	}
+	return verifyExternalPRIndexAuthorities(ctx, pool)
+}
+
+func inspectMigrationIndex(ctx context.Context, pool *pgxpool.Pool, spec migrationIndexSpec) (schema string, exact, exists bool, err error) {
+	if err = pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		return "", false, false, fmt.Errorf("resolve current schema: %w", err)
+	}
+	var table string
+	var unique, ready, valid bool
+	var keyAttributeCount, totalAttributeCount int16
+	var columns []string
+	var predicate string
+	err = pool.QueryRow(ctx, `
+SELECT tbl.relname, i.indisunique, i.indisready, i.indisvalid,
+       i.indnkeyatts, i.indnatts,
+       ARRAY(
+         SELECT a.attname
+         FROM unnest(i.indkey::smallint[]) WITH ORDINALITY AS key(attnum, position)
+         JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=key.attnum
+         ORDER BY key.position
+       ),
+       COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
+FROM pg_class idx
+JOIN pg_namespace n ON n.oid=idx.relnamespace
+JOIN pg_index i ON i.indexrelid=idx.oid
+JOIN pg_class tbl ON tbl.oid=i.indrelid
+WHERE n.nspname=$1 AND idx.relname=$2`, schema, spec.Name).Scan(&table, &unique, &ready, &valid, &keyAttributeCount, &totalAttributeCount, &columns, &predicate)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			var relationExists bool
+			if scanErr := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, schema+"."+spec.Name).Scan(&relationExists); scanErr != nil {
+				return schema, false, false, fmt.Errorf("inspect index relation %s: %w", spec.Name, scanErr)
+			}
+			if relationExists {
+				return schema, false, true, fmt.Errorf("relation %s exists but is not an index", spec.Name)
+			}
+			return schema, false, false, nil
+		}
+		return schema, false, false, fmt.Errorf("inspect index %s: %w", spec.Name, err)
+	}
+	normalizedPredicate := strings.ToLower(strings.NewReplacer(" ", "", "\n", "", "\t", "", "(", "", ")", "", "::text", "", "'", "").Replace(predicate))
+	predicateExact := normalizedPredicate == spec.PredicateNormalized
+	exact = table == spec.Table && unique == spec.Unique && ready && valid &&
+		int(keyAttributeCount) == len(spec.Columns) && totalAttributeCount == keyAttributeCount &&
+		equalMigrationIndexColumns(columns, spec.Columns) && predicateExact
+	return schema, exact, true, nil
+}
+
+func createMigrationIndexSQL(schema string, spec migrationIndexSpec) string {
+	verb := "CREATE INDEX CONCURRENTLY "
+	if spec.Unique {
+		verb = "CREATE UNIQUE INDEX CONCURRENTLY "
+	}
+	columns := make([]string, len(spec.Columns))
+	for i, column := range spec.Columns {
+		columns[i] = pgx.Identifier{column}.Sanitize()
+	}
+	// PostgreSQL places the index in the table's schema and does not accept a
+	// schema-qualified index name in CREATE INDEX. The table remains qualified.
+	sql := verb + pgx.Identifier{spec.Name}.Sanitize() + " ON " + pgx.Identifier{schema, spec.Table}.Sanitize() + "(" + strings.Join(columns, ", ") + ")"
+	if spec.PredicateSQL != "" {
+		sql += " WHERE " + spec.PredicateSQL
+	} else if spec.Name == "idx_external_pr_link_issue_state" {
+		sql += " WHERE state IN ('open', 'draft') AND link_confidence = 'authoritative'"
+	} else if spec.Name == "idx_external_pr_link_workspace_idempotency" {
+		sql += " WHERE idempotency_key IS NOT NULL"
+	}
+	return sql
+}
+
+func equalMigrationIndexColumns(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+
 // migrationAdvisoryLockKey is the int64 identifier used with Postgres
 // pg_advisory_lock to serialize the migration loop across concurrent
 // runners (multi-replica backend Deployment, scale-up, or a manual
@@ -525,6 +785,16 @@ type runOptions struct {
 	// migration ledger, allowing later migrations to run in environments where
 	// this version's DDL is intentionally unnecessary.
 	Conditions map[string]migrationCondition
+	// ReconcileHooks run before the ledger check, including for already-applied
+	// migrations. They are reserved for retry-safe historical catalog
+	// authorities whose validity must be re-established before the fence.
+	ReconcileHooks map[string]preMigrationHook
+	// PostFenceReconcileHooks run before the ledger check even after the
+	// historical fence exists. They are only for later explicit authorities.
+	PostFenceReconcileHooks map[string]preMigrationHook
+	// ReconcileFenceVersion disables the historical reconciliation hooks once
+	// its ledger row exists, allowing later migrations to evolve those indexes.
+	ReconcileFenceVersion string
 }
 
 func main() {
@@ -561,10 +831,13 @@ func main() {
 	}
 
 	options := runOptions{
-		Direction:  direction,
-		Files:      files,
-		Hooks:      hooksForDirection(direction),
-		Conditions: conditionsForDirection(direction),
+		Direction:               direction,
+		Files:                   files,
+		Hooks:                   hooksForDirection(direction),
+		Conditions:              conditionsForDirection(direction),
+		ReconcileHooks:          reconciliationMigrationHooks,
+		PostFenceReconcileHooks: postFenceReconciliationHooks,
+		ReconcileFenceVersion:   externalPRIndexReconciliationFenceVersion,
 	}
 	startupCtx, stopStartup := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopStartup()
@@ -687,9 +960,37 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	existsSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent)
 	insertSQL := fmt.Sprintf("INSERT INTO %s (version) VALUES ($1)", tableIdent)
 	deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE version = $1", tableIdent)
+	var reconciliationFenced bool
+	if opts.Direction == "up" && opts.ReconcileFenceVersion != "" {
+		if err := conn.QueryRow(ctx, existsSQL, opts.ReconcileFenceVersion).Scan(&reconciliationFenced); err != nil {
+			return fmt.Errorf("check reconciliation fence %q: %w", opts.ReconcileFenceVersion, err)
+		}
+		if !reconciliationFenced && opts.ReconcileFenceVersion == externalPRIndexReconciliationFenceVersion {
+			if err := conn.QueryRow(ctx, existsSQL, externalPRIndexReconciliationFenceVersionLegacy).Scan(&reconciliationFenced); err != nil {
+				return fmt.Errorf("check legacy reconciliation fence %q: %w", externalPRIndexReconciliationFenceVersionLegacy, err)
+			}
+		}
+	}
 
 	for _, file := range opts.Files {
 		version := migrations.ExtractVersion(file)
+
+		if opts.Direction == "up" {
+			if !reconciliationFenced {
+				if hook, ok := opts.ReconcileHooks[version]; ok && hook != nil {
+					slog.Info("running migration reconciliation hook", "version", version)
+					if err := hook(ctx, pool); err != nil {
+						return fmt.Errorf("migration reconciliation hook for %q: %w", version, err)
+					}
+				}
+			}
+			if hook, ok := opts.PostFenceReconcileHooks[version]; ok && hook != nil {
+				slog.Info("running post-fence migration reconciliation hook", "version", version)
+				if err := hook(ctx, pool); err != nil {
+					return fmt.Errorf("post-fence migration reconciliation hook for %q: %w", version, err)
+				}
+			}
+		}
 
 		var exists bool
 		if err := conn.QueryRow(ctx, existsSQL, version).Scan(&exists); err != nil {
@@ -705,6 +1006,15 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			if !exists {
 				fmt.Printf("  skip  %s (not applied)\n", version)
 				continue
+			}
+			if opts.ReconcileFenceVersion != "" && version == opts.ReconcileFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only reconciliation fence %q", version)
+			}
+			if version == deadAuthorityRetirementFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only T016 dead-authority retirement fence %q; restore a pre-299 database dump", version)
+			}
+			if version == externalPRCoreSchemaFenceVersion {
+				return fmt.Errorf("refuse rollback across forward-only T017 external-pr-core schema fence %q; restore a pre-301 database dump", version)
 			}
 		}
 
@@ -748,6 +1058,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 		if err != nil {
 			return fmt.Errorf("record migration %q: %w", version, err)
+		}
+		if opts.Direction == "up" && opts.ReconcileFenceVersion != "" && version == opts.ReconcileFenceVersion {
+			reconciliationFenced = true
 		}
 
 		if applySQL {

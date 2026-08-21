@@ -71,7 +71,7 @@ cd multica
 make selfhost
 ```
 
-`make selfhost` automatically creates `.env` from the example, generates a random `JWT_SECRET`, and starts all services via Docker Compose.
+`make selfhost` automatically creates `.env` from the example, generates random JWT, PostgreSQL, and VCS secrets, then starts all services via Docker Compose.
 
 By default it pulls the latest stable release images from GHCR. To build the backend/web from your current checkout instead, run `make selfhost-build`.
 If the selected GHCR tag has not been published yet, `make selfhost` now tells you to fall back to `make selfhost-build`.
@@ -239,7 +239,7 @@ To override defaults, export the chart values, edit them, and pass them with `-f
 ```bash
 helm show values oci://ghcr.io/multica-ai/charts/multica \
   --version <chart-version> > my-values.yaml
-# edit my-values.yaml — e.g. change ingress hosts, image tags, resource limits
+# edit my-values.yaml with the deployment-specific hosts, storage, and auth settings
 helm install multica oci://ghcr.io/multica-ai/charts/multica \
   --version <chart-version> \
   -n multica \
@@ -299,7 +299,7 @@ The chart defaults to `APP_ENV=production` (set in `values.yaml` under `backend.
   kubectl -n multica rollout restart deploy/multica-backend
   ```
 
-`ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` likewise live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, and `googleClientId`). After `helm upgrade`, the backend pod will roll automatically because the ConfigMap hash changes; the web UI reads all three from `/api/config` at runtime, so no web rebuild is needed.
+`ALLOW_SIGNUP`, `DISABLE_WORKSPACE_CREATION`, and `GOOGLE_CLIENT_ID` live under `backend.config.*` in `values.yaml` (as `allowSignup`, `disableWorkspaceCreation`, and `googleClientId`). Workload-assertion and delegated-merge values are retired and must not be added to the chart. After `helm upgrade`, the backend pod rolls automatically when the ConfigMap hash changes; the web UI reads these settings from `/api/config` at runtime, so no web rebuild is needed.
 
 > **Warning:** do **not** set `MULTICA_DEV_VERIFICATION_CODE` on a publicly reachable instance — anyone who knows an email address can then log in with that fixed code.
 
@@ -452,7 +452,11 @@ This reconfigures the CLI for multica.ai, re-authenticates, and restarts the dae
 
 ## Upgrading
 
+Review `.env` for any newly documented settings, render the Compose model,
+and then recreate the services:
+
 ```bash
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
@@ -466,12 +470,13 @@ If the selected GHCR tag has not been published yet, fall back to `make selfhost
 
 ## Manual Docker Compose Setup
 
-If you prefer running Docker Compose steps manually instead of `make selfhost`:
+For a secret-safe first initialization, start from a checkout that does not yet
+have `.env` and use the supported Makefile path:
 
 ```bash
 git clone https://github.com/multica-ai/multica.git
 cd multica
-cp .env.example .env
+make selfhost
 ```
 
 Edit `.env` — set `JWT_SECRET` (required): docker compose refuses to start without
@@ -485,6 +490,7 @@ JWT_SECRET=$(openssl rand -hex 32)
 Then start everything:
 
 ```bash
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```

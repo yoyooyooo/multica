@@ -34,6 +34,9 @@ else
 fi
 
 echo "==> Using $ENV_FILE"
+if [ "${MULTICA_ENV_ONLY:-0}" = "1" ]; then
+  exit 0
+fi
 
 set -a
 # shellcheck disable=SC1090

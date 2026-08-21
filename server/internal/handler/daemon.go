@@ -1753,6 +1753,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			AgentID:     task.AgentID,
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
+			ExecutionID: task.ExecutionID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
 		}, deliveredCommentIDs, commentBackedTask, daemonTokens...)
 		if ferr != nil {
@@ -3305,6 +3306,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		AgentID:     task.AgentID,
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
+		ExecutionID: task.ExecutionID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
 	}, deliveredCommentIDs, commentBackedTask, daemonTokens...)
 	if ferr != nil {

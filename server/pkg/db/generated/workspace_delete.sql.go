@@ -225,6 +225,12 @@ func (q *Queries) DeleteWorkspaceConnections(ctx context.Context, workspaceID pg
 
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
 WITH
+deleted_external_pr_reconcile_work AS (
+    DELETE FROM external_pr_reconcile_work WHERE workspace_id = $1
+),
+deleted_external_pr_reconcile_finalization AS (
+    DELETE FROM external_pr_reconcile_finalization WHERE workspace_id = $1
+),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
 ),
@@ -244,6 +250,8 @@ deleted_issue_view_preferences AS (
 DELETE FROM quick_action WHERE quick_action.workspace_id = $1
 `
 
+// The continuation projection has no FK by design; remove it before the
+// workspace-owned Issue rows in the same application transaction.
 func (q *Queries) DeleteWorkspaceIssueRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceIssueRoots, workspaceID)
 	return err

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, fork/upstream-main-20260821, fork/v0.4.22, fork/upstream-main-20260808, fork/v0.4.12]
   pull_request:
-    branches: [main]
+    branches: [main, fork/upstream-main-20260821, fork/v0.4.22, fork/upstream-main-20260808, fork/v0.4.12]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -34,8 +34,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Path filtering is only needed for pull_request gating. Push to a
+      # listened branch always wants full frontend validation (see Decide).
+      # Running dorny/paths-filter on a newly published generation branch can
+      # attempt a shallow merge-base against an unrelated fork/* tip and fail
+      # with `shallow file has changed since we read it`, cascading into a
+      # false frontend failure while backend already passed.
       - name: Filter paths
         id: filter
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
         with:
           # apps/docs is excluded from the frontend turbo run, but knip does
@@ -64,6 +71,7 @@ jobs:
               - 'scripts/drop-database.sh'
               - 'scripts/remove-worktree.sh'
               - 'scripts/worktree-db.test.sh'
+              - 'SELF_HOSTING.md'
               - 'scripts/selfhost-wait.sh'
               # selfhost-config.test.sh asserts on the installers' side of
               # the port contract, so a change to either must run it.
@@ -76,6 +84,20 @@ jobs:
               - 'docker-compose.selfhost.yml'
               - 'docker-compose.selfhost.build.yml'
               - 'Makefile'
+              - 'Dockerfile'
+              - 'deploy/helm/**'
+              - 'apps/docs/content/docs/self-host-quickstart.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.zh.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ja.mdx'
+              - 'apps/docs/content/docs/self-host-quickstart.ko.mdx'
+              - 'scripts/copy-legacy-uploads.sh'
+              - 'scripts/migrate-selfhost-uploads.sh'
+              - 'scripts/validate-cli-build-version.sh'
+              - 'scripts/validate-cli-build-version.test.sh'
+              - 'scripts/install-local-fork-cli.sh'
+              - 'scripts/install-local-fork-cli.test.sh'
+              - 'docs/standards/local-fork-runtime.md'
+
             # Everything the backend jobs (backend-tests,
             # go-vulnerability-scan, windows-execenv) read, which is NOT the
             # same thing as server/**: four Go tests reach out of the module
@@ -147,7 +169,11 @@ jobs:
           BACKEND_CHANGED: ${{ steps.filter.outputs.backend }}
           SQLC_CHANGED: ${{ steps.filter.outputs.sqlc }}
         run: |
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FRONTEND_CHANGED" = "true" ]; then
+          # Push on listened branches: always full frontend.
+          # pull_request: only when frontend-relevant paths changed.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          elif [ "$FRONTEND_CHANGED" = "true" ]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
@@ -249,7 +275,11 @@ jobs:
           restore-keys: |
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
-      - name: Test self-host env derivation
+      - name: Setup Helm
+        if: ${{ needs.changes.outputs.frontend == 'true' }}
+        uses: azure/setup-helm@v4
+
+      - name: Test self-host Compose and Helm config
         if: ${{ needs.changes.outputs.frontend == 'true' }}
         run: bash scripts/selfhost-config.test.sh
 
@@ -511,6 +541,12 @@ jobs:
       - name: Test build output naming
         if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/makefile-build.test.sh
+
+      - name: Test CLI build version admission
+        run: bash scripts/validate-cli-build-version.test.sh
+
+      - name: Test local fork CLI installer
+        run: bash scripts/install-local-fork-cli.test.sh
 
       - name: Build
         if: ${{ needs.changes.outputs.backend == 'true' }}

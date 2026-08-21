@@ -148,6 +148,17 @@ func taskScopedAuthToken(task Task) (string, error) {
 	return token, nil
 }
 
+// taskCanonicalRunID returns the best-effort Multica Run coordinate for agent env.
+// Prefer a server-provided ExecutionID when present; otherwise fall back to Task ID.
+// Missing ExecutionID must not block task start: ags-cli treats MULTICA_RUN_ID as
+// optional and Multica current-execution-context already falls back the same way.
+func taskCanonicalRunID(task Task) string {
+	if runID := strings.TrimSpace(task.ExecutionID); runID != "" {
+		return runID
+	}
+	return strings.TrimSpace(task.ID)
+}
+
 func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesRoot, serverURL string, healthPort, slot int, tempDir string) map[string]string {
 	return map[string]string{
 		"MULTICA_TOKEN":        token,
@@ -159,10 +170,12 @@ func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesR
 		"MULTICA_AGENT_NAME":   agentName,
 		"MULTICA_AGENT_ID":     task.AgentID,
 		"MULTICA_TASK_ID":      task.ID,
-		"MULTICA_TASK_SLOT":    strconv.Itoa(slot),
-		"TMPDIR":               tempDir,
-		"TMP":                  tempDir,
-		"TEMP":                 tempDir,
+		// Best-effort provenance. Absence of a distinct ExecutionID falls back to Task ID.
+		"MULTICA_RUN_ID":    taskCanonicalRunID(task),
+		"MULTICA_TASK_SLOT": strconv.Itoa(slot),
+		"TMPDIR":            tempDir,
+		"TMP":               tempDir,
+		"TEMP":              tempDir,
 	}
 }
 
@@ -7263,14 +7276,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
+	// Ensure the Multica and managed AGS CLIs are on PATH inside the agent's
+	// environment. Some runtimes run in an isolated sandbox that may not inherit
+	// the daemon's PATH.
+	agentPath := os.Getenv("PATH")
 	if selfBin, err := resolveSelfExecutable(); err == nil {
 		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		agentPath = binDir + string(os.PathListSeparator) + agentPath
 	}
+	if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
+		enableShims := task.Agent != nil && task.Agent.CustomEnv["AGS_CLI_SHIM"] == "1"
+		agentPath = prependTaskToolPath(agentPath, homeDir, runtime.GOOS, enableShims)
+	}
+	agentEnv["PATH"] = agentPath
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {
@@ -7317,6 +7335,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	// Platform Git identity wins after custom_env so agents cannot override
+	// author/committer attribution for ordinary Multica tasks (AGS-T022 Stage 1).
+	applyPlatformGitIdentity(agentEnv, task, agentName)
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8842,6 +8863,49 @@ func socketSafeTempBaseDir() string {
 	return os.TempDir()
 }
 
+// prependTaskToolPath always exposes the managed AGS CLI for direct use. The
+// bootstrap-owned ordinary git/gh surface is added only when the Agent opts in
+// and both shims exist, avoiding a partial route with split Git/PR identities.
+// Native Windows bootstrap may materialize cmd/bat/exe launchers; POSIX
+// bootstrap uses bare names.
+func prependTaskToolPath(inherited, homeDir, goos string, enableShims bool) string {
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	extensions := []string{""}
+	if goos == "windows" {
+		extensions = []string{".exe", ".cmd", ".bat", ""}
+	}
+	hasTool := func(dir, tool string) bool {
+		for _, extension := range extensions {
+			info, err := os.Stat(filepath.Join(dir, tool+extension))
+			if err == nil && !info.IsDir() {
+				return true
+			}
+		}
+		return false
+	}
+	paths := make([]string, 0, 3)
+	if enableShims {
+		completePair := true
+		for _, tool := range []string{"git", "gh"} {
+			if !hasTool(shimDir, tool) {
+				completePair = false
+				break
+			}
+		}
+		if completePair {
+			paths = append(paths, shimDir)
+		}
+	}
+	managedBinDir := filepath.Join(homeDir, ".local", "bin")
+	if hasTool(managedBinDir, "ags-cli") {
+		paths = append(paths, managedBinDir)
+	}
+	if inherited != "" {
+		paths = append(paths, inherited)
+	}
+	return strings.Join(paths, string(os.PathListSeparator))
+}
+
 // isBlockedEnvKey returns true if the key must not be overridden by user-
 // configured custom_env. This prevents accidental or malicious override of
 // daemon-internal variables and critical system paths.
@@ -8851,7 +8915,8 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL":
 		return true
 	}
 	return false
