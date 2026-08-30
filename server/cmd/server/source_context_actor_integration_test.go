@@ -26,7 +26,18 @@ func TestSourceContextRoutesRejectAuthoritativeTaskToken(t *testing.T) {
 	`, testWorkspaceID).Scan(&agentID); err != nil {
 		t.Fatalf("load integration-test agent: %v", err)
 	}
-	taskID := ensureAgentTask(t, agentID)
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("load integration-test runtime: %v", err)
+	}
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, started_at)
+		VALUES ($1, $2, 'running', 0, now())
+		RETURNING id::text
+	`, agentID, runtimeID).Scan(&taskID); err != nil {
+		t.Fatalf("insert authoritative task fixture: %v", err)
+	}
 	token, err := auth.GenerateAgentTaskToken()
 	if err != nil {
 		t.Fatalf("generate task token: %v", err)
@@ -42,6 +53,9 @@ func TestSourceContextRoutesRejectAuthoritativeTaskToken(t *testing.T) {
 	t.Cleanup(func() {
 		if _, err := testPool.Exec(context.Background(), `DELETE FROM task_token WHERE id = $1`, tokenID); err != nil {
 			t.Logf("delete task token fixture: %v", err)
+		}
+		if _, err := testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID); err != nil {
+			t.Logf("delete task fixture: %v", err)
 		}
 	})
 

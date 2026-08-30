@@ -590,21 +590,21 @@ func TestListIssuesPropertyFilterAndSort(t *testing.T) {
 		buf, _ := json.Marshal(map[string][]string{box.ID: values})
 		return "?limit=200&properties=" + url.QueryEscape(string(buf))
 	}
-	noneTarget := ids(listIssues(noValueQuery("__none__") + "&search=" + url.QueryEscape("filter target beyond page one")))
+	noneTarget := ids(listIssues(noValueQuery("__none__") + "&q=" + url.QueryEscape("filter target beyond page one")))
 	if _, present := noneTarget[target]; present {
 		t.Fatalf("no-value filter included the issue with the property set")
 	}
-	noneLow := ids(listIssues(noValueQuery("__none__") + "&search=" + url.QueryEscape("sort low")))
+	noneLow := ids(listIssues(noValueQuery("__none__") + "&q=" + url.QueryEscape("sort low")))
 	if _, present := noneLow[numLow]; !present {
 		t.Fatalf("no-value filter missed an issue without the property")
 	}
 
 	// OR within a definition: "true" plus "no value" covers set and unset.
-	bothTarget := ids(listIssues(noValueQuery("true", "__none__") + "&search=" + url.QueryEscape("filter target beyond page one")))
+	bothTarget := ids(listIssues(noValueQuery("true", "__none__") + "&q=" + url.QueryEscape("filter target beyond page one")))
 	if _, present := bothTarget[target]; !present {
 		t.Fatalf("OR no-value filter missed the set issue")
 	}
-	bothLow := ids(listIssues(noValueQuery("true", "__none__") + "&search=" + url.QueryEscape("sort low")))
+	bothLow := ids(listIssues(noValueQuery("true", "__none__") + "&q=" + url.QueryEscape("sort low")))
 	if _, present := bothLow[numLow]; !present {
 		t.Fatalf("OR no-value filter missed the unset issue")
 	}
