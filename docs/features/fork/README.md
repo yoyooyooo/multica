@@ -4,6 +4,10 @@ The active generation is **`fork/upstream-main-20260830`**, frozen on `upstream/
 
 See [fork generations](../../releases/fork-generations/README.md).
 
+The proposed contract-first reimplementation and conflict-reduction sequence is
+tracked in the [fork convergence blueprint](convergence-blueprint.md). It is a
+future-generation plan, not current runtime authority.
+
 ## Current active generation
 
 **`fork/upstream-main-20260830`** owns these additive capabilities:

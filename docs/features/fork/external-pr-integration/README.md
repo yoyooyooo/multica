@@ -19,8 +19,8 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 | `POST /api/integrations/external-pr/link-token` | still-running Task token | **兼容入口（T017 residual）**：签发 task-bound correlation token；不授予仓库操作权限；owner=Multica fork maintainer；目标退役：完整 404 + AGS verify/assertion 字段同代清理（登记于 evidence `external-pr-link-token-census.md`） |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
 | `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 幂等登记 merged 事实并返回 durable reconcile acknowledgement；Issue 仅由 worker 完成 |
-| `GET /api/workspaces/{workspace_id}/issues/{issue_id}/external-prs` | Workspace member | 读取外部 PR 链接 |
-| `GET /api/workspaces/{workspace_id}/issues/{issue_id}/pull-requests` | Workspace member | 读取统一 PR 投影 |
+| `GET /api/issues/{issue_id}/external-prs` | Workspace member | 读取外部 PR 链接 |
+| `GET /api/issues/{issue_id}/pull-requests` | Workspace member | 读取统一 PR 投影 |
 
 请求头中的伪造 Workspace、Agent 或 actor 字段不能覆盖 Task token 的服务端绑定。
 Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context 与 link-token
