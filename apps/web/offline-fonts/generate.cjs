@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports, no-undef */
+
 "use strict";
 
 const crypto = require("node:crypto");

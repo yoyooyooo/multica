@@ -1,4 +1,5 @@
-"use strict";
+/* eslint-disable @typescript-eslint/no-require-imports, no-undef */
+
 
 const path = require("node:path");
 const cssByUrl = require("./css-by-url.json");
