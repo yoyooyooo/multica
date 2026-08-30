@@ -11,14 +11,16 @@ Each file records one Multica fork generation frozen on a synced upstream base
 
 ## Active generation (single current formal home)
 
-- **[`upstream-main-20260821`](upstream-main-20260821.md)** — owner-authorized freeze of `upstream/main@8f9c766e4` (nearest tag `v0.4.32`), branch `fork/upstream-main-20260821`.
-  - immutable Mini runtime authority: `fork-mini-upstream-main-20260821-r1@de66369a4` (`v0.4.32-3-gde66369a4`)
-  - receipt-only documentation may follow the live tag; it does not silently change deployed runtime revision
-  - imile runtime: `fork-imile-upstream-main-20260821-r1@de66369a4` (native amd64)
+- **[`upstream-main-20260830`](upstream-main-20260830.md)** — owner-authorized freeze of `upstream/main@15280617b` (nearest tag `v0.4.36`), branch `fork/upstream-main-20260830`.
+  - exact runtime source: `ad25aa66b` (`v0.4.36-10-gad25aa66b`)
+  - immutable Mini authority: `fork-mini-upstream-main-20260830-r1@ad25aa66b`
+  - immutable imile-win authority: `fork-imile-upstream-main-20260830-r1@ad25aa66b`
+  - receipt-only documentation may follow the live tags without changing runtime source
   - registry publication remains unclaimed
 
 ## Previous generations (rollback / historical)
 
+- [`upstream-main-20260821`](upstream-main-20260821.md) — previous Mini/imile live line at `de66369a4`
 - [`v0.4.22`](v0.4.22.md) — previous Mini live line; immutable tag `fork-mini-v0.4.22-r4@409bdc0ee`
 - [`upstream-main-20260808`](upstream-main-20260808.md) — previous live line; freeze base `2b35f8017…`; origin tip `b3118a340` (`fork-upstream-main-20260808-r1`)
 - [`v0.4.12`](v0.4.12.md) — older accepted generation / deeper rollback at `fork/v0.4.12@d5ec9569e…`

@@ -2,10 +2,10 @@
 
 ## Status and authority
 
-**Candidate generation**, owner-authorized to freeze the latest `upstream/main`
-rather than stop at the nearest official tag. It does not become runtime
-authority until source verification and the separate Mini and imile-win
-switch receipts pass.
+**Accepted current generation**, owner-authorized to freeze the latest
+`upstream/main` rather than stop at the nearest official tag. Source CI and the
+separate Mini and imile-win runtime transitions are accepted at exact source
+`ad25aa66bb3ab9b8c55f0cc2825523c0e72c0be7` (`v0.4.36-10-gad25aa66b`).
 
 - candidate generation branch: `fork/upstream-main-20260830`
 - integration work branch: `feature/upstream-main-20260830-fork-replay`
@@ -89,9 +89,37 @@ Mini and imile-win are independent state transitions. Each must record:
 Both hosts must run the same exact source SHA. Native arm64 and amd64 image IDs
 are expected to differ.
 
+## Accepted deployment
+
+GitHub CI run [33310711100](https://github.com/yoyooyooo/multica/actions/runs/33310711100)
+passed at exact source `ad25aa66b`. Immutable deployment tags are
+`fork-mini-upstream-main-20260830-r1` and
+`fork-imile-upstream-main-20260830-r1`.
+
+Mini uses backend image `sha256:e73fe4e8283...` and frontend image
+`sha256:c49b53dfadf3...`. imile-win uses backend image
+`sha256:d18ae6cbbb04...` and frontend image `sha256:687b49f10d9a...`.
+Both hosts report `v0.4.36-10-gad25aa66b` from backend, CLI, and daemon;
+`/readyz` reports DB and migrations healthy, and login returns HTTP 200.
+
+Both existing `multica_pgdata` volumes, `multica_default` networks, and uploads
+binds were preserved. Mini ledger advanced 532 to 572 and imile-win 515 to 555,
+adding 40 upstream migrations through `440_github_pr_head_sha_index` while
+retaining fork `316_external_pr_reconcile_finalization_primary_key`.
+
+Owner-only receipts:
+
+```text
+Mini: /Users/yoyo/.local/state/multica/deployments/20260830T113200Z-fork-upstream-main-20260830-3eb38c784-mini/deployment-receipt.json
+SHA-256: cd00a327c85d7a675f8f2c567afc29781f1953f4142003a6a259878d23551bdb
+
+imile-win: /root/.local/state/multica/deployments/20260830T113200Z-fork-upstream-main-20260830-3eb38c784-imile/deployment-receipt.json
+SHA-256: e3596574ac363c8c0897ef0ff50c4100ec90ffe98290b2465ce78a4bcb1da610
+```
+
 ## Claim limit
 
-This candidate file proves only the intended source and acceptance contract. It
-does not claim source CI acceptance, immutable deployment tags, successful
-image builds, database migration, runtime health, browser behavior, registry
-publication, or that either host has switched.
+This generation proves source CI acceptance and same-source Mini/imile runtime
+convergence. It does not claim registry publication or authenticated browser
+click-through beyond HTTP/readiness probes. Receipt-only commits after the live
+tag do not change runtime source authority.
