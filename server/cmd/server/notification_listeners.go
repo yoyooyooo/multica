@@ -488,6 +488,7 @@ func notifyIssueSubscribers(
 			}
 		} else {
 			item, err = queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+				ID:            dbid.NewV7(),
 				WorkspaceID:   parseUUID(workspaceID),
 				RecipientType: "member",
 				RecipientID:   sub.UserID,

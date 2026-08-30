@@ -3760,16 +3760,7 @@ func TestWebhook_PullRequest_UniqueResolverAmongBindingsStillAutoCompletes(t *te
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 	setWorkspaceIssuePrefixForTest(t, "UNQ")
 
-	w := httptest.NewRecorder()
-	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "unique resolver test",
-		"status": "in_progress",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
-	var issueB IssueResponse
-	json.NewDecoder(w.Body).Decode(&issueB)
+	issueB := createPRCompletionLeafIssue(t, "unique resolver test", "in_progress")
 
 	const repo = "unique-resolver-repo"
 	const prNumber int32 = 6809

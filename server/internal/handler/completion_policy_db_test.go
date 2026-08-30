@@ -616,7 +616,7 @@ func TestUpdateIssueSerializedRetriesActualOldParentDrift(t *testing.T) {
 	params := db.UpdateIssueParams{ID: stale.ID, ParentIssueID: newParent}
 	updated, _, _, err := testHandler.updateIssueSerialized(
 		context.Background(), stale, params, map[string]json.RawMessage{"parent_issue_id": json.RawMessage(`"` + parentC.ID + `"`)}, true,
-		"topology_drift_test", "member", parseUUID(testUserID), nil,
+		"", "topology_drift_test", "member", parseUUID(testUserID), nil,
 	)
 	if err != nil {
 		t.Fatalf("retry actual old-parent drift: %v", err)

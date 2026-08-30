@@ -3349,7 +3349,7 @@ func (h *Handler) updateIssueSerialized(
 	params db.UpdateIssueParams,
 	touched map[string]json.RawMessage,
 	parentTouched bool,
-	activitySource, actorType string,
+	statusKey, activitySource, actorType string,
 	actorID pgtype.UUID,
 	descriptionBase *string,
 ) (db.Issue, db.Issue, *db.ActivityLog, error) {
@@ -3360,6 +3360,10 @@ func (h *Handler) updateIssueSerialized(
 			return db.Issue{}, db.Issue{}, nil, err
 		}
 		qtx := h.Queries.WithTx(tx)
+		if err = assertIssueStatusStillActive(ctx, qtx, base.WorkspaceID, statusKey); err != nil {
+			_ = tx.Rollback(ctx)
+			return db.Issue{}, db.Issue{}, nil, err
+		}
 		if parentTouched {
 			if err = qtx.LockWorkspaceIssueTopology(ctx, base.WorkspaceID); err != nil {
 				_ = tx.Rollback(ctx)
@@ -3671,9 +3675,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil || parentTouched {
 		var current db.Issue
 		issue, current, committedStatusActivity, err = h.updateIssueSerialized(
-			r.Context(), prevIssue, params, rawFields, parentTouched, "explicit", actorType, actorUUID, req.DescriptionBase,
+			r.Context(), prevIssue, params, rawFields, parentTouched, statusKeyForGuard, "explicit", actorType, actorUUID, req.DescriptionBase,
 		)
 		if err != nil {
+			if writeIssueStatusRaceError(w, err) {
+				return
+			}
 			switch err {
 			case errIssueParentNotFound, errIssueParentCycle, errIssueParentTooDeep:
 				writeError(w, http.StatusBadRequest, err.Error())
@@ -4460,7 +4467,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if req.Updates.Status != nil || parentTouched {
 			var current db.Issue
 			issue, current, committedStatusActivity, err = h.updateIssueSerialized(
-				r.Context(), prevIssue, params, rawUpdates, parentTouched, "explicit_batch", actorType, actorUUID, nil,
+				r.Context(), prevIssue, params, rawUpdates, parentTouched, batchStatusKey, "explicit_batch", actorType, actorUUID, nil,
 			)
 			if err == nil {
 				prevIssue = current

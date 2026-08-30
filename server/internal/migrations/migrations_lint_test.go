@@ -52,6 +52,57 @@ var legacyDuplicateMigrationStems = map[string][]string{
 	"128": {"128_agent_task_queue_runtime_mcp_overlay", "128_autopilot_collaborator", "128_comment_routing_escalation"},
 }
 
+// forkDualLedgerMigrationStems is the immutable set already deployed before
+// upstream reused prefixes 272-316. Exactly one listed fork stem plus one
+// upstream stem is admitted; any additional collision still fails the lint.
+var forkDualLedgerMigrationStems = map[string]struct{}{
+	"272_external_pr_integration_reconcile":                        {},
+	"273_external_pr_link_id_unique_index":                         {},
+	"274_external_pr_link_identity_index":                          {},
+	"275_external_pr_link_issue_state_index":                       {},
+	"276_external_pr_link_idempotency_index":                       {},
+	"277_workspace_workload_authority_reconcile":                   {},
+	"278_workspace_workload_authority_workspace_id_index":          {},
+	"279_workspace_workload_authority_lifecycle_reconcile":         {},
+	"280_external_pr_link_workspace_idempotency_index":             {},
+	"281_external_pr_legacy_idempotency_index_remove":              {},
+	"282_external_pr_index_reconciliation_fence":                   {},
+	"283_external_pr_link_issue_updated_index":                     {},
+	"284_external_pr_receipt_issue_cleanup_index":                  {},
+	"285_workload_pr_merge_delegation":                             {},
+	"286_workload_pr_merge_delegation_id_index":                    {},
+	"287_workload_pr_merge_delegation_active_index":                {},
+	"288_workload_pr_merge_delegation_consumer_intent_index":       {},
+	"289_workload_pr_merge_delegation_issue_state_index":           {},
+	"290_workload_pr_merge_delegation_event_id_index":              {},
+	"291_workload_pr_merge_delegation_event_history_index":         {},
+	"292_drop_workload_pr_merge_delegation_event_history_idx":      {},
+	"293_drop_workload_pr_merge_delegation_event_id_uidx":          {},
+	"294_drop_workload_pr_merge_delegation_issue_state_idx":        {},
+	"295_drop_workload_pr_merge_delegation_consumer_intent_uidx":   {},
+	"296_drop_workload_pr_merge_delegation_current_execution_uidx": {},
+	"297_drop_workload_pr_merge_delegation_id_uidx":                {},
+	"298_drop_workspace_workload_authority_workspace_id_uidx":      {},
+	"299_retire_dead_workload_authority_tables":                    {},
+	"300_drop_external_pr_link_workspace_idempotency_index":        {},
+	"301_external_pr_core_drop_projection_and_link_idempotency":    {},
+	"302_external_pr_reconcile_work":                               {},
+	"303_external_pr_reconcile_work_identity_index":                {},
+	"304_external_pr_reconcile_work_claim_index":                   {},
+	"305_external_pr_reconcile_work_issue_index":                   {},
+	"306_external_pr_reconcile_finalization":                       {},
+	"307_external_pr_reconcile_finalization_work_index":            {},
+	"308_comment_external_pr_finalization_index":                   {},
+	"309_external_pr_reconcile_finalization_claim":                 {},
+	"310_external_pr_reconcile_finalization_retry_state":           {},
+	"311_inbox_item_delivery_key":                                  {},
+	"312_inbox_item_delivery_key_index":                            {},
+	"313_external_pr_reconcile_work_id_index":                      {},
+	"314_external_pr_reconcile_finalization_id_index":              {},
+	"315_external_pr_reconcile_work_primary_key":                   {},
+	"316_external_pr_reconcile_finalization_primary_key":           {},
+}
+
 var migrationPrefixPattern = regexp.MustCompile(`^(\d+)_`)
 
 func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
@@ -92,6 +143,9 @@ func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 			continue
 		}
 
+		if len(stems) > 1 && isForkDualLedgerCollision(stems) {
+			continue
+		}
 		if len(stems) > 1 {
 			t.Errorf("migration prefix %s is reused by %v; use the next unique prefix instead", prefix, stems)
 		}
@@ -110,6 +164,19 @@ func TestNewMigrationPrefixesStartAfterLegacyRange(t *testing.T) {
 			t.Errorf("migration prefix %s is in the frozen legacy range 001-%03d: %v; new migrations must start at %03d", prefix, maxLegacyMigrationPrefix, stems, maxLegacyMigrationPrefix+1)
 		}
 	}
+}
+
+func isForkDualLedgerCollision(stems []string) bool {
+	if len(stems) != 2 {
+		return false
+	}
+	forkStems := 0
+	for _, stem := range stems {
+		if _, ok := forkDualLedgerMigrationStems[stem]; ok {
+			forkStems++
+		}
+	}
+	return forkStems == 1
 }
 
 func migrationStemsByPrefix(t *testing.T) map[string][]string {

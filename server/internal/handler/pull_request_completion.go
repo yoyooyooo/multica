@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/completionpolicy"
 	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -106,6 +107,7 @@ func (h *Handler) createStatusActivity(
 		}
 	}
 	return writer(ctx, qtx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
 		WorkspaceID: previous.WorkspaceID,
 		IssueID:     previous.ID,
 		ActorType:   strToText(actorType),
@@ -207,6 +209,7 @@ func (h *Handler) evaluatePullRequestCompletionLocked(
 			}
 		}
 		activity, createErr := writer(ctx, qtx, db.CreateActivityParams{
+			ID:          dbid.NewV7(),
 			WorkspaceID: current.WorkspaceID,
 			IssueID:     current.ID,
 			ActorType:   strToText("system"),
