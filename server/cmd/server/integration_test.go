@@ -20,11 +20,13 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/realtime"
 )
 
 var (
 	testServer      *httptest.Server
+	testHandler     *handler.Handler
 	testPool        *pgxpool.Pool
 	testToken       string
 	testUserID      string
@@ -44,18 +46,19 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+		fmt.Println("DATABASE_URL is required for cmd/server integration tests")
+		os.Exit(1)
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		fmt.Printf("Skipping integration tests: could not connect to database: %v\n", err)
-		os.Exit(0)
+		fmt.Printf("cmd/server integration database configuration failed: %v\n", err)
+		os.Exit(1)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		fmt.Printf("Skipping integration tests: database not reachable: %v\n", err)
+		fmt.Printf("cmd/server integration database not reachable: %v\n", err)
 		pool.Close()
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	testPool = pool
@@ -71,7 +74,8 @@ func TestMain(m *testing.M) {
 
 	bus := events.New()
 	registerListeners(bus, hub)
-	router := NewRouter(pool, hub, bus, analytics.NoopClient{}, nil)
+	router, h := NewRouterWithOptions(pool, hub, bus, analytics.NoopClient{}, nil, RouterOptions{})
+	testHandler = h
 	testServer = httptest.NewServer(router)
 
 	// Generate a JWT token directly for the test user
@@ -240,8 +244,11 @@ func TestReadinessEndpoints(t *testing.T) {
 			}
 
 			var result struct {
-				Status string            `json:"status"`
-				Checks map[string]string `json:"checks"`
+				Status string `json:"status"`
+				Checks struct {
+					DB         string `json:"db"`
+					Migrations string `json:"migrations"`
+				} `json:"checks"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				t.Fatalf("decode response: %v", err)
@@ -249,11 +256,11 @@ func TestReadinessEndpoints(t *testing.T) {
 			if result.Status != "ok" {
 				t.Fatalf("expected status ok, got %s", result.Status)
 			}
-			if result.Checks["db"] != "ok" {
-				t.Fatalf("expected db check ok, got %s", result.Checks["db"])
+			if result.Checks.DB != "ok" {
+				t.Fatalf("expected db check ok, got %s", result.Checks.DB)
 			}
-			if result.Checks["migrations"] != "ok" {
-				t.Fatalf("expected migrations check ok, got %s", result.Checks["migrations"])
+			if result.Checks.Migrations != "ok" {
+				t.Fatalf("expected migrations check ok, got %s", result.Checks.Migrations)
 			}
 		})
 	}

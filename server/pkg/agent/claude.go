@@ -925,6 +925,13 @@ func mergeEnv(base []string, extra map[string]string) []string {
 		if isFilteredChildEnvKey(key) || strings.HasPrefix(strings.ToUpper(key), "MULTICA_") {
 			continue
 		}
+		// An explicitly assembled task value must replace the inherited value.
+		// Keeping both entries is unsafe: Unix child lookups commonly return the
+		// first duplicate, which would make a task PATH (and task credentials)
+		// silently lose to the daemon's environment.
+		if _, overridden := extra[key]; overridden {
+			continue
+		}
 		env = append(env, entry)
 	}
 	for k, v := range extra {

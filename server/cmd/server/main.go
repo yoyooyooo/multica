@@ -681,6 +681,11 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}
+	// External PR terminal facts are reconciled from their typed business work
+	// rows. The scheduler supplies one bounded lease; it is not the work ledger.
+	if err := schedulerMgr.Register(handler.ExternalPRReconcileJob(pool, h)); err != nil {
+		slog.Warn("scheduler: failed to register external_pr_reconcile job", "error", err)
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()

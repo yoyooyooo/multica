@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY workload_pr_merge_delegation_event_history_idx;

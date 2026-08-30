@@ -1102,6 +1102,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	qtx := h.Queries.WithTx(tx)
 	var sourceContextAttachmentURLs []string
 	var sourceContextIntentURLs []string
+	if err := lockProviderWorkspaces(r.Context(), tx, []pgtype.UUID{requester.WorkspaceID}); err != nil {
+		slog.Warn("lock workspace provider facts for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
 
 	// SET LOCAL is transaction-scoped, so pgxpool hands this connection back
 	// out with the default (unbounded) lock_timeout after COMMIT / ROLLBACK.
@@ -1116,6 +1121,22 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
 		return
+	}
+
+	// Workspace deletion cascades every provider link. Take the same sorted
+	// Issue advisory locks as provider fact writers before any Issue row can be
+	// removed, preserving advisory-lock -> row-lock order across the workspace.
+	issueIDs, err := qtx.ListIssueIDsByWorkspaceForCompletionLock(r.Context(), requester.WorkspaceID)
+	if err == nil {
+		err = lockCompletionIssues(r.Context(), qtx, issueIDs)
+	}
+	if err != nil {
+		slog.Warn("lock workspace Issues for delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
+		return
+	}
+	if h.IssueDeleteHook != nil {
+		h.IssueDeleteHook("workspace_completion_locks_acquired")
 	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
@@ -1294,6 +1315,8 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// At this point workspaceMember has resolved → workspaceID is a
 			// valid UUID, so reuse the resolved value. The existing final
 			// statement also sweeps any expand-phase compatibility leftovers.
+			// T016 retired workload_pr_merge_delegation* and workspace_workload_authority;
+			// those cleanup steps are intentionally gone with the tables.
 			name: "delete workspace",
 			run:  func() error { return qtx.DeleteWorkspace(ctx, requester.WorkspaceID) },
 		},
@@ -1303,6 +1326,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			failWorkspaceDelete(w, r, workspaceID, step.name, err)
 			return
 		}
+
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {

@@ -61,11 +61,12 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 		}
 
 		statusChanged, _ := payload["status_changed"].(bool)
+		statusActivityRecorded, _ := payload["status_activity_recorded"].(bool)
 		priorityChanged, _ := payload["priority_changed"].(bool)
 		assigneeChanged, _ := payload["assignee_changed"].(bool)
 		descriptionChanged, _ := payload["description_changed"].(bool)
 
-		if statusChanged {
+		if statusChanged && !statusActivityRecorded {
 			prevStatus, _ := payload["prev_status"].(string)
 			details, _ := json.Marshal(map[string]string{
 				"from": prevStatus,

@@ -45,9 +45,14 @@ RUN pnpm install --frozen-lockfile --offline
 ARG NEXT_PUBLIC_APP_VERSION=dev
 ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 ENV STANDALONE=true
+# next/font/google otherwise fetches CSS/WOFF2 during `next build`.
+# The checked-in mock keeps image builds off fonts.googleapis.com.
+ENV NEXT_FONT_GOOGLE_MOCKED_RESPONSES=/app/apps/web/offline-fonts/responses.cjs
 
-# Build the web app (standalone output for minimal runtime)
-RUN pnpm --filter @multica/web build
+# Fail closed if Next exits without the standalone output the runner stage copies.
+RUN pnpm --filter @multica/web build && \
+    test -d /app/apps/web/.next/standalone && \
+    test -d /app/apps/web/.next/static
 
 # --- Runtime ---
 FROM node:22-alpine AS runner

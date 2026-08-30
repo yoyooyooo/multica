@@ -3048,6 +3048,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
 		return
 	}
+	if errors.Is(err, service.ErrParentIssueTerminal) {
+		writeError(w, http.StatusConflict, "cannot add a child to a terminal parent issue")
+		return
+	}
 	if errors.Is(err, service.ErrProjectNotFound) {
 		writeError(w, http.StatusBadRequest, "project not found in this workspace")
 		return
@@ -3300,6 +3304,142 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	return issue, current, attachmentsChanged, nil
 }
 
+var (
+	errIssueParentNotFound  = errors.New("parent issue not found in this workspace")
+	errIssueParentTerminal  = errors.New("cannot attach to a terminal parent issue")
+	errIssueParentCycle     = errors.New("circular parent relationship detected")
+	errIssueParentTooDeep   = errors.New("parent topology exceeds the supported depth")
+	errIssueParentLockDrift = errors.New("parent topology changed while acquiring completion locks")
+)
+
+func validateParentChangeLocked(ctx context.Context, qtx *db.Queries, issue db.Issue, newParent pgtype.UUID) error {
+	if !newParent.Valid {
+		return nil
+	}
+	parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: newParent, WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		return errIssueParentNotFound
+	}
+	if parent.Status == "done" || parent.Status == "cancelled" {
+		return errIssueParentTerminal
+	}
+	cursor := parent
+	for depth := 0; cursor.ParentIssueID.Valid; depth++ {
+		if depth >= 100 {
+			return errIssueParentTooDeep
+		}
+		if cursor.ParentIssueID == issue.ID {
+			return errIssueParentCycle
+		}
+		cursor, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID: cursor.ParentIssueID, WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil {
+			return errIssueParentNotFound
+		}
+	}
+	return nil
+}
+
+func (h *Handler) updateIssueSerialized(
+	ctx context.Context,
+	base db.Issue,
+	params db.UpdateIssueParams,
+	touched map[string]json.RawMessage,
+	parentTouched bool,
+	activitySource, actorType string,
+	actorID pgtype.UUID,
+	descriptionBase *string,
+) (db.Issue, db.Issue, *db.ActivityLog, error) {
+	lockedOldParent := base.ParentIssueID
+	for attempt := 0; attempt < 3; attempt++ {
+		tx, err := h.TxStarter.Begin(ctx)
+		if err != nil {
+			return db.Issue{}, db.Issue{}, nil, err
+		}
+		qtx := h.Queries.WithTx(tx)
+		if parentTouched {
+			if err = qtx.LockWorkspaceIssueTopology(ctx, base.WorkspaceID); err != nil {
+				_ = tx.Rollback(ctx)
+				return db.Issue{}, db.Issue{}, nil, err
+			}
+		}
+		lockIDs := []pgtype.UUID{base.ID}
+		if lockedOldParent.Valid {
+			lockIDs = append(lockIDs, lockedOldParent)
+		}
+		if parentTouched && params.ParentIssueID.Valid {
+			lockIDs = append(lockIDs, params.ParentIssueID)
+		}
+		if err = lockCompletionIssues(ctx, qtx, lockIDs); err != nil {
+			_ = tx.Rollback(ctx)
+			return db.Issue{}, db.Issue{}, nil, err
+		}
+		var current db.Issue
+		if _, descriptionTouched := touched["description"]; descriptionTouched {
+			current, err = qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: base.ID, WorkspaceID: base.WorkspaceID})
+		} else {
+			current, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: base.ID, WorkspaceID: base.WorkspaceID})
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return db.Issue{}, db.Issue{}, nil, err
+		}
+		if current.ParentIssueID != lockedOldParent {
+			_ = tx.Rollback(ctx)
+			lockedOldParent = current.ParentIssueID
+			continue
+		}
+		if parentTouched {
+			if err = validateParentChangeLocked(ctx, qtx, current, params.ParentIssueID); err != nil {
+				_ = tx.Rollback(ctx)
+				return db.Issue{}, db.Issue{}, nil, err
+			}
+			if h.TopologyFactHook != nil {
+				h.TopologyFactHook("locked_before_write")
+			}
+		}
+		if _, descriptionTouched := touched["description"]; descriptionTouched {
+			attachments, listErr := qtx.ListAttachmentsByIssue(ctx, db.ListAttachmentsByIssueParams{IssueID: current.ID, WorkspaceID: current.WorkspaceID})
+			if listErr != nil {
+				_ = tx.Rollback(ctx)
+				return db.Issue{}, db.Issue{}, nil, listErr
+			}
+			currentDescription := ""
+			if current.Description.Valid {
+				currentDescription = current.Description.String
+			}
+			incomingDescription := ""
+			if params.Description.Valid {
+				incomingDescription = params.Description.String
+			}
+			params.Description = pgtype.Text{String: mergeIssueChannelMediaDescription(currentDescription, incomingDescription, descriptionBase, attachments), Valid: true}
+		}
+		refreshUntouchedNullableIssueParams(&params, current, touched)
+		issue, err := qtx.UpdateIssue(ctx, params)
+		var activity *db.ActivityLog
+		if err == nil && current.Status != issue.Status && isTerminalChildStatus(issue.Status) {
+			created, activityErr := h.createStatusActivity(ctx, qtx, current, issue, activitySource, actorType, actorID)
+			err = activityErr
+			if err == nil {
+				activity = &created
+			}
+		}
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return db.Issue{}, db.Issue{}, nil, err
+		}
+		return issue, current, activity, nil
+	}
+	return db.Issue{}, db.Issue{}, nil, errIssueParentLockDrift
+
+}
+
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	prevIssue, ok := h.loadIssueForUser(w, r, id)
@@ -3518,9 +3658,35 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorUUID, actorUUIDErr := util.ParseUUID(actorID)
+	if actorUUIDErr != nil {
+		writeError(w, http.StatusUnauthorized, "invalid actor identity")
+		return
+	}
+	_, parentTouched := rawFields["parent_issue_id"]
 	var issue db.Issue
 	attachmentsChanged := false
-	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
+	var committedStatusActivity *db.ActivityLog
+	if req.Status != nil || parentTouched {
+		var current db.Issue
+		issue, current, committedStatusActivity, err = h.updateIssueSerialized(
+			r.Context(), prevIssue, params, rawFields, parentTouched, "explicit", actorType, actorUUID, req.DescriptionBase,
+		)
+		if err != nil {
+			switch err {
+			case errIssueParentNotFound, errIssueParentCycle, errIssueParentTooDeep:
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errIssueParentTerminal:
+				writeError(w, http.StatusConflict, err.Error())
+			default:
+				slog.Warn("serialized issue transition failed", append(logger.RequestAttrs(r), "error", err, "issue_id", id, "workspace_id", workspaceID)...)
+				writeError(w, http.StatusInternalServerError, "failed to update issue: "+err.Error())
+			}
+			return
+		}
+		prevIssue = current
+	} else if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
 			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
@@ -3556,7 +3722,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine actor identity: agent (via X-Agent-ID header) or member.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorType, actorID = h.resolveActor(r, userID, workspaceID)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
@@ -3581,26 +3747,31 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	dueDateChanged := prevDueDate != resp.DueDate && (prevDueDate == nil) != (resp.DueDate == nil) ||
 		(prevDueDate != nil && resp.DueDate != nil && *prevDueDate != *resp.DueDate)
 
+	if committedStatusActivity != nil {
+		h.publishCommittedCompletionActivity(workspaceID, *committedStatusActivity)
+	}
+
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
-		"issue":               resp,
-		"assignee_changed":    assigneeChanged,
-		"status_changed":      statusChanged,
-		"priority_changed":    priorityChanged,
-		"project_changed":     projectChanged,
-		"start_date_changed":  startDateChanged,
-		"due_date_changed":    dueDateChanged,
-		"description_changed": descriptionChanged,
-		"title_changed":       titleChanged,
-		"prev_title":          prevIssue.Title,
-		"prev_assignee_type":  textToPtr(prevIssue.AssigneeType),
-		"prev_assignee_id":    uuidToPtr(prevIssue.AssigneeID),
-		"prev_status":         prevIssue.Status,
-		"prev_priority":       prevIssue.Priority,
-		"prev_start_date":     prevStartDate,
-		"prev_due_date":       prevDueDate,
-		"prev_description":    textToPtr(prevIssue.Description),
-		"creator_type":        prevIssue.CreatorType,
-		"creator_id":          uuidToString(prevIssue.CreatorID),
+		"issue":                    resp,
+		"assignee_changed":         assigneeChanged,
+		"status_changed":           statusChanged,
+		"priority_changed":         priorityChanged,
+		"project_changed":          projectChanged,
+		"start_date_changed":       startDateChanged,
+		"due_date_changed":         dueDateChanged,
+		"description_changed":      descriptionChanged,
+		"title_changed":            titleChanged,
+		"prev_title":               prevIssue.Title,
+		"prev_assignee_type":       textToPtr(prevIssue.AssigneeType),
+		"prev_assignee_id":         uuidToPtr(prevIssue.AssigneeID),
+		"prev_status":              prevIssue.Status,
+		"prev_priority":            prevIssue.Priority,
+		"prev_start_date":          prevStartDate,
+		"prev_due_date":            prevDueDate,
+		"prev_description":         textToPtr(prevIssue.Description),
+		"creator_type":             prevIssue.CreatorType,
+		"creator_id":               uuidToString(prevIssue.CreatorID),
+		"status_activity_recorded": committedStatusActivity != nil,
 	})
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
@@ -3899,10 +4070,10 @@ type issueDeleteResult struct {
 }
 
 func (h *Handler) deleteIssueAndCollectAttachmentURLs(ctx context.Context, issue db.Issue, excludedIssueIDs []pgtype.UUID) (issueDeleteResult, error) {
-	return h.deleteIssuesAndCollectAttachmentURLs(ctx, []db.Issue{issue}, excludedIssueIDs)
+	return h.deleteIssuesAndCollectAttachmentURLs(ctx, []db.Issue{issue}, excludedIssueIDs, "completion_lock_acquired")
 }
 
-func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issues []db.Issue, excludedIssueIDs []pgtype.UUID) (issueDeleteResult, error) {
+func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issues []db.Issue, excludedIssueIDs []pgtype.UUID, lockStage string) (issueDeleteResult, error) {
 	sort.Slice(issues, func(i, j int) bool {
 		return uuidToString(issues[i].ID) < uuidToString(issues[j].ID)
 	})
@@ -3912,6 +4083,22 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+
+	workspaceIDs := make([]pgtype.UUID, 0, len(issues))
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		workspaceIDs = append(workspaceIDs, issue.WorkspaceID)
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := lockProviderWorkspaces(ctx, tx, workspaceIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issue provider workspace: %w", err)
+	}
+	if err := lockCompletionIssues(ctx, qtx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issue completion: %w", err)
+	}
+	if h.IssueDeleteHook != nil {
+		h.IssueDeleteHook(lockStage)
+	}
 
 	result := issueDeleteResult{}
 	for _, issue := range issues {
@@ -3968,6 +4155,9 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 			}
 		} else if !errors.Is(contextErr, pgx.ErrNoRows) {
 			return issueDeleteResult{}, fmt.Errorf("load issue source context for delete: %w", contextErr)
+		}
+		if _, err := qtx.FailAutopilotRunsByIssue(ctx, issue.ID); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("fail autopilot runs before issue delete: %w", err)
 		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
@@ -4099,6 +4289,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchProjectID = projectUUID
 	}
 
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorUUID, actorUUIDErr := util.ParseUUID(actorID)
+	if actorUUIDErr != nil {
+		writeError(w, http.StatusUnauthorized, "invalid actor identity")
+		return
+	}
 	updated := 0
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
@@ -4259,15 +4455,22 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var issue db.Issue
-		if req.Updates.Description != nil {
-			// One batch-level base cannot describe multiple issue documents.
-			// Preserve every marked channel-media block conservatively, matching
-			// legacy single-update clients that omit description_base.
+		var committedStatusActivity *db.ActivityLog
+		_, parentTouched := rawUpdates["parent_issue_id"]
+		if req.Updates.Status != nil || parentTouched {
+			var current db.Issue
+			issue, current, committedStatusActivity, err = h.updateIssueSerialized(
+				r.Context(), prevIssue, params, rawUpdates, parentTouched, "explicit_batch", actorType, actorUUID, nil,
+			)
+			if err == nil {
+				prevIssue = current
+			}
+		} else if req.Updates.Description != nil {
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
 				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey,
 			)
-			if err == nil {
+			if err == nil && lockedPrev.ID.Valid {
 				prevIssue = lockedPrev
 			}
 		} else {
@@ -4290,7 +4493,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
-		actorType, actorID := h.resolveActor(r, userID, workspaceID)
+		if committedStatusActivity != nil {
+			h.publishCommittedCompletionActivity(workspaceID, *committedStatusActivity)
+		}
 
 		fillBatch(&resp)
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil) &&
@@ -4300,11 +4505,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		projectChanged := req.Updates.ProjectID != nil && uuidToString(prevIssue.ProjectID) != uuidToString(issue.ProjectID)
 
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, map[string]any{
-			"issue":            resp,
-			"assignee_changed": assigneeChanged,
-			"status_changed":   statusChanged,
-			"priority_changed": priorityChanged,
-			"project_changed":  projectChanged,
+			"issue":                    resp,
+			"assignee_changed":         assigneeChanged,
+			"status_changed":           statusChanged,
+			"priority_changed":         priorityChanged,
+			"project_changed":          projectChanged,
+			"status_activity_recorded": committedStatusActivity != nil,
 		})
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
@@ -4415,7 +4621,7 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 		_ = h.AutopilotService.FailAutopilotRunsByIssue(r.Context(), issue.ID)
 	}
-	deleteResult, err := h.deleteIssuesAndCollectAttachmentURLs(r.Context(), issues, excludedIDs)
+	deleteResult, err := h.deleteIssuesAndCollectAttachmentURLs(r.Context(), issues, excludedIDs, "batch_completion_locks_acquired")
 	if err != nil {
 		slog.Warn("batch delete issues failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete issues")

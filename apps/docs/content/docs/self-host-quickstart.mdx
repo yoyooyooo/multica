@@ -304,6 +304,7 @@ make selfhost
 ```bash
 cd multica
 git pull
+docker compose -f docker-compose.selfhost.yml config >/dev/null
 docker compose -f docker-compose.selfhost.yml pull
 docker compose -f docker-compose.selfhost.yml up -d
 ```
@@ -361,7 +362,7 @@ curl -s localhost:8080/readyz
 # {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
 ```
 
-Anything other than HTTP 200 with both checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
+Anything other than HTTP 200 with both the `db` and `migrations` checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
 
 ### Kubernetes
 

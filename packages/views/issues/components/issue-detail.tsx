@@ -93,7 +93,7 @@ import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
-import { PullRequestList } from "./pull-request-list";
+import { ExternalPullRequestList, PullRequestList } from "./pull-request-list";
 import { useGitHubSettings } from "@multica/core/github";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
@@ -337,6 +337,28 @@ function formatActivity(
       return t(($) => $.activity.task_completed, { count: entry.coalesced_count ?? 1 });
     case "task_failed":
       return t(($) => $.activity.task_failed, { count: entry.coalesced_count ?? 1 });
+    case "external_pr_linked":
+      return t(($) => $.activity.external_pr_linked, {
+        provider: details.provider ?? "external",
+        repo: details.external_repo ?? "?",
+        number: details.external_number ?? "?",
+      });
+    case "external_pr_merged":
+      return t(($) => $.activity.external_pr_merged, {
+        provider: details.provider ?? "external",
+        repo: details.external_repo ?? "?",
+        number: details.external_number ?? "?",
+        sha:
+          typeof details.merged_sha === "string"
+            ? details.merged_sha.slice(0, 12)
+            : "—",
+      });
+    case "issue_completed_by_external_pr":
+      return t(($) => $.activity.issue_completed_by_external_pr, {
+        provider: details.provider ?? "external",
+        repo: details.external_repo ?? "?",
+        number: details.external_number ?? "?",
+      });
     case "squad_leader_evaluated": {
       const reason = details.reason?.trim();
       switch (details.outcome) {
@@ -1176,6 +1198,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [parentIssueOpen, setParentIssueOpen] = useState(true);
+  const [externalPRsOpen, setExternalPRsOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const githubSettings = useGitHubSettings();
@@ -2547,6 +2570,26 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      {/* External PRs are provider-neutral and remain visible regardless of
+          the GitHub/native PR sidebar setting. */}
+      <div>
+        <button
+          type="button"
+          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${externalPRsOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+          onClick={() => setExternalPRsOpen(!externalPRsOpen)}
+        >
+          {t(($) => $.detail.section_external_prs)}
+          <ChevronRight
+            className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${externalPRsOpen ? "rotate-90" : ""}`}
+          />
+        </button>
+        {externalPRsOpen && (
+          <div className="pl-2">
+            <ExternalPullRequestList workspaceId={wsId} issueId={id} />
+          </div>
+        )}
+      </div>
 
       {/* Pull requests — hidden when the workspace disables the PR sidebar
           (or the GitHub master switch is off). Backend data is kept either

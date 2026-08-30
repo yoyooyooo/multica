@@ -779,6 +779,10 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- whose completion lookup would race over "most recent issue by this agent".
 UPDATE agent_task_queue
 SET status = 'dispatched',
+    execution_id = CASE
+        WHEN status = 'dispatched' AND execution_id IS NOT NULL THEN execution_id
+        ELSE gen_random_uuid()
+    END,
     dispatched_at = now(),
     prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
 WHERE id = (
@@ -869,6 +873,7 @@ RETURNING delivered_comment_ids;
 -- rolling back a newer reclaim.
 UPDATE agent_task_queue
 SET status = 'queued',
+    execution_id = NULL,
     dispatched_at = NULL,
     prepare_lease_expires_at = NULL,
     delivered_comment_ids = '{}'

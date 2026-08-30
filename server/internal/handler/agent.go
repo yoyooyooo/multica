@@ -355,6 +355,7 @@ type TaskIssueStatusData struct {
 
 type AgentTaskResponse struct {
 	ID                   string                 `json:"id"`
+	ExecutionID          string                 `json:"execution_id"`
 	AgentID              string                 `json:"agent_id"`
 	RuntimeID            string                 `json:"runtime_id"`
 	IssueID              string                 `json:"issue_id"`
@@ -772,12 +773,17 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.HandoffNote.Valid {
 		handoffNote = t.HandoffNote.String
 	}
+	executionID := uuidToString(t.ID)
+	if t.ExecutionID.Valid {
+		executionID = uuidToString(t.ExecutionID)
+	}
 	branchName := ""
 	if t.BranchName.Valid {
 		branchName = t.BranchName.String
 	}
 	return AgentTaskResponse{
 		ID:                     uuidToString(t.ID),
+		ExecutionID:            executionID,
 		AgentID:                uuidToString(t.AgentID),
 		RuntimeID:              uuidToString(t.RuntimeID),
 		IssueID:                uuidToString(t.IssueID),

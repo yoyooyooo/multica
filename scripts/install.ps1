@@ -434,10 +434,11 @@ function Install-Server {
         $content = $content -replace '^POSTGRES_PASSWORD=.*', "POSTGRES_PASSWORD=$pgpass"
         $content = $content -replace '^(DATABASE_URL=postgres://[^:]+:)[^@]*(@.*)', "`${1}$pgpass`${2}"
         $content | Set-Content ".env"
-        Write-Ok "Generated .env with random JWT_SECRET and POSTGRES_PASSWORD"
+        Write-Ok "Generated .env with random secrets"
     } else {
         Write-Ok "Using existing .env"
     }
+
 
     Write-Info "Pulling official Multica images..."
     Pull-OfficialSelfHostImages

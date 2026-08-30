@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS workload_pr_merge_delegation_consumer_intent_uidx ON workload_pr_merge_delegation (consumer_instance_id, consumer_intent_id) WHERE consumer_intent_id IS NOT NULL;

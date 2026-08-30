@@ -383,6 +383,7 @@ func writeChatManagedEnvProvenance(t *testing.T, workDir, workspaceID, chatSessi
 func leaderReuseTestTask(id string) Task {
 	return Task{
 		ID:           id,
+		ExecutionID:  id,
 		WorkspaceID:  "ws-leader",
 		RuntimeID:    "rt-leader",
 		IssueID:      "issue-leader",

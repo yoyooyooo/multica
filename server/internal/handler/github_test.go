@@ -11,12 +11,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -383,6 +386,40 @@ func TestSignStateRequiresSecret(t *testing.T) {
 	}
 }
 
+func createPRCompletionLeafIssue(t *testing.T, title, status string) IssueResponse {
+	t.Helper()
+	create := func(body map[string]any) IssueResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, body)
+		testHandler.CreateIssue(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+		}
+		var issue IssueResponse
+		if err := json.NewDecoder(w.Body).Decode(&issue); err != nil {
+			t.Fatalf("decode issue: %v", err)
+		}
+		return issue
+	}
+	parent := create(map[string]any{
+		"title":  title + " parent",
+		"status": "in_progress",
+	})
+	child := create(map[string]any{
+		"title":           title,
+		"status":          status,
+		"parent_issue_id": parent.ID,
+		"stage":           1,
+	})
+	t.Cleanup(func() {
+		_ = testHandler.Queries.DeleteIssue(context.Background(), db.DeleteIssueParams{
+			ID: parseUUID(parent.ID), WorkspaceID: parseUUID(testWorkspaceID),
+		})
+	})
+	return child
+}
+
 // TestWebhook_MergedPR_AdvancesLinkedIssueToDone exercises the end-to-end
 // auto-link + merge-sync path: install a workspace, fire a `pull_request`
 // webhook with the issue identifier in the title, and verify (a) the PR row
@@ -390,6 +427,600 @@ func TestSignStateRequiresSecret(t *testing.T) {
 // 'done'. The system actor on that issue:updated event is what previously
 // panicked the activity / notification listeners — having this test pass
 // while listeners are wired up is the regression guard.
+func TestGitHubWebhookSerializesStateAndRemovedIdentifierMetadata(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-fact-transaction-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issue := createPRCompletionLeafIssue(t, "github atomic fact", "in_progress")
+	installationID := int64(97000000 + time.Now().UnixNano()%1000000)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-fact-transaction", AccountType: "User",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testHandler.PullRequestFactHook = nil
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id=$1`, issue.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='atomic-fact'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+
+	fire := func(action, title, body, state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": action,
+			"pull_request": map[string]any{
+				"number": 7878, "html_url": "https://github.test/acme/atomic-fact/pull/7878",
+				"title": title, "body": body, "state": state, "merged": merged,
+				"draft": false, "created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if state == "closed" {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "atomic-fact", "sha": "atomic-fact-sha"},
+				"user": map[string]any{"login": "octocat"},
+			},
+			"repository":   map[string]any{"name": "atomic-fact", "owner": map[string]any{"login": "acme"}},
+			"installation": map[string]any{"id": installationID},
+		}
+		raw, _ := json.Marshal(payload)
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(raw)
+		req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		w := httptest.NewRecorder()
+		testHandler.HandleGitHubWebhook(w, req)
+		return w.Code
+	}
+	if code := fire("opened", "Fix "+issue.Identifier, "Closes "+issue.Identifier, "open", false, "2026-07-26T00:01:00Z"); code != http.StatusAccepted {
+		t.Fatalf("seed open webhook status=%d", code)
+	}
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	testHandler.PullRequestFactHook = func(provider, stage string) {
+		if provider == "github" && stage == "state_written_before_links" {
+			reached <- struct{}{}
+			<-release
+		}
+	}
+	webhookDone := make(chan int, 1)
+	go func() {
+		webhookDone <- fire("closed", "Remove issue reference", "No issue identifier remains", "closed", true, "2026-07-26T00:02:00Z")
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GitHub adapter did not reach in-transaction hook")
+	}
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "github-public-terminal-token")
+	externalClosed := externalPRCompletionReq(testWorkspaceID, issue.ID, nextCompletionPolicyPRNumber())
+	externalClosed.State = "closed"
+	externalClosed.MergedSHA = ""
+	externalIntent := false
+	externalClosed.CompletionIntent = &externalIntent
+	resultCh := make(chan int, 1)
+	go func() {
+		resultCh <- registerExternalPRViaHandlerWithToken(externalClosed, "github-public-terminal-token")
+	}()
+	select {
+	case result := <-resultCh:
+		t.Fatalf("public terminal handler crossed GitHub fact transaction: status=%d", result)
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(release)
+	if code := <-webhookDone; code != http.StatusAccepted {
+		t.Fatalf("terminal webhook status=%d", code)
+	}
+	if status := <-resultCh; status != http.StatusOK {
+		t.Fatalf("post-commit public register status=%d", status)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+	var closeIntent, referenceOnly bool
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_pull_request WHERE issue_id=$1`, issue.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if closeIntent || !referenceOnly {
+		t.Fatalf("removed identifier metadata close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+}
+
+func TestGitHubWebhookReturnsRetryableStatusOnFactTransactionError(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-transaction-error-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issue := createPRCompletionLeafIssue(t, "github transaction error", "in_progress")
+	installationID := int64(97200000 + time.Now().UnixNano()%1000000)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-transaction-error", AccountType: "User",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id=$1`, issue.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='transaction-error'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+
+	payload := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 9898, "html_url": "https://github.test/acme/transaction-error/pull/9898",
+			"title": "Fix " + issue.Identifier, "body": "Closes " + issue.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"created_at": "2026-07-26T00:00:00Z", "updated_at": "2026-07-26T00:01:00Z",
+			"merged_at": "2026-07-26T00:01:00Z", "closed_at": "2026-07-26T00:01:00Z",
+			"head": map[string]any{"ref": "transaction-error", "sha": "transaction-error-sha"},
+			"user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "transaction-error", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	}
+	raw, _ := json.Marshal(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(raw)
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	failing := *testHandler
+	failing.CompletionActivityWriter = func(context.Context, *db.Queries, db.CreateActivityParams) (db.ActivityLog, error) {
+		return db.ActivityLog{}, errors.New("injected GitHub transaction failure")
+	}
+	failing.HandleGitHubWebhook(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("transaction failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+	var prCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM github_pull_request WHERE workspace_id=$1 AND repo_name='transaction-error'`, testWorkspaceID).Scan(&prCount); err != nil {
+		t.Fatal(err)
+	}
+	if prCount != 0 {
+		t.Fatalf("failed webhook committed PR rows=%d", prCount)
+	}
+}
+
+func TestGitHubMultiIssueSecondCompletionFailureRollsBackWholeFact(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-multi-rollback-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issueA := createPRCompletionLeafIssue(t, "github multi rollback A", "in_progress")
+	issueB := createPRCompletionLeafIssue(t, "github multi rollback B", "in_progress")
+	installationID := int64(97400000 + time.Now().UnixNano()%1000000)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-multi-rollback", AccountType: "User",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	issueIDs := []pgtype.UUID{parseUUID(issueA.ID), parseUUID(issueB.ID)}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id=ANY($1::uuid[])`, issueIDs)
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id=ANY($1::uuid[])`, issueIDs)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='multi-rollback'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+
+	payload := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 9899, "html_url": "https://github.test/acme/multi-rollback/pull/9899",
+			"title": "Fix " + issueA.Identifier + " and " + issueB.Identifier,
+			"body":  "Closes " + issueA.Identifier + "\nCloses " + issueB.Identifier,
+			"state": "closed", "merged": true, "draft": false,
+			"created_at": "2026-07-26T00:00:00Z", "updated_at": "2026-07-26T00:01:00Z",
+			"merged_at": "2026-07-26T00:01:00Z", "closed_at": "2026-07-26T00:01:00Z",
+			"head": map[string]any{"ref": "multi-rollback", "sha": "multi-rollback-sha"},
+			"user": map[string]any{"login": "octocat"},
+		},
+		"repository":   map[string]any{"name": "multi-rollback", "owner": map[string]any{"login": "acme"}},
+		"installation": map[string]any{"id": installationID},
+	}
+	raw, _ := json.Marshal(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(raw)
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	failing := *testHandler
+	activityCalls := 0
+	failing.CompletionActivityWriter = func(ctx context.Context, q *db.Queries, params db.CreateActivityParams) (db.ActivityLog, error) {
+		activityCalls++
+		if activityCalls == 2 {
+			return db.ActivityLog{}, errors.New("injected second-Issue transaction failure")
+		}
+		return q.CreateActivity(ctx, params)
+	}
+	failing.HandleGitHubWebhook(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("transaction failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	if activityCalls != 2 {
+		t.Fatalf("completion activity calls=%d, want 2 to prove second-Issue injection", activityCalls)
+	}
+	assertIssueStatus(t, issueA.ID, "in_progress")
+	assertIssueStatus(t, issueB.ID, "in_progress")
+	var prCount, linkCount, activityCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM github_pull_request WHERE workspace_id=$1 AND repo_name='multi-rollback'`, testWorkspaceID).Scan(&prCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM issue_pull_request WHERE issue_id=ANY($1::uuid[])`, issueIDs).Scan(&linkCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=ANY($1::uuid[]) AND action='status_changed' AND details->>'source'='github_pr_terminal'`, issueIDs).Scan(&activityCount); err != nil {
+		t.Fatal(err)
+	}
+	if prCount != 0 || linkCount != 0 || activityCount != 0 {
+		t.Fatalf("partial multi-Issue fact persisted pr=%d links=%d activities=%d", prCount, linkCount, activityCount)
+	}
+}
+
+func TestDeleteIssueSerializesBeforeMultiIssueGitHubFact(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-delete-lock-order-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issueA := createPRCompletionLeafIssue(t, "github delete lock A", "in_progress")
+	issueB := createPRCompletionLeafIssue(t, "github delete lock B", "in_progress")
+	installationID := int64(97300000 + time.Now().UnixNano()%1000000)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-delete-lock", AccountType: "User",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testHandler.IssueDeleteHook = nil
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='delete-lock'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+
+	fire := func(state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": func() string {
+				if merged {
+					return "closed"
+				}
+				return "opened"
+			}(),
+			"pull_request": map[string]any{
+				"number": 9991, "html_url": "https://github.test/acme/delete-lock/pull/9991",
+				"title": "Fix " + issueA.Identifier + " and " + issueB.Identifier,
+				"body":  "Closes " + issueA.Identifier + "\nCloses " + issueB.Identifier,
+				"state": state, "merged": merged, "draft": false,
+				"created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "delete-lock", "sha": "delete-lock-sha"},
+				"user": map[string]any{"login": "octocat"},
+			},
+			"repository":   map[string]any{"name": "delete-lock", "owner": map[string]any{"login": "acme"}},
+			"installation": map[string]any{"id": installationID},
+		}
+		raw, _ := json.Marshal(payload)
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(raw)
+		req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		w := httptest.NewRecorder()
+		testHandler.HandleGitHubWebhook(w, req)
+		return w.Code
+	}
+	if code := fire("open", false, "2026-07-26T00:01:00Z"); code != http.StatusAccepted {
+		t.Fatalf("seed webhook status=%d", code)
+	}
+
+	deleteLocked := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	testHandler.IssueDeleteHook = func(stage string) {
+		if stage == "completion_lock_acquired" {
+			close(deleteLocked)
+			<-releaseDelete
+		}
+	}
+	deleteDone := make(chan int, 1)
+	go func() {
+		req := newRequest(http.MethodDelete, "/api/issues/"+issueA.ID+"?workspace_id="+testWorkspaceID, nil)
+		req = withURLParam(req, "id", issueA.ID)
+		w := httptest.NewRecorder()
+		testHandler.DeleteIssue(w, req)
+		deleteDone <- w.Code
+	}()
+	select {
+	case <-deleteLocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not acquire Issue completion lock")
+	}
+	webhookDone := make(chan int, 1)
+	go func() { webhookDone <- fire("closed", true, "2026-07-26T00:02:00Z") }()
+	select {
+	case code := <-webhookDone:
+		t.Fatalf("webhook crossed delete lock with status=%d", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(releaseDelete)
+	if code := <-deleteDone; code != http.StatusNoContent {
+		t.Fatalf("delete status=%d", code)
+	}
+	testHandler.IssueDeleteHook = nil
+	if code := <-webhookDone; code != http.StatusAccepted {
+		t.Fatalf("webhook retry status=%d", code)
+	}
+	assertIssueStatus(t, issueB.ID, "done")
+	var deletedCount, remainingLinks int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM issue WHERE id=$1`, issueA.ID).Scan(&deletedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM issue_pull_request WHERE issue_id=$1`, issueB.ID).Scan(&remainingLinks); err != nil {
+		t.Fatal(err)
+	}
+	if deletedCount != 0 || remainingLinks != 1 {
+		t.Fatalf("post-race deletedCount=%d remainingLinks=%d", deletedCount, remainingLinks)
+	}
+}
+
+func TestGitHubInstallationDeleteSerializesBeforeProviderFact(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-installation-delete-lock-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issue := createPRCompletionLeafIssue(t, "github installation delete lock", "in_progress")
+	installationID := int64(97500000 + time.Now().UnixNano()%1000000)
+	installation, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-installation-delete-lock", AccountType: "User",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testHandler.IssueDeleteHook = nil
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id=$1`, issue.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='installation-delete-lock'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+	fire := func(state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": "closed",
+			"pull_request": map[string]any{
+				"number": 9992, "html_url": "https://github.test/acme/installation-delete-lock/pull/9992",
+				"title": "Fix " + issue.Identifier, "body": "Closes " + issue.Identifier,
+				"state": state, "merged": merged, "draft": false,
+				"created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "installation-delete-lock", "sha": "installation-delete-lock-sha"},
+				"user": map[string]any{"login": "octocat"},
+			},
+			"repository":   map[string]any{"name": "installation-delete-lock", "owner": map[string]any{"login": "acme"}},
+			"installation": map[string]any{"id": installationID},
+		}
+		raw, _ := json.Marshal(payload)
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(raw)
+		req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		w := httptest.NewRecorder()
+		testHandler.HandleGitHubWebhook(w, req)
+		return w.Code
+	}
+	if status := fire("open", false, "2026-07-26T00:01:00Z"); status != http.StatusAccepted {
+		t.Fatalf("seed status=%d", status)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	testHandler.IssueDeleteHook = func(stage string) {
+		if stage == "github_installation_completion_locks_acquired" {
+			close(locked)
+			<-release
+		}
+	}
+	deleteDone := make(chan int, 1)
+	go func() {
+		req := newRequest(http.MethodDelete, "/api/workspaces/"+testWorkspaceID+"/github/installations/"+uuidToString(installation.ID), nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", testWorkspaceID)
+		rctx.URLParams.Add("installationId", uuidToString(installation.ID))
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		w := httptest.NewRecorder()
+		testHandler.DeleteGitHubInstallation(w, req)
+		deleteDone <- w.Code
+	}()
+	select {
+	case <-locked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("installation delete did not acquire provider/Issue locks")
+	}
+	webhookDone := make(chan int, 1)
+	go func() { webhookDone <- fire("closed", true, "2026-07-26T00:02:00Z") }()
+	select {
+	case status := <-webhookDone:
+		t.Fatalf("GitHub provider crossed installation delete lock status=%d", status)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if status := <-deleteDone; status != http.StatusNoContent {
+		t.Fatalf("installation delete status=%d", status)
+	}
+	testHandler.IssueDeleteHook = nil
+	if status := <-webhookDone; status != http.StatusAccepted {
+		t.Fatalf("post-delete webhook status=%d", status)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+}
+
+func TestGitHubWebhookRejectsStaleEqualAndPostMergeRegression(t *testing.T) {
+	ctx := context.Background()
+	secret := "github-stale-fact-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	issue := createPRCompletionLeafIssue(t, "github stale fact", "in_progress")
+	installationID := int64(97100000 + time.Now().UnixNano()%1000000)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID,
+		AccountLogin: "github-stale-fact", AccountType: "User",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id=$1`, issue.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id=$1 AND repo_name='stale-fact'`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id=$1`, installationID)
+	})
+
+	fire := func(number int32, state string, merged bool, updatedAt, title, body string) int {
+		payload := map[string]any{
+			"action": "closed",
+			"pull_request": map[string]any{
+				"number": number, "html_url": fmt.Sprintf("https://github.test/acme/stale-fact/pull/%d", number),
+				"title": title, "body": body, "state": state, "merged": merged, "draft": false,
+				"created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if state == "closed" {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "stale-fact", "sha": fmt.Sprintf("sha-%d-%s", number, updatedAt)},
+				"user": map[string]any{"login": "octocat"},
+			},
+			"repository":   map[string]any{"name": "stale-fact", "owner": map[string]any{"login": "acme"}},
+			"installation": map[string]any{"id": installationID},
+		}
+		raw, _ := json.Marshal(payload)
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(raw)
+		req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", bytes.NewReader(raw))
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		w := httptest.NewRecorder()
+		testHandler.HandleGitHubWebhook(w, req)
+		return w.Code
+	}
+
+	// Equal provider timestamps are allowed for ordinary non-merged facts. The
+	// second fact updates the PR and removes its authoritative issue metadata.
+	const equalNumber int32 = 8786
+	if code := fire(equalNumber, "open", false, "2026-07-26T00:01:00Z", "Open "+issue.Identifier, "Closes "+issue.Identifier); code != http.StatusAccepted {
+		t.Fatalf("equal seed webhook status=%d", code)
+	}
+	if code := fire(equalNumber, "closed", false, "2026-07-26T00:01:00Z", "No issue reference", ""); code != http.StatusAccepted {
+		t.Fatalf("equal update webhook status=%d", code)
+	}
+	equalPR, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "stale-fact", PrNumber: equalNumber,
+	})
+	if err != nil || equalPR.State != "closed" {
+		t.Fatalf("equal-time PR state=%q err=%v", equalPR.State, err)
+	}
+	var closeIntent, referenceOnly bool
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2`, issue.ID, equalPR.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if closeIntent || !referenceOnly {
+		t.Fatalf("equal-time metadata close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+
+	const number int32 = 8787
+	if code := fire(number, "closed", true, "2026-07-26T00:03:00Z", "Fix "+issue.Identifier, "Closes "+issue.Identifier); code != http.StatusAccepted {
+		t.Fatalf("merged webhook status=%d", code)
+	}
+	for _, regression := range []struct {
+		state, updated, title, body string
+	}{
+		{state: "open", updated: "2026-07-26T00:02:00Z", title: "stale open", body: "no reference"},
+		{state: "closed", updated: "2026-07-26T00:03:00Z", title: "equal replay", body: "no reference"},
+		{state: "closed", updated: "2026-07-26T00:04:00Z", title: "post-merge regression", body: "no reference"},
+	} {
+		if code := fire(number, regression.state, false, regression.updated, regression.title, regression.body); code != http.StatusAccepted {
+			t.Fatalf("regression webhook status=%d", code)
+		}
+	}
+	pr, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "stale-fact", PrNumber: number,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantUpdatedAt, _ := time.Parse(time.RFC3339, "2026-07-26T00:03:00Z")
+	if pr.State != "merged" || pr.Title != "Fix "+issue.Identifier || !pr.PrUpdatedAt.Time.Equal(wantUpdatedAt) {
+		t.Fatalf("merged fact regressed: state=%s title=%q updated=%s", pr.State, pr.Title, pr.PrUpdatedAt.Time)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2`, issue.ID, pr.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if !closeIntent || referenceOnly {
+		t.Fatalf("stale metadata rewrote merged link: close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+
+	// Concurrent delivery order is irrelevant under the identity lock: the
+	// newer merged fact wins whether it arrives before or after the stale open.
+	const concurrentNumber int32 = 8788
+	codes := make(chan int, 2)
+	go func() {
+		codes <- fire(concurrentNumber, "open", false, "2026-07-26T00:05:00Z", "Open "+issue.Identifier, "Related "+issue.Identifier)
+	}()
+	go func() {
+		codes <- fire(concurrentNumber, "closed", true, "2026-07-26T00:06:00Z", "Fix "+issue.Identifier, "Closes "+issue.Identifier)
+	}()
+	for range 2 {
+		if code := <-codes; code != http.StatusAccepted {
+			t.Fatalf("concurrent webhook status=%d", code)
+		}
+	}
+	concurrentPR, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "stale-fact", PrNumber: concurrentNumber,
+	})
+	if err != nil || concurrentPR.State != "merged" {
+		t.Fatalf("concurrent final state=%q err=%v", concurrentPR.State, err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_pull_request WHERE issue_id=$1 AND pull_request_id=$2`, issue.ID, concurrentPR.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if !closeIntent || referenceOnly {
+		t.Fatalf("concurrent merged metadata close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+	assertIssueStatus(t, issue.ID, "done")
+}
+
 func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
@@ -398,14 +1029,8 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	secret := "merge-sync-test-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	// Seed an issue we expect the webhook to close out.
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "PR auto-merge test",
-		"status": "in_progress",
-	})
-	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
+	// Seed a leaf child; provider completion is deliberately leaf-child-only.
+	created := createPRCompletionLeafIssue(t, "PR auto-merge test", "in_progress")
 
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
@@ -458,7 +1083,7 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req2.Header.Set("X-GitHub-Event", "pull_request")
 	req2.Header.Set("X-Hub-Signature-256", sig)
-	w = testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
 
 	// Verify PR row + link + issue status.
 	pr, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
@@ -611,13 +1236,7 @@ func TestWebhook_MergedPR_WaitsForOpenSibling(t *testing.T) {
 	secret := "multi-pr-test-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "Multi-PR auto-merge test",
-		"status": "in_progress",
-	})
-	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
+	created := createPRCompletionLeafIssue(t, "Multi-PR auto-merge test", "in_progress")
 
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
@@ -778,13 +1397,7 @@ func TestWebhook_ClosedSiblingAfterMerge(t *testing.T) {
 	secret := "closed-sibling-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "Closed sibling after merge",
-		"status": "in_progress",
-	})
-	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
+	created := createPRCompletionLeafIssue(t, "Closed sibling after merge", "in_progress")
 
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
@@ -936,20 +1549,10 @@ func TestWebhook_MergedPR_OnlyClosesIdentifiersWithClosingKeyword(t *testing.T) 
 	secret := "closing-keyword-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	// Three issues to mention in the same PR body.
+	// Three leaf children to mention in the same PR body.
 	createIssue := func(title string) IssueResponse {
 		t.Helper()
-		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-			"title":  title,
-			"status": "in_progress",
-		})
-		w := testutil.Call(t, testHandler.CreateIssue, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateIssue %q: %d %s", title, w.Code, w.Body.String())
-		}
-		var out IssueResponse
-		json.NewDecoder(w.Body).Decode(&out)
-		return out
+		return createPRCompletionLeafIssue(t, title, "in_progress")
 	}
 	closes := createIssue("primary work")
 	followUp := createIssue("follow up work")
@@ -1318,13 +1921,7 @@ func TestWebhook_LinkOnlySiblingMergeAfterCloseKeywordPR(t *testing.T) {
 	secret := "link-only-sibling-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "needs two prs",
-		"status": "in_progress",
-	})
-	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
+	created := createPRCompletionLeafIssue(t, "needs two prs", "in_progress")
 
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
@@ -1462,13 +2059,7 @@ func TestWebhook_HiddenBodyMentionDoesNotBlockAutoAdvance(t *testing.T) {
 	secret := "hidden-mention-gate-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title":  "closing PR plus invisible mention",
-		"status": "in_progress",
-	})
-	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
+	created := createPRCompletionLeafIssue(t, "closing PR plus invisible mention", "in_progress")
 
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
@@ -2014,9 +2605,9 @@ func TestGitHubInstallationBroadcastRedaction(t *testing.T) {
 
 // TestWebhook_MergedPR_ChildWithParent_NotifiesParent guards the MUL-2538
 // must-fix: a merged PR is the dominant path by which a sub-issue actually
-// reaches `done`, and that path goes through advanceIssueToDone — not the
-// HTTP UpdateIssue / BatchUpdateIssues handlers that originally wired up
-// notifyParentOfChildDone. Without the helper call inside advanceIssueToDone,
+// reaches `done`, and that path goes through the shared provider completion
+// kernel — not the HTTP UpdateIssue / BatchUpdateIssues handlers that originally
+// wired up notifyParentOfChildDone. Without notification in that kernel,
 // the parent receives nothing when a child is closed by merging its PR.
 // This test fires a `pull_request closed merged` webhook against a child
 // issue and verifies the parent gets exactly one platform-generated system
@@ -2134,6 +2725,180 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 			t.Errorf("system comment must not include %q mention (parent unassigned), got: %s", banned, content)
 		}
 	}
+}
+
+// TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake guards the
+// completion-policy boundary. A provider merge must still be mirrored and
+// linked, but external_pr_completion_policy=record_only forbids the automatic
+// issue transition that would close the stage barrier and notify the parent.
+func TestWebhook_MergedPR_RecordOnlyChildStaysActiveWithoutStageWake(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "record-only-stage-wake-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	parent, child := createRecordOnlyPRTestIssuePair(t, "github")
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, child.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	setCompletionPolicyViaHandler(t, child.ID, "record_only")
+
+	const installationID int64 = 88990012
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "record-only-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	firePRWebhook(t, secret, installationID, 4343, "Fix "+child.Identifier, "Closes "+child.Identifier, "fix/record-only-child", "merged")
+
+	updatedChild, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("GetIssue child: %v", err)
+	}
+	if updatedChild.Status != "in_progress" {
+		t.Fatalf("record-only child status = %q, want in_progress", updatedChild.Status)
+	}
+
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue: %v", err)
+	}
+	if len(linked) != 1 || linked[0].State != "merged" {
+		t.Fatalf("provider merge was not recorded: %+v", linked)
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent.ID).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("record-only provider merge emitted %d parent stage wake comments, want 0", systemComments)
+	}
+}
+
+func TestPublicCompletionRechecksPolicyAtTerminalUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	parent, child := createRecordOnlyPRTestIssuePair(t, "atomic-public")
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pr_reconcile_finalization WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pr_reconcile_work WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_receipt WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM external_pull_request_link WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id IN ($1, $2)`, child.ID, parent.ID)
+		_ = testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: parseUUID(child.ID), WorkspaceID: parseUUID(testWorkspaceID)})
+		_ = testHandler.Queries.DeleteIssue(ctx, db.DeleteIssueParams{ID: parseUUID(parent.ID), WorkspaceID: parseUUID(testWorkspaceID)})
+	})
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var boundaryOnce sync.Once
+	workerHandler := *testHandler
+	workerHandler.PullRequestFactHook = func(provider, stage string) {
+		if provider == "completion" && stage == "current_loaded_before_terminal_update" {
+			boundaryOnce.Do(func() {
+				reached <- struct{}{}
+				<-release
+			})
+		}
+	}
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "stale-policy-public-token")
+	request := externalPRCompletionReq(testWorkspaceID, child.ID, 2191)
+	req := newRequest(http.MethodPost, "/api/integrations/external-pr/complete-from-merge", request)
+	req.Header.Set("Authorization", "Bearer stale-policy-public-token")
+	w := httptest.NewRecorder()
+	testHandler.CompleteIssueFromExternalPR(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("typed completion acknowledgement status=%d body=%s", w.Code, w.Body.String())
+	}
+	var acknowledgement externalCompleteFromPRResponse
+	if err := json.NewDecoder(w.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode typed completion acknowledgement: %v", err)
+	}
+	if acknowledgement.Outcome != "accepted" || acknowledgement.Reason != "queued_for_reconciliation" {
+		t.Fatalf("typed completion acknowledgement=%#v, want accepted/queued_for_reconciliation", acknowledgement)
+	}
+
+	workerDone := make(chan error, 1)
+	go func() {
+		_, err := ExternalPRReconcileJob(testPool, &workerHandler).Handler(ctx, scheduler.HandlerInput{RunnerID: "stale-policy-public-worker"})
+		workerDone <- err
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile worker did not reach terminal boundary")
+	}
+	setCompletionPolicyViaHandler(t, child.ID, "record_only")
+	close(release)
+	if err := <-workerDone; err != nil {
+		t.Fatalf("reconcile worker returned error: %v", err)
+	}
+
+	assertIssueStatus(t, child.ID, "in_progress")
+	var completionActivities, recordedWork, parentComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM activity_log WHERE issue_id=$1 AND action='issue_completed_by_external_pr'`, child.ID).Scan(&completionActivities); err != nil {
+		t.Fatalf("count completion activity: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM external_pr_reconcile_work WHERE issue_id=$1 AND state='recorded'`, child.ID).Scan(&recordedWork); err != nil {
+		t.Fatalf("count recorded reconcile work: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system' AND type='system'`, parent.ID).Scan(&parentComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if completionActivities != 0 || recordedWork != 1 || parentComments != 0 {
+		t.Fatalf("stale policy effects=(completion_activities=%d,recorded_work=%d,parent_comments=%d), want (0,1,0)", completionActivities, recordedWork, parentComments)
+	}
+}
+
+func createRecordOnlyPRTestIssuePair(t *testing.T, prefix string) (IssueResponse, IssueResponse) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  prefix + " record-only parent " + time.Now().Format(time.RFC3339Nano),
+		"status": "in_progress",
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue parent: %d %s", w.Code, w.Body.String())
+	}
+	var parent IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
+		t.Fatalf("decode parent: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           prefix + " record-only child " + time.Now().Format(time.RFC3339Nano),
+		"status":          "in_progress",
+		"parent_issue_id": parent.ID,
+		"stage":           int32(2),
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue child: %d %s", w.Code, w.Body.String())
+	}
+	var child IssueResponse
+	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
+		t.Fatalf("decode child: %v", err)
+	}
+	return parent, child
 }
 
 // generateTestRSAKeyPEM mints an RSA-2048 key, returns its PKCS#1 PEM

@@ -97,6 +97,27 @@ INSERT INTO inbox_item (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()))
 RETURNING *;
 
+-- name: CreateInboxItemWithDeliveryKey :one
+-- This narrow variant is used only by typed durable finalization events. The
+-- delivery key is not a generic event ledger: it prevents one replayed
+-- external-PR status hint from creating duplicate inbox rows for a recipient.
+INSERT INTO inbox_item (
+    workspace_id, recipient_type, recipient_id,
+    type, severity, issue_id, title, body,
+    actor_type, actor_id, details, delivery_key
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (workspace_id, recipient_type, recipient_id, delivery_key)
+    WHERE delivery_key IS NOT NULL
+DO NOTHING
+RETURNING *;
+
+-- name: GetInboxItemByDeliveryKey :one
+SELECT * FROM inbox_item
+WHERE workspace_id = $1
+  AND recipient_type = $2
+  AND recipient_id = $3
+  AND delivery_key = $4;
+
 -- name: MarkInboxRead :one
 UPDATE inbox_item SET read = true
 WHERE id = $1

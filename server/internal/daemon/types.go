@@ -82,6 +82,7 @@ type IssueStatusData struct {
 // Agent data (name, skills) is populated by the claim endpoint.
 type Task struct {
 	ID                   string                 `json:"id"`
+	ExecutionID          string                 `json:"execution_id"`
 	AgentID              string                 `json:"agent_id"`
 	RuntimeID            string                 `json:"runtime_id"`
 	IssueID              string                 `json:"issue_id"`

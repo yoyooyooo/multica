@@ -1,4 +1,6 @@
 import { Instrument_Serif } from "next/font/google";
+// Build-time Google Font files live in apps/web/offline-fonts. Update
+// font-requests.json and regenerate that mock before changing this call.
 import { LocaleProvider } from "@/features/landing/i18n";
 import { getRequestLocale } from "@/lib/request-locale";
 

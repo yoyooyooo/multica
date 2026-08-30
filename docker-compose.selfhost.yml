@@ -11,6 +11,7 @@
 # Usage:
 #   cp .env.example .env
 #   # Edit .env — generate JWT_SECRET with `openssl rand -hex 32` (required)
+#   docker compose -f docker-compose.selfhost.yml config >/dev/null
 #   docker compose -f docker-compose.selfhost.yml up -d
 #
 # Frontend: http://localhost:${FRONTEND_PORT:-3000}
@@ -60,7 +61,7 @@ services:
     ports:
       - "127.0.0.1:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
     volumes:
-      - backend_uploads:/app/data/uploads
+      - ./data/uploads:/app/data/uploads
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@postgres:5432/${POSTGRES_DB:-multica}?sslmode=disable
       PORT: "8080"
@@ -100,6 +101,13 @@ services:
       MULTICA_DATABASE_CONNECT_TIMEOUT: ${MULTICA_DATABASE_CONNECT_TIMEOUT:-5s}
       MULTICA_SHUTDOWN_HOLD_DURATION: ${MULTICA_SHUTDOWN_HOLD_DURATION:-}
       MULTICA_RUNTIME_RECONNECT_GRACE: ${MULTICA_RUNTIME_RECONNECT_GRACE:-}
+      # Fork-only external PR callbacks.
+      # Secret values come from .env, shell, or deployment secret management.
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_SECRET:-}
+      MULTICA_EXTERNAL_PR_SERVICE_TOKEN: ${MULTICA_EXTERNAL_PR_SERVICE_TOKEN:-}
+      MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID: ${MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID:-}
+      MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE: ${MULTICA_EXTERNAL_PR_LINK_TOKEN_AUDIENCE:-external-pr-link}
+      MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS: ${MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}
@@ -164,6 +172,17 @@ services:
       MULTICA_LARK_SECRET_KEY: ${MULTICA_LARK_SECRET_KEY:-}
       MULTICA_LARK_HTTP_BASE_URL: ${MULTICA_LARK_HTTP_BASE_URL:-}
       MULTICA_LARK_CALLBACK_BASE_URL: ${MULTICA_LARK_CALLBACK_BASE_URL:-}
+      MULTICA_LARK_WS_PROXY_URL: ${MULTICA_LARK_WS_PROXY_URL:-}
+      # Keep self-host outbound registration direct by default. Some Docker
+      # runtimes inject a stale host proxy into containers, which makes Lark /
+      # Feishu registration fail with unexpected EOF. Explicit base-URL knobs
+      # above remain the supported proxy/mock route.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
       # Slack bot integration. MULTICA_SLACK_SECRET_KEY is the opt-in: unset =
       # integration disabled. It decrypts the per-installation bot/app tokens,
       # which are brought by each workspace via OAuth/BYO and stored encrypted
@@ -212,4 +231,3 @@ services:
 
 volumes:
   pgdata:
-  backend_uploads:

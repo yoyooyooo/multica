@@ -59,6 +59,7 @@ import type {
   IssueTableFacetsResponse,
   IssueTableGroupsResponse,
   IssueTableRowsResponse,
+  ListExternalPullRequestLinksResponse,
   ListIssuesResponse,
   ListGitHubInstallationsResponse,
   ListGitHubRepositoriesResponse,
@@ -432,6 +433,36 @@ export const IssuePullRequestsResponseSchema = z.object({
 
 export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: { pull_requests: GitHubPullRequest[] } = {
   pull_requests: [],
+};
+
+const ExternalPullRequestNumberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+
+export const ExternalPullRequestLinkSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  issue_id: z.string(),
+  provider: z.string(),
+  external_repo: z.string(),
+  external_number: ExternalPullRequestNumberSchema,
+  external_url: z.string().nullable().default(null),
+  state: z.string(),
+  link_confidence: z.string(),
+  completion_intent: z.boolean().default(false),
+  merge_provider: z.string().nullable().default(null),
+  merge_repo: z.string().nullable().default(null),
+  merge_number: ExternalPullRequestNumberSchema.nullable().default(null),
+  merge_url: z.string().nullable().default(null),
+  merged_sha: z.string().nullable().default(null),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ExternalPullRequestsResponseSchema = z.object({
+  external_pull_requests: z.array(ExternalPullRequestLinkSchema).default([]),
+}).loose();
+
+export const EMPTY_EXTERNAL_PULL_REQUESTS_RESPONSE: ListExternalPullRequestLinksResponse = {
+  external_pull_requests: [],
 };
 
 // Label responses are consumed by settings tables and resource pickers. Keep

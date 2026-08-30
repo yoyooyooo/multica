@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica validate-cli-build-version build-cli build install-local-fork-cli install-local-fork-cli-plan test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost-migrate-uploads selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -79,6 +79,10 @@ makehelp: help ## Alias for `make help`
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
 
+selfhost-migrate-uploads: ## Copy verified legacy uploads into the bind-owned path before a self-host switch
+	$(REQUIRE_COMPOSE)
+	@bash scripts/migrate-selfhost-uploads.sh
+
 selfhost: ## Create .env if needed, then pull and start the official self-hosted images
 	$(REQUIRE_COMPOSE)
 	@if [ ! -f .env ]; then \
@@ -108,6 +112,7 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		echo "  make selfhost-build"; \
 		exit 1; \
 	fi
+	@bash scripts/migrate-selfhost-uploads.sh
 	@echo "==> Starting Multica via Docker Compose..."
 	$(COMPOSE) -f docker-compose.selfhost.yml up -d
 	@bash scripts/selfhost-wait.sh official
@@ -134,7 +139,9 @@ selfhost-build: ## Build backend/web from the current checkout and start the sel
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
 	@echo "==> Building Multica from the current checkout..."
-	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build
+	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml build
+	@bash scripts/migrate-selfhost-uploads.sh
+	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d
 	@bash scripts/selfhost-wait.sh build
 
 selfhost-stop: ## Stop the self-hosted Docker Compose stack
@@ -336,10 +343,23 @@ DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 # recursive one — which prints `go: Command not found` on frontend-only
 # checkouts with no Go toolchain installed.
 build: EXE = $(if $(filter windows,$(or $(GOOS),$(shell go env GOOS))),.exe,)
-build: ## Build the server, CLI, and migrate binaries into server/bin
-	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/server$(EXE) ./cmd/server
+
+validate-cli-build-version: ## Reject CLI versions that daemon capability gates cannot parse
+	@bash scripts/validate-cli-build-version.sh "$(VERSION)"
+
+build-cli: validate-cli-build-version ## Build the source-pinned Multica CLI into server/bin
 	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)" -o bin/multica$(EXE) ./cmd/multica
+
+build: validate-cli-build-version ## Build the server, CLI, and migrate binaries into server/bin
+	cd server && go build -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o bin/server$(EXE) ./cmd/server
+	@$(MAKE) build-cli
 	cd server && go build -o bin/migrate$(EXE) ./cmd/migrate
+
+install-local-fork-cli: ## Build, activate, and restart the local fork CLI/daemon (PROFILE=mini)
+	@PROFILE="$(or $(PROFILE),mini)" bash scripts/install-local-fork-cli.sh
+
+install-local-fork-cli-plan: ## Preview local fork CLI/daemon activation without changing runtime state
+	@PROFILE="$(or $(PROFILE),mini)" bash scripts/install-local-fork-cli.sh --plan
 
 test: ## Run Go tests after ensuring the target DB exists and migrations are applied
 	$(REQUIRE_ENV)

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "sh -c 'next dev --webpack --port \"${FRONTEND_PORT:-3000}\"'",
-    "build": "fumadocs-mdx && next build --webpack",
+    "dev": "sh -c 'export NEXT_FONT_GOOGLE_MOCKED_RESPONSES=\"$PWD/offline-fonts/responses.cjs\"; next dev --webpack --port \"${FRONTEND_PORT:-3000}\"'",
+    "build": "fumadocs-mdx && node ./offline-fonts/with-mocked-google-fonts.cjs build --webpack",
     "start": "next start",
     "typecheck": "fumadocs-mdx && tsc --noEmit",
     "lint": "eslint .",

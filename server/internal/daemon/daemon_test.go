@@ -173,6 +173,12 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		// Reasonix credentials/config remain tool-owned and may use a custom
 		// home; only the daemon-owned state overlay is blocked above.
 		{key: "REASONIX_HOME", want: false},
+		// AGS-T022 Stage 1: platform owns Git author/committer identity.
+		{key: "GIT_AUTHOR_NAME", want: true},
+		{key: "GIT_AUTHOR_EMAIL", want: true},
+		{key: "GIT_COMMITTER_NAME", want: true},
+		{key: "GIT_COMMITTER_EMAIL", want: true},
+		{key: "git_author_name", want: true},
 	}
 
 	for _, tt := range tests {
@@ -534,6 +540,82 @@ func TestTaskScopedAuthToken(t *testing.T) {
 	}
 }
 
+func TestTaskCanonicalRunID(t *testing.T) {
+	t.Parallel()
+	if got := taskCanonicalRunID(Task{}); got != "" {
+		t.Fatalf("empty task got %q", got)
+	}
+	if got := taskCanonicalRunID(Task{ID: "task-id"}); got != "task-id" {
+		t.Fatalf("missing execution id fallback got %q", got)
+	}
+	if got := taskCanonicalRunID(Task{ID: "task-id", ExecutionID: " execution-id "}); got != "execution-id" {
+		t.Fatalf("taskCanonicalRunID()=%q", got)
+	}
+}
+
+func TestPrependTaskToolPathDefaultsToDirectCLIAndRequiresCompleteShimPair(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inherited := filepath.Join(homeDir, "bin")
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != inherited {
+		t.Fatalf("missing shims changed PATH: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != inherited {
+		t.Fatalf("partial shim pair changed PATH: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "gh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != inherited {
+		t.Fatalf("default mode enabled complete shim pair: %q", got)
+	}
+	want := shimDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != want {
+		t.Fatalf("complete shim pair PATH=%q, want %q", got, want)
+	}
+	managedBinDir := filepath.Join(homeDir, ".local", "bin")
+	if err := os.MkdirAll(managedBinDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedBinDir, "ags-cli"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want = managedBinDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolPath(inherited, homeDir, "linux", false); got != want {
+		t.Fatalf("direct managed CLI PATH=%q, want %q", got, want)
+	}
+	want = shimDir + string(os.PathListSeparator) + managedBinDir + string(os.PathListSeparator) + inherited
+	if got := prependTaskToolPath(inherited, homeDir, "linux", true); got != want {
+		t.Fatalf("managed CLI PATH=%q, want %q", got, want)
+	}
+}
+
+func TestPrependTaskToolPathAcceptsWindowsLaunchers(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	shimDir := filepath.Join(homeDir, ".ags-cli", "shims")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"git.cmd", "gh.exe"} {
+		if err := os.WriteFile(filepath.Join(shimDir, name), []byte("shim"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := prependTaskToolPath("", homeDir, "windows", true); got != shimDir {
+		t.Fatalf("Windows shim PATH=%q, want %q", got, shimDir)
+	}
+}
+
 func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 	t.Parallel()
 
@@ -559,6 +641,7 @@ func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 		"MULTICA_AGENT_NAME":           "agent-name",
 		"MULTICA_AGENT_ID":             "agent-test",
 		"MULTICA_TASK_ID":              "task-test",
+		"MULTICA_RUN_ID":               "task-test",
 		"MULTICA_TASK_SLOT":            "3",
 		"TMPDIR":                       "/task/tmp",
 		"TMP":                          "/task/tmp",

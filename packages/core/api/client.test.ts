@@ -306,6 +306,78 @@ describe("ApiClient Plugin surface bridge routes", () => {
   });
 });
 
+describe("ApiClient External PR projection", () => {
+  it("requests and parses the provider-neutral Issue projection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          external_pull_requests: [
+            {
+              id: "external-pr-1",
+              workspace_id: "ws-1",
+              issue_id: "issue-1",
+              provider: "ags",
+              external_repo: "jackie/agent-kit",
+              external_number: 279,
+              external_url: "http://mini:6666/jackie/agent-kit/pull/279",
+              state: "closed",
+              link_confidence: "authoritative",
+              completion_intent: true,
+              merge_provider: "forgejo",
+              merge_repo: "jackie/agent-kit",
+              merge_number: 266,
+              merge_url: "http://forgejo.local/jackie/agent-kit/pulls/266",
+              merged_sha: null,
+              created_at: "2026-07-28T11:14:00Z",
+              updated_at: "2026-07-28T11:18:35Z",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new ApiClient(
+      "https://api.example.test",
+    ).listIssueExternalPullRequests("issue-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/issues/issue-1/external-prs",
+      expect.any(Object),
+    );
+    expect(result.external_pull_requests[0]).toMatchObject({
+      provider: "ags",
+      external_number: 279,
+      merge_provider: "forgejo",
+      merge_number: 266,
+    });
+  });
+
+  it("falls back to an empty projection on malformed rows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            external_pull_requests: [
+              {
+                id: "external-pr-1",
+                external_number: "279",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listIssueExternalPullRequests("issue-1"),
+    ).resolves.toEqual({ external_pull_requests: [] });
+  });
+});
+
 describe("ApiClient server Table query", () => {
   it("posts the canonical query to the group and branch endpoints", async () => {
     const fetchMock = vi

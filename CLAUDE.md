@@ -28,6 +28,19 @@ Multica is an AI-native task management platform for small teams, with agents as
 
 Shared packages export raw `.ts` / `.tsx` and are compiled by consuming apps. Dependency direction is `views -> core + ui`; `core` and `ui` must stay independent.
 
+## Fork Branch and Generation Rules
+
+This repository is operated as an official-tag-derived fork. The detailed procedure is [Fork Development Standard](docs/standards/fork-development.md).
+
+- `main` mirrors `upstream/main`; fork-only PRs never target it.
+- Active fork authority is `fork/v<official-release>`, created from the exact official tag. No movable `fork/latest` exists.
+- Feature/fix branches target the active generation; integration is fast-forward only.
+- Upgrades inventory every prior generation and donor delta at commit/file granularity, then classify each as `keep`, `rework`, `superseded`, `retire`, or `blocked`. A prior squash is not proof that older UI/runtime/operations deltas were absorbed.
+- Current fork capability narratives live under `docs/features/fork/`; generation manifests live under `docs/releases/fork-generations/`.
+- Source-built deployable versions must pass `make validate-cli-build-version` and use a clean `git describe` value.
+- On an owner-controlled machine that intentionally runs the fork, use `make install-local-fork-cli PROFILE=<profile>` and follow [Local Fork Runtime](docs/standards/local-fork-runtime.md); the CLI and daemon are the same binary, while Docker backend/frontend deployment remains separate.
+- Backend/frontend deployment artifacts come from one exact deployment source; deployment evidence records image digests, preserved storage/network authority, runtime readback, and rollback boundary.
+
 ## State Rules
 
 Keep server state and client state separate.
@@ -250,8 +263,8 @@ Do not claim verification passed unless you ran it. If you skip checks because t
 ## Commits and Releases
 
 - Commits should be atomic and use conventional prefixes: `feat(scope)`, `fix(scope)`, `refactor(scope)`, `docs`, `test(scope)`, `chore(scope)`.
-- A production deployment requires a CLI release tag on `main`: create `v0.x.x`, push it, and let `release.yml` publish binaries and the Homebrew tap.
-- Bump patch by default unless the user specifies a version.
+- Official `vX.Y.Z` tags are upstream baseline tags; do not create or move one for fork commits.
+- Fork promotion follows the [Fork Development Standard](docs/standards/fork-development.md): versioned generation, exact source, parser-compatible build version, immutable deployment tag, artifact/runtime evidence, and explicit rollback.
 
 ## Domain Reminders
 

@@ -8,8 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,17 +78,7 @@ func cleanupVCS(ctx context.Context, issueID string) {
 
 func newVCSIssue(t *testing.T, title string) IssueResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
-	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-		"title": title, "status": "in_progress",
-	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
-	var created IssueResponse
-	json.NewDecoder(w.Body).Decode(&created)
-	return created
+	return createPRCompletionLeafIssue(t, title, "in_progress")
 }
 
 func vcsWebhookReq(connID string, headers map[string]string, raw []byte) *http.Request {
@@ -102,6 +95,330 @@ func giteaSig(raw []byte) string {
 	mac := hmac.New(sha256.New, []byte(vcsTestSecret))
 	mac.Write(raw)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestVCSWebhookSerializesStateAndRemovedIdentifierMetadata(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-atomic.test")
+	issue := newVCSIssue(t, "VCS atomic fact")
+	t.Cleanup(func() {
+		testHandler.PullRequestFactHook = nil
+		cleanupVCS(ctx, issue.ID)
+	})
+
+	fire := func(action, title, body, state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": action,
+			"pull_request": map[string]any{
+				"number": 79, "html_url": "https://forgejo-atomic.test/acme/widget/pulls/79",
+				"title": title, "body": body, "state": state, "merged": merged,
+				"created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if state == "closed" {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "atomic-vcs", "sha": "atomic-vcs-sha"},
+				"user": map[string]any{"username": "octo"},
+			},
+			"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+		}
+		raw, _ := json.Marshal(payload)
+		w := httptest.NewRecorder()
+		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+			"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+		}, raw))
+		return w.Code
+	}
+	if code := fire("opened", "Fix "+issue.Identifier, "Closes "+issue.Identifier, "open", false, "2026-07-26T00:01:00Z"); code != http.StatusAccepted {
+		t.Fatalf("seed VCS webhook status=%d", code)
+	}
+
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	testHandler.PullRequestFactHook = func(provider, stage string) {
+		if provider == "vcs" && stage == "state_written_before_links" {
+			reached <- struct{}{}
+			<-release
+		}
+	}
+	webhookDone := make(chan int, 1)
+	go func() {
+		webhookDone <- fire("closed", "Remove issue reference", "No issue identifier remains", "closed", true, "2026-07-26T00:02:00Z")
+	}()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("VCS adapter did not reach in-transaction hook")
+	}
+	t.Setenv("MULTICA_EXTERNAL_PR_SERVICE_TOKEN", "vcs-public-terminal-token")
+	externalClosed := externalPRCompletionReq(testWorkspaceID, issue.ID, nextCompletionPolicyPRNumber())
+	externalClosed.State = "closed"
+	externalClosed.MergedSHA = ""
+	externalIntent := false
+	externalClosed.CompletionIntent = &externalIntent
+	resultCh := make(chan int, 1)
+	go func() {
+		resultCh <- registerExternalPRViaHandlerWithToken(externalClosed, "vcs-public-terminal-token")
+	}()
+	select {
+	case result := <-resultCh:
+		t.Fatalf("public terminal handler crossed VCS fact transaction: status=%d", result)
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(release)
+	if code := <-webhookDone; code != http.StatusAccepted {
+		t.Fatalf("terminal VCS webhook status=%d", code)
+	}
+	if status := <-resultCh; status != http.StatusOK {
+		t.Fatalf("post-commit public register status=%d", status)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+	var closeIntent, referenceOnly bool
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_vcs_pull_request WHERE issue_id=$1`, issue.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if closeIntent || !referenceOnly {
+		t.Fatalf("removed identifier metadata close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+}
+
+func TestVCSWebhookTransactionFailureReturnsGeneric503AndRollsBack(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-retry.test")
+	issue := newVCSIssue(t, "VCS retryable transaction")
+	failing := *testHandler
+	failing.PullRequestFactErrorHook = func(provider, stage string) error {
+		if provider == "vcs" && stage == "state_written_before_links" {
+			return errors.New("database password=secret SQLSTATE 40P01")
+		}
+		return nil
+	}
+	t.Cleanup(func() { cleanupVCS(ctx, issue.ID) })
+
+	payload := map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 801, "html_url": "https://forgejo-retry.test/acme/widget/pulls/801",
+			"title": "Fix " + issue.Identifier, "body": "Closes " + issue.Identifier,
+			"state": "closed", "merged": true,
+			"created_at": "2026-07-26T00:00:00Z", "updated_at": "2026-07-26T00:01:00Z",
+			"merged_at": "2026-07-26T00:01:00Z", "closed_at": "2026-07-26T00:01:00Z",
+			"head": map[string]any{"ref": "retryable", "sha": "retryable-sha"},
+			"user": map[string]any{"username": "octo"},
+		},
+		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+	}
+	raw, _ := json.Marshal(payload)
+	w := httptest.NewRecorder()
+	failing.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+	}, raw))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("transaction failure status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "password") || strings.Contains(w.Body.String(), "SQLSTATE") {
+		t.Fatalf("transaction failure leaked internal detail: %s", w.Body.String())
+	}
+	var prCount, linkCount int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM vcs_pull_request WHERE connection_id=$1 AND pr_number=801`, connID).Scan(&prCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM issue_vcs_pull_request WHERE issue_id=$1`, issue.ID).Scan(&linkCount); err != nil {
+		t.Fatal(err)
+	}
+	if prCount != 0 || linkCount != 0 {
+		t.Fatalf("failed VCS transaction persisted pr=%d links=%d", prCount, linkCount)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
+}
+
+func TestDeleteIssueSerializesBeforeVCSFact(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-delete-lock.test")
+	issue := newVCSIssue(t, "VCS delete lock")
+	t.Cleanup(func() {
+		testHandler.IssueDeleteHook = nil
+		cleanupVCS(ctx, issue.ID)
+	})
+	fire := func(state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": func() string {
+				if merged {
+					return "closed"
+				}
+				return "opened"
+			}(),
+			"pull_request": map[string]any{
+				"number": 80, "html_url": "https://forgejo-delete-lock.test/acme/widget/pulls/80",
+				"title": "Fix " + issue.Identifier, "body": "Closes " + issue.Identifier,
+				"state": state, "merged": merged, "created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "delete-lock", "sha": "delete-lock-sha"},
+				"user": map[string]any{"username": "octo"},
+			},
+			"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+		}
+		raw, _ := json.Marshal(payload)
+		w := httptest.NewRecorder()
+		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+			"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+		}, raw))
+		return w.Code
+	}
+	if code := fire("open", false, "2026-07-26T00:01:00Z"); code != http.StatusAccepted {
+		t.Fatalf("seed VCS webhook status=%d", code)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	testHandler.IssueDeleteHook = func(stage string) {
+		if stage == "completion_lock_acquired" {
+			close(locked)
+			<-release
+		}
+	}
+	deleteDone := make(chan int, 1)
+	go func() {
+		req := newRequest(http.MethodDelete, "/api/issues/"+issue.ID+"?workspace_id="+testWorkspaceID, nil)
+		req = withURLParam(req, "id", issue.ID)
+		w := httptest.NewRecorder()
+		testHandler.DeleteIssue(w, req)
+		deleteDone <- w.Code
+	}()
+	select {
+	case <-locked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not acquire VCS Issue lock")
+	}
+	webhookDone := make(chan int, 1)
+	go func() { webhookDone <- fire("closed", true, "2026-07-26T00:02:00Z") }()
+	select {
+	case code := <-webhookDone:
+		t.Fatalf("VCS webhook crossed delete lock status=%d", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if code := <-deleteDone; code != http.StatusNoContent {
+		t.Fatalf("delete status=%d", code)
+	}
+	testHandler.IssueDeleteHook = nil
+	if code := <-webhookDone; code != http.StatusAccepted {
+		t.Fatalf("post-delete VCS webhook status=%d", code)
+	}
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM issue_vcs_pull_request WHERE issue_id=$1`, issue.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("deleted Issue retained VCS links=%d", count)
+	}
+}
+
+func TestVCSConnectionDeleteSerializesBeforeProviderFact(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-connection-delete.test")
+	issue := newVCSIssue(t, "VCS connection delete lock")
+	t.Cleanup(func() {
+		testHandler.IssueDeleteHook = nil
+		cleanupVCS(ctx, issue.ID)
+	})
+	fire := func(state string, merged bool, updatedAt string) int {
+		payload := map[string]any{
+			"action": "closed",
+			"pull_request": map[string]any{
+				"number": 802, "html_url": "https://forgejo-connection-delete.test/acme/widget/pulls/802",
+				"title": "Fix " + issue.Identifier, "body": "Closes " + issue.Identifier,
+				"state": state, "merged": merged,
+				"created_at": "2026-07-26T00:00:00Z", "updated_at": updatedAt,
+				"merged_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"closed_at": func() string {
+					if merged {
+						return updatedAt
+					}
+					return ""
+				}(),
+				"head": map[string]any{"ref": "connection-delete", "sha": "connection-delete-sha"},
+				"user": map[string]any{"username": "octo"},
+			},
+			"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+		}
+		raw, _ := json.Marshal(payload)
+		w := httptest.NewRecorder()
+		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+			"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+		}, raw))
+		return w.Code
+	}
+	if status := fire("open", false, "2026-07-26T00:01:00Z"); status != http.StatusAccepted {
+		t.Fatalf("seed status=%d", status)
+	}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	testHandler.IssueDeleteHook = func(stage string) {
+		if stage == "vcs_connection_completion_locks_acquired" {
+			close(locked)
+			<-release
+		}
+	}
+	deleteDone := make(chan int, 1)
+	go func() {
+		req := newRequest(http.MethodDelete, "/api/workspaces/"+testWorkspaceID+"/vcs/connections/"+connID, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", testWorkspaceID)
+		rctx.URLParams.Add("connectionId", connID)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		w := httptest.NewRecorder()
+		testHandler.DeleteVCSConnection(w, req)
+		deleteDone <- w.Code
+	}()
+	select {
+	case <-locked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("VCS connection delete did not acquire provider/Issue locks")
+	}
+	webhookDone := make(chan int, 1)
+	go func() { webhookDone <- fire("closed", true, "2026-07-26T00:02:00Z") }()
+	select {
+	case status := <-webhookDone:
+		t.Fatalf("VCS provider crossed connection delete lock status=%d", status)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if status := <-deleteDone; status != http.StatusNoContent {
+		t.Fatalf("connection delete status=%d", status)
+	}
+	testHandler.IssueDeleteHook = nil
+	if status := <-webhookDone; status != http.StatusAccepted {
+		t.Fatalf("post-delete VCS webhook status=%d", status)
+	}
+	assertIssueStatus(t, issue.ID, "in_progress")
 }
 
 func TestVCSWebhook_ForgejoMirrorsAndCloses(t *testing.T) {
@@ -142,6 +459,65 @@ func TestVCSWebhook_ForgejoMirrorsAndCloses(t *testing.T) {
 	updated, _ := testHandler.Queries.GetIssue(ctx, parseUUID(issue.ID))
 	if updated.Status != "done" {
 		t.Errorf("expected issue done, got %q", updated.Status)
+	}
+}
+
+func TestVCSWebhook_RecordOnlyChildStaysActiveWithoutStageWake(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo.test")
+	parent, child := createRecordOnlyPRTestIssuePair(t, "vcs")
+	t.Cleanup(func() {
+		cleanupVCS(ctx, child.ID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, parent.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, parent.ID)
+	})
+
+	setCompletionPolicyViaHandler(t, child.ID, "record_only")
+
+	raw, _ := json.Marshal(map[string]any{
+		"action": "closed",
+		"pull_request": map[string]any{
+			"number": 8, "html_url": "https://forgejo.test/acme/widget/pulls/8",
+			"title": "Fix " + child.Identifier, "body": "Closes " + child.Identifier,
+			"state": "closed", "merged": true,
+			"merged_at": "2026-04-29T00:00:00Z", "closed_at": "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-29T00:00:00Z",
+			"head": map[string]any{"ref": "fix/record-only", "sha": "recordonlysha"},
+			"user": map[string]any{"username": "octo"},
+		},
+		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+	})
+	w := httptest.NewRecorder()
+	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+	}, raw))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue: %v", err)
+	}
+	if len(rows) != 1 || rows[0].State != "merged" || rows[0].Provider != "forgejo" {
+		t.Fatalf("provider merge was not recorded: %+v", rows)
+	}
+	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
+	if err != nil {
+		t.Fatalf("GetIssue child: %v", err)
+	}
+	if updated.Status != "in_progress" {
+		t.Fatalf("record-only child status = %q, want in_progress", updated.Status)
+	}
+
+	var systemComments int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*)::int FROM comment WHERE issue_id=$1 AND author_type='system'`, parent.ID).Scan(&systemComments); err != nil {
+		t.Fatalf("count parent system comments: %v", err)
+	}
+	if systemComments != 0 {
+		t.Fatalf("record-only provider merge emitted %d parent stage wake comments, want 0", systemComments)
 	}
 }
 
@@ -223,69 +599,6 @@ func TestVCSWebhook_ReferenceOnlyExcludedAndNonBlocking(t *testing.T) {
 	}
 }
 
-// The close gate must span providers: an issue with an OPEN GitHub PR and a
-// MERGED close-intent VCS PR must report open_count > 0, so neither webhook
-// auto-advances it out from under the still-open GitHub work (and vice versa).
-func TestCombinedCloseAggregateSpansProviders(t *testing.T) {
-	ctx := context.Background()
-	box := withVCSBox(t)
-	connID := seedVCSConnection(t, ctx, box, "gitlab", "https://gitlab.test")
-	issue := newVCSIssue(t, "Cross-provider close gate")
-	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, issue.ID)
-		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
-		cleanupVCS(ctx, issue.ID)
-	})
-
-	// OPEN GitHub PR linked to the issue (installation_id carries no FK).
-	ghPR, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
-		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: 987654,
-		RepoOwner: "acme", RepoName: "gh", PrNumber: 3,
-		Title: "WIP " + issue.Identifier, State: "open",
-		HtmlUrl:     "https://github.com/acme/gh/pull/3",
-		PrCreatedAt: now, PrUpdatedAt: now, HeadSha: "ghsha",
-	})
-	if err != nil {
-		t.Fatalf("UpsertGitHubPullRequest: %v", err)
-	}
-	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
-		IssueID: parseUUID(issue.ID), PullRequestID: ghPR.ID, CloseIntent: false,
-		ReferenceOnly: false, LinkedByType: strToText("system"),
-	}); err != nil {
-		t.Fatalf("LinkIssueToPullRequest: %v", err)
-	}
-
-	// MERGED close-intent VCS PR linked to the same issue.
-	vcsPR, err := testHandler.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
-		WorkspaceID: parseUUID(testWorkspaceID), ConnectionID: parseUUID(connID),
-		Provider: "gitlab", RepoOwner: "acme", RepoName: "gl", PrNumber: 4,
-		Title: "Fix " + issue.Identifier, State: "merged",
-		HtmlUrl:     "https://gitlab.test/acme/gl/-/merge_requests/4",
-		PrCreatedAt: now, PrUpdatedAt: now, HeadSha: "glsha",
-	})
-	if err != nil {
-		t.Fatalf("UpsertVCSPullRequest: %v", err)
-	}
-	if err := testHandler.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{
-		IssueID: parseUUID(issue.ID), PullRequestID: vcsPR.ID, CloseIntent: true,
-		ReferenceOnly: false, LinkedByType: strToText("system"),
-	}); err != nil {
-		t.Fatalf("LinkIssueToVCSPullRequest: %v", err)
-	}
-
-	counts, err := testHandler.Queries.GetIssueCombinedPullRequestCloseAggregate(ctx, parseUUID(issue.ID))
-	if err != nil {
-		t.Fatalf("GetIssueCombinedPullRequestCloseAggregate: %v", err)
-	}
-	if counts.OpenCount != 1 {
-		t.Errorf("open_count = %d, want 1 (the open GitHub PR must be seen)", counts.OpenCount)
-	}
-	if counts.MergedWithCloseIntentCount != 1 {
-		t.Errorf("merged_with_close_intent_count = %d, want 1 (the VCS MR)", counts.MergedWithCloseIntentCount)
-	}
-}
-
 // DeleteIssue's VCS-link cleanup must honour the same workspace guard as the
 // issue delete: passing a foreign issue_id with a mismatched workspace_id must
 // be a complete no-op, not silently drop the victim tenant's link rows (#1661).
@@ -355,11 +668,11 @@ func TestVCSWebhook_StaleEventDoesNotRewriteLink(t *testing.T) {
 	issue := newVCSIssue(t, "Out-of-order link guard")
 	t.Cleanup(func() { cleanupVCS(ctx, issue.ID) })
 
-	fire := func(action, state string, merged bool, title, body, updatedAt string) {
+	fire := func(number int, action, state string, merged bool, title, body, updatedAt string) {
 		raw, _ := json.Marshal(map[string]any{
 			"action": action,
 			"pull_request": map[string]any{
-				"number": 7, "html_url": "https://forgejo.test/acme/widget/pulls/7",
+				"number": number, "html_url": fmt.Sprintf("https://forgejo.test/acme/widget/pulls/%d", number),
 				"title": title, "body": body, "state": state, "merged": merged,
 				"created_at": "2026-05-01T00:00:00Z", "updated_at": updatedAt,
 				"merged_at": "2026-05-02T00:00:00Z",
@@ -378,10 +691,21 @@ func TestVCSWebhook_StaleEventDoesNotRewriteLink(t *testing.T) {
 	}
 
 	// Newer terminal event: merged with a qualifying Closes → close_intent, not reference_only.
-	fire("closed", "closed", true, "Fix "+issue.Identifier, "Closes "+issue.Identifier, "2026-05-02T00:00:00Z")
-	// Older redelivered "opened" event: bare body mention, generic title/branch.
-	// Without the guard this rewrites the link to close_intent=false, reference_only=true.
-	fire("opened", "open", false, "WIP", "touches "+issue.Identifier, "2026-05-01T00:00:00Z")
+	fire(7, "closed", "closed", true, "Fix "+issue.Identifier, "Closes "+issue.Identifier, "2026-05-02T00:00:00Z")
+	// Older, equal, newer, missing, and malformed non-merged deliveries must all
+	// leave the accepted merged PR/link fact untouched.
+	for _, regression := range []struct {
+		updatedAt string
+		state     string
+	}{
+		{updatedAt: "2026-05-01T00:00:00Z", state: "open"},
+		{updatedAt: "2026-05-02T00:00:00Z", state: "closed"},
+		{updatedAt: "2026-05-03T00:00:00Z", state: "open"},
+		{updatedAt: "", state: "closed"},
+		{updatedAt: "not-a-time", state: "open"},
+	} {
+		fire(7, "edited", regression.state, false, "WIP", "touches "+issue.Identifier, regression.updatedAt)
+	}
 
 	var closeIntent, referenceOnly bool
 	if err := testPool.QueryRow(ctx,
@@ -390,13 +714,51 @@ func TestVCSWebhook_StaleEventDoesNotRewriteLink(t *testing.T) {
 		t.Fatalf("select link: %v", err)
 	}
 	if !closeIntent || referenceOnly {
-		t.Errorf("stale event rewrote link: close_intent=%v reference_only=%v, want true/false", closeIntent, referenceOnly)
+		t.Errorf("regression event rewrote link: close_intent=%v reference_only=%v, want true/false", closeIntent, referenceOnly)
 	}
 	// The PR row also stayed at the newer merged state.
 	rows, _ := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
 	if len(rows) != 1 || rows[0].State != "merged" {
 		t.Errorf("PR row regressed: %+v", rows)
 	}
+
+	// Ordinary equal-time non-merged facts remain updateable.
+	fire(8, "opened", "open", false, "Open "+issue.Identifier, "Closes "+issue.Identifier, "2026-05-04T00:00:00Z")
+	fire(8, "closed", "closed", false, "No issue reference", "", "2026-05-04T00:00:00Z")
+	var equalState string
+	if err := testPool.QueryRow(ctx, `SELECT state FROM vcs_pull_request WHERE connection_id=$1 AND pr_number=8`, connID).Scan(&equalState); err != nil {
+		t.Fatal(err)
+	}
+	if equalState != "closed" {
+		t.Fatalf("equal-time state=%q want closed", equalState)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT close_intent, reference_only FROM issue_vcs_pull_request ipr JOIN vcs_pull_request pr ON pr.id=ipr.pull_request_id WHERE ipr.issue_id=$1 AND pr.pr_number=8`, issue.ID).Scan(&closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if closeIntent || !referenceOnly {
+		t.Fatalf("equal-time metadata close_intent=%v reference_only=%v", closeIntent, referenceOnly)
+	}
+
+	// Identity locking makes concurrent delivery order irrelevant.
+	codes := make(chan struct{}, 2)
+	go func() {
+		fire(9, "opened", "open", false, "Open "+issue.Identifier, "Related "+issue.Identifier, "2026-05-05T00:00:00Z")
+		codes <- struct{}{}
+	}()
+	go func() {
+		fire(9, "closed", "closed", true, "Fix "+issue.Identifier, "Closes "+issue.Identifier, "2026-05-06T00:00:00Z")
+		codes <- struct{}{}
+	}()
+	<-codes
+	<-codes
+	var concurrentState string
+	if err := testPool.QueryRow(ctx, `SELECT state, ipr.close_intent, ipr.reference_only FROM vcs_pull_request pr JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id=pr.id WHERE pr.connection_id=$1 AND pr.pr_number=9 AND ipr.issue_id=$2`, connID, issue.ID).Scan(&concurrentState, &closeIntent, &referenceOnly); err != nil {
+		t.Fatal(err)
+	}
+	if concurrentState != "merged" || !closeIntent || referenceOnly {
+		t.Fatalf("concurrent fact state=%q close_intent=%v reference_only=%v", concurrentState, closeIntent, referenceOnly)
+	}
+	assertIssueStatus(t, issue.ID, "done")
 }
 
 func TestVCSWebhook_GitlabMergeRequest(t *testing.T) {
