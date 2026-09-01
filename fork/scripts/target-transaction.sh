@@ -219,14 +219,28 @@ if [[ "$ready" != *'"status":"ok"'* ]]; then
   echo "candidate backend did not become ready; restore verified dump before starting an old image" >&2
   exit 1
 fi
-frontend_status="$(docker exec multica-frontend-1 wget -qSO- http://127.0.0.1:3000/login -O /dev/null 2>&1 | awk '/HTTP\// {code=$2} END {print code}')"
+frontend_status=""
+for _ in $(seq 1 60); do
+  frontend_status="$(docker exec multica-frontend-1 sh -lc 'wget -qSO- http://127.0.0.1:3000/login -O /dev/null 2>&1 || true' | awk '/HTTP\// {code=$2} END {print code}')"
+  if [[ "$frontend_status" == "200" ]]; then
+    break
+  fi
+  sleep 1
+done
 if [[ "$frontend_status" != "200" ]]; then
-  echo "candidate frontend login returned $frontend_status" >&2
+  echo "candidate frontend login returned ${frontend_status:-unreachable}" >&2
   exit 1
 fi
-host_frontend_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${frontend_host_port}/login" 2>/dev/null || true)"
+host_frontend_status=""
+for _ in $(seq 1 60); do
+  host_frontend_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${frontend_host_port}/login" 2>/dev/null || true)"
+  if [[ "$host_frontend_status" == "200" ]]; then
+    break
+  fi
+  sleep 1
+done
 if [[ "$host_frontend_status" != "200" ]]; then
-  echo "candidate host frontend port $frontend_host_port returned $host_frontend_status" >&2
+  echo "candidate host frontend port $frontend_host_port returned ${host_frontend_status:-unreachable}" >&2
   exit 1
 fi
 external_pr_unauthorized_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '$1 ~ /^HTTP\// {code=$2} END {print code}')"
