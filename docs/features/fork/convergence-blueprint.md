@@ -12,17 +12,20 @@ implementation that must be replayed.
 
 ## Baseline
 
-- frozen comparison base: `upstream/main@15280617bc264e367ca9c5e5e5cefdb0988246b7`
+- current upstream analysis base: `upstream/main@1dd6b9ecdbaa991bfd51b48ef5c269056045d547`
+- frozen 2026-08-30 delta base: `upstream/main@15280617bc264e367ca9c5e5e5cefdb0988246b7`
 - accepted fork runtime source: `ad25aa66bb3ab9b8c55f0cc2825523c0e72c0be7`
-- raw delta: 341 files, 21,753 insertions, 928 deletions
-- server share: 226 changed files
+- frozen-base raw delta: 341 files, 21,753 insertions, 928 deletions
+- frozen-base server share: 226 changed files
 - upstream movement absorbed by the 2026-08-30 generation: 112 commits
 
-The raw delta overstates product ownership: historical migrations, sqlc output,
-vendored fonts, migration fixtures, tests, and generation records account for
-most files. The maintenance problem is nevertheless real because the fork also
-modifies upstream's Issue, Workspace, GitHub/VCS, migration runner, daemon,
-Makefile, Compose, and CI ownership surfaces.
+The relevant upstream PR-to-Issue association implementation is unchanged between
+these two upstream revisions. The raw delta overstates product ownership:
+historical migrations, sqlc output, vendored fonts, migration fixtures, tests,
+and generation records account for most files. The maintenance problem is
+nevertheless real because the fork also modifies upstream's Issue, Workspace,
+GitHub/VCS, migration runner, daemon, Makefile, Compose, and CI ownership
+surfaces.
 
 ## Current implementation inventory
 
@@ -73,10 +76,10 @@ or archive decision before cutover.
 
 | Current fork surface | Current upstream observation | Target decision |
 | --- | --- | --- |
-| External PR storage, Issue projection, PR sidebar, Forgejo/Gitea/GitLab facts | Upstream already has `vcs_connection`, `vcs_pull_request`, `issue_vcs_pull_request`, normalized provider adapters, shared PR API/UI, monotonic webhook updates, and cross-provider completion | Reimplement on upstream VCS. Remove the parallel `external_pull_request_*` product model after data conversion. |
-| AGS `/links` and `/complete-from-merge` callbacks | Upstream accepts provider webhooks, but not the AGS service envelope | Prefer direct Forgejo webhook registration. If AGS still needs its envelope, implement a thin authenticated adapter that emits upstream `vcs.PullRequestEvent`; it must not own a second PR schema or completion kernel. |
-| Durable External PR work/finalization scheduler | Upstream provider delivery and monotonic upsert already own redelivery; current live work is drained | Retire by default. If a synchronous AGS acknowledgement requires durable admission, keep one adapter-owned inbox with idempotency only; downstream processing calls the native VCS ingestion service and does not modify Issue/Workspace deletion graphs. |
-| Completion policy, parent/stage wake, Issue locking | Upstream VCS/GitHub paths already use the shared close aggregate and `advanceIssueToDone`, but parity for `record_only`, leaf-only completion, parent/stage wake, and crash recovery is not yet proven | Reuse upstream storage and completion entry point. Preserve those four behaviors as contract tests; if a gap remains, add a pure policy/service boundary rather than a parallel PR schema or Issue/Workspace deletion path. Decouple native completion from `external_pr_reconcile_finalization`. |
+| External PR authority, storage, Issue association, and AGS/Forgejo dual identity | Upstream has strong generic PR metadata and provider support, but associates PRs to Issues by parsing `PREFIX-NUMBER` from title, body, and branch. Title/branch matches become working links and closing-keyword matches can complete an Issue. | Keep External PR as the fork-owned authoritative fact and recovery model. Reuse upstream PR metadata, CI aggregation, DTO, and common UI without replacing explicit UUID association with text inference. |
+| AGS `/links` and `/complete-from-merge` callbacks | Upstream accepts provider webhooks, but not the AGS service envelope, explicit Issue UUID, immutable external identity, or AGS-to-Forgejo projection facts. | Retain the typed authenticated callback. Verify redundant Workspace/Issue labels against UUIDs, persist the complete canonical binding revision, bind URLs to the configured instance, and fail closed on changed idempotency payloads. |
+| Durable External PR work/finalization scheduler | Upstream webhook redelivery does not cover an AGS provider operation that succeeded before its Multica callback or Issue lifecycle finalization completed. | Keep durable terminal admission, reconcile, and finalization for External PR only. Isolate them behind a fork-owned service so native GitHub/VCS completion never depends on External PR storage. |
+| Completion policy, parent/stage wake, Issue locking | Upstream VCS/GitHub paths use text-derived association and a generic close aggregate; parity for `record_only`, leaf-only completion, parent/stage wake, and crash recovery is incomplete. | Extract a generic completion evaluator independent of External finalization. The External adapter supplies explicit authoritative facts and durable recovery; native providers use their own association source. Preserve all fork completion behaviors as contract tests. |
 | Current execution context endpoint and task-bound link token | Upstream claim data already carries task, workspace, agent, Issue, runtime, and trigger facts; exact execution identity is a small missing claim field, while link token is already marked residual | Retire link token. Add exact execution identity to the claim only if AGS requires it, then materialize a claim-time context file or environment projection in the daemon. Avoid a new server query/lock/route; keep an endpoint only for a proven post-claim consumer. |
 | Access Grant routing, git/gh shims, platform Git identity | Repository authority belongs to AGS/Agent Kit rather than Multica product state | Move launcher/path/identity policy to AGS bootstrap or runtime configuration. Do not patch Multica task execution for repository-provider policy. |
 | `MULTICA_RUN_ID` | Upstream supplies `MULTICA_TASK_ID` but not the fork's exact execution identity field | Prefer task ID if AGS accepts it. Otherwise upstream a small claim plus environment addition; no execution-context subsystem is needed for one variable. |
@@ -88,7 +91,8 @@ or archive decision before cutover.
 
 ## Target ownership boundary
 
-The converged fork should have zero fork edits in these upstream-owned files:
+The converged fork should have zero direct fork edits in these upstream-owned
+files unless a small generic extension is simultaneously prepared for upstream:
 
 ```text
 server/internal/handler/issue.go
@@ -99,16 +103,18 @@ server/cmd/migrate/main.go
 Makefile
 docker-compose.selfhost.yml
 .github/workflows/ci.yml
-packages/core/api/*
-packages/views/issues/components/pull-request-list.tsx
 ```
+
+Shared PR API and UI changes are allowed only at a stable projection boundary:
+they consume association provenance and a unified PR response without owning
+External PR admission, idempotency, or reconciliation.
 
 Expected remaining source delta:
 
 - additive `deploy/fork/**` build, activation, compose override, and receipt tools;
-- additive fork migration runner/directory, if live-schema convergence still
-  needs it;
-- zero or one small AGS-to-native-VCS adapter;
+- additive fork migration runner/directory;
+- a fork-owned External PR authority and durable-recovery module;
+- a narrow unified PR projection adapter with explicit association provenance;
 - temporary small upstream-bound patches for Pi and any accepted daemon env
   value.
 
@@ -133,22 +139,32 @@ migrations. Future fork versions no longer compete for upstream numeric
 prefixes. A small additive runner is preferable to modifying
 `server/cmd/migrate/main.go`.
 
-### External PR conversion
+### External PR authority convergence
 
-1. Establish a real upstream VCS connection for each live workspace/Forgejo
-   instance. There is one live workspace per observed target.
+1. Keep the 240 live External PR associations as fork-owned authoritative
+   facts. Do not replace their explicit Issue UUIDs with text-derived links.
 2. Normalize the nine live links missing strict merge fields by authoritative
    provider lookup or mark them read-only archived facts.
-3. Backfill live rows into `vcs_pull_request` and
-   `issue_vcs_pull_request`, preserving state, URL, repository, number,
-   close intent, timestamps, and Issue identity.
-4. Compare old and native PR projections for every live Issue.
-5. Enable provider webhook ingestion and prove new open/closed/merged updates
-   use only native VCS tables.
-6. After a drain window, remove orphan rows and retire custom callback,
-   reconcile, finalization, link-token, and projection code.
-7. A final compatibility migration drops legacy tables only after backup and
-   readback. Image-only rollback is not valid past that point.
+3. Persist the complete canonical projection for strict facts: target instance,
+   canonical and provider repository identities, binding identity/revision,
+   expected head/base, merge method, and projection fact revision.
+4. Verify callback Workspace slug and Issue key against their UUID records;
+   require the typed provider allowlist, canonical instance-bound URLs, and
+   immutable idempotency payload.
+5. Build a unified PR read projection that combines upstream native metadata
+   with External authority and exposes association provenance. Compare it with
+   the current native and External views for every live Issue.
+6. Give explicit External binding precedence over title/body/branch inference.
+   Persist conflicts, suppress automatic completion, and require bounded repair
+   when the two sources identify different Issues.
+7. Keep terminal admission, reconciliation, and finalization for External PR.
+   Decouple the generic completion evaluator so native providers do not depend
+   on External PR tables.
+8. Retire only duplicate read/UI projections and obsolete compatibility input
+   after a drain window. External authority, receipts, and recovery remain until
+   a separately accepted replacement proves the same contract.
+9. Any later destructive cleanup requires backup and readback. Image-only
+   rollback is not valid past an accepted schema cleanup boundary.
 
 ### Test contraction
 
@@ -178,38 +194,53 @@ immutable refs rather than from active-suite copies of every old SQL file.
 
 This wave should not change product data or runtime behavior.
 
-### Wave 2: native VCS shadow path
+### Wave 2: External authority hardening and unified shadow projection
 
-- Configure native Forgejo connections and webhook delivery.
-- Implement only the adapter or importer still required by AGS.
-- Backfill and compare native projections without switching reads.
+- Persist complete canonical External PR binding revisions and strengthen typed
+  callback validation.
+- Separate the generic completion evaluator from External finalization while
+  retaining durable External terminal recovery.
+- Build a unified PR read projection with association provenance and explicit
+  binding precedence.
+- Shadow-compare unified, native, and External projections for every live Issue.
 - Resolve the nine non-strict live links explicitly.
 
-### Wave 3: authority switch
+### Wave 3: unified surface switch
 
-- Switch PR reads and completion to upstream native VCS behavior.
-- Stop issuing link tokens and stop accepting the old callback after a declared
-  compatibility window.
-- Prove no pending reconcile work, projection parity, merged-PR completion,
-  Issue/workspace deletion, and provider redelivery.
+- Switch PR reads and the Issue UI to the unified projection without changing
+  External PR write authority.
+- Detect explicit-versus-inferred conflicts and suppress completion until repair.
+- Stop issuing the residual link token after its compatibility census reaches
+  zero; keep the typed callback and durable reconcile contract.
+- Prove idempotent callbacks, projection parity, completion policies,
+  Issue/workspace deletion, parent/stage continuation, and crash recovery.
 
-### Wave 4: historical retirement
+### Wave 4: historical and duplicate-surface retirement
 
-- Apply the compatibility cleanup migration with per-host backups.
-- Remove the parallel External PR runtime, generated queries, frontend union,
-  scheduler registration, historical active migration chain, and giant
-  continuity fixtures from the new generation.
+- Apply any compatibility cleanup migration with per-host backups.
+- Remove the duplicate External PR UI/read projection, obsolete compatibility
+  inputs, historical active migration chain, and giant continuity fixtures from
+  the new generation.
+- Retain External authority facts, receipts, and durable recovery as fork-owned
+  product state.
 - Record the 2026-08-30 generation as the minimum direct upgrade source.
 
 ## Acceptance targets
 
-- current fork behavior is represented by a decision row, including retired
-  behavior;
+- current fork behavior is represented by a decision row, including retained
+  authority and retired implementation;
 - no fork migration is added to upstream's numeric sequence;
-- all 240 currently live External PR links are converted or explicitly archived;
-- no custom External PR work is pending at cutover;
-- native provider redelivery is idempotent and merged close-intent,
-  `record_only`, leaf-only completion, and parent/stage wake behavior are proven;
+- all 240 live External PR associations remain explicit authoritative facts or
+  receive an explicit archive disposition;
+- all nine non-strict live links are normalized or archived by bounded decision;
+- typed callback replay, changed-payload conflict, immutable PR-to-Issue binding,
+  and crash recovery are proven;
+- unified PR reads preserve association provenance and explicit binding wins
+  over text inference;
+- explicit-versus-inferred conflicts cannot automatically complete an Issue;
+- `record_only`, leaf-only completion, parent/stage wake, Issue/workspace
+  deletion, and native-provider independence from External finalization are
+  proven;
 - one accepted-SHA arm64/amd64 OCI manifest is promoted before target rollout;
 - exact-head CI passes before any final arm64/amd64 image build;
 - Mini and imile-win receive independent backups, migration readback, runtime

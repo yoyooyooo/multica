@@ -2,6 +2,20 @@
 
 Guidance for Claude Code when working in this repository. Keep this file short and authoritative: rules here should be hard to infer from code or easy to get wrong.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are local Markdown under `.scratch/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context layout: root `CONTEXT.md` and system ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Conventions
 
 The source of truth for code naming, i18n glossary, and Chinese product voice is:
