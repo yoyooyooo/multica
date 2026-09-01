@@ -73,16 +73,16 @@ if [[ -z "$external_pr_token" ]]; then
   exit 1
 fi
 
-read -r active_tasks active_autopilots < <(
-  docker exec multica-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F " " -c "SELECT (SELECT count(*) FROM agent_task_queue WHERE status IN ('\''queued'\'','\''dispatched'\'','\''running'\'','\''waiting_local_directory'\'')), (SELECT count(*) FROM autopilot_run WHERE status IN ('\''queued'\'','\''running'\''));"'
+read -r queued_tasks active_tasks active_autopilots < <(
+  docker exec multica-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F " " -c "SELECT (SELECT count(*) FROM agent_task_queue WHERE status='\''queued'\''), (SELECT count(*) FROM agent_task_queue WHERE status IN ('\''dispatched'\'','\''running'\'','\''waiting_local_directory'\'')), (SELECT count(*) FROM autopilot_run WHERE status IN ('\''queued'\'','\''running'\''));"'
 )
 if ((active_tasks != 0 || active_autopilots != 0)); then
-  echo "target is not idle: tasks=$active_tasks autopilots=$active_autopilots" >&2
+  echo "target is not idle: executing_tasks=$active_tasks autopilots=$active_autopilots queued_tasks=$queued_tasks" >&2
   exit 1
 fi
 
-printf 'target=%s\nsource_sha=%s\nworking_dir=%s\nactive_tasks=%s\nactive_autopilots=%s\n' \
-  "$TARGET" "$SOURCE_SHA" "$working_dir" "$active_tasks" "$active_autopilots"
+printf 'target=%s\nsource_sha=%s\nworking_dir=%s\nqueued_tasks=%s\nactive_tasks=%s\nactive_autopilots=%s\n' \
+  "$TARGET" "$SOURCE_SHA" "$working_dir" "$queued_tasks" "$active_tasks" "$active_autopilots"
 printf 'old_backend_image=%s\nold_web_image=%s\nuploads_source=%s\nnetwork=%s\n' \
   "$old_backend_image" "$old_web_image" "$old_uploads_source" "$network"
 printf 'candidate_backend_image=%s\ncandidate_web_image=%s\nexternal_pr_instance=%s\nexternal_pr_token=set\n' \
@@ -111,6 +111,23 @@ services:
     image: ${FORK_WEB_IMAGE:?}
 YAML
 chmod 0600 "$override"
+
+current_stopped=false
+restart_current_on_preswitch_failure() {
+  if "$current_stopped"; then
+    docker start multica-backend-1 multica-frontend-1 >/dev/null 2>&1 || true
+  fi
+}
+trap restart_current_on_preswitch_failure EXIT
+docker stop multica-frontend-1 multica-backend-1 >/dev/null
+current_stopped=true
+read -r frozen_active_tasks frozen_active_autopilots < <(
+  docker exec multica-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F " " -c "SELECT (SELECT count(*) FROM agent_task_queue WHERE status IN ('\''dispatched'\'','\''running'\'','\''waiting_local_directory'\'')), (SELECT count(*) FROM autopilot_run WHERE status IN ('\''queued'\'','\''running'\''));"'
+)
+if ((frozen_active_tasks != 0 || frozen_active_autopilots != 0)); then
+  echo "work started during preflight: executing_tasks=$frozen_active_tasks autopilots=$frozen_active_autopilots" >&2
+  exit 1
+fi
 
 backup="$receipt_dir/pre-switch-frozen.pg_dump-Fc"
 docker exec multica-postgres-1 sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$backup"
@@ -155,6 +172,8 @@ compose_fork() {
     docker compose "${compose_args[@]}" -f "$override" "$@"
 }
 compose_fork config >/dev/null
+trap - EXIT
+current_stopped=false
 compose_fork up -d --no-build
 
 ready=""
@@ -219,6 +238,7 @@ RECEIPT_VERIFY_VOLUME="$verify_volume" \
 RECEIPT_RESTORED_LINKS="$restored_links" \
 RECEIPT_UPSTREAM_LEDGER="$upstream_ledger" \
 RECEIPT_FORK_LEDGER="$fork_ledger" \
+RECEIPT_QUEUED_TASKS="$queued_tasks" \
 RECEIPT_FRONTEND_STATUS="$frontend_status" \
 RECEIPT_EXTERNAL_PR_INSTANCE="$new_external_pr_instance" \
 RECEIPT_EXTERNAL_PR_UNAUTHORIZED_STATUS="$external_pr_unauthorized_status" \
@@ -254,6 +274,7 @@ value = {
   },
   "runtime": {
     "readyz": "ok", "frontend_login_http_status": int(env["RECEIPT_FRONTEND_STATUS"]),
+    "preserved_queued_tasks": int(env["RECEIPT_QUEUED_TASKS"]),
     "live_external_pr_rows": int(env["RECEIPT_LIVE_LINKS"]),
     "uploads_source": env["RECEIPT_UPLOADS_SOURCE"], "network": env["RECEIPT_NETWORK"],
     "external_pr": {
