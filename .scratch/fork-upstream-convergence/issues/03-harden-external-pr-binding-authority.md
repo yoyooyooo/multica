@@ -1,7 +1,7 @@
 Status: ready-for-agent
-Blocked by: [02 Establish the fork migration stream](02-establish-fork-migration-stream.md)
+Blocked by: [01 Rebuild from latest upstream](01-establish-clean-upstream-release-lane.md)
 
-# Harden explicit External PR binding authority
+# Reimplement the minimal External PR authority slice
 
 ## Parent
 
@@ -9,30 +9,33 @@ Blocked by: [02 Establish the fork migration stream](02-establish-fork-migration
 
 ## User stories covered
 
-12-17.
+12-26 and 35-38.
 
 ## What to build
 
-Strengthen External PR as the fork-owned authority for AGS-to-Issue association. Persist the complete canonical AGS and merge-provider binding revision, verify all redundant Workspace and Issue labels against their UUID records, bind canonical URLs to the configured provider instance, and make natural identity plus payload revision immutable under retries and races.
+Reimplement External PR on the clean upstream generation as one narrow vertical slice: typed AGS callback admission, explicit Workspace/Issue UUID binding, immutable external natural identity, payload-hash idempotency, terminal fact durability, existing completion policies, crash continuation, and one Issue pull request UI section.
 
-The slice must accept an authoritative typed terminal fact durably and leave completion to reconciliation. It must not replace explicit association with title, body, or branch parsing.
+Validate the complete canonical callback envelope and include it in the idempotency hash, but persist only fields consumed by runtime reads, completion, or recovery. Reuse the current completion path with the smallest ownership correction: native calls without External work must not create External finalization state; External reconcile keeps its durable work and continuation.
 
 ## Simplification guardrails
 
-- Harden the typed AGS contract that is actually used. Do not expand the generic provider-neutral callback surface or invent a plug-in framework.
-- Persist only facts needed to verify identity, replay, merge authority, and recovery. Do not add an event-sourcing layer, policy language, or speculative cryptographic attestation protocol.
+- Do not persist request-only canonical envelope fields, create a provenance taxonomy, conflict table, repair UI, shadow API, generic provider framework, second PR model, or second lifecycle kernel.
+- External authority never parses title, body, or branch. Ordinary upstream native association remains unchanged and is not configured as a second authority for AGS-managed PRs in this generation.
+- Require transactionally idempotent observable behavior, not a generalized distributed exactly-once protocol. Test only retained contracts and reproduced authority races.
 
 ## Acceptance criteria
 
-- [ ] Typed callbacks require valid Workspace and Issue UUIDs that belong together, and supplied slug/key labels match those records exactly.
-- [ ] Provider, canonical repository, provider repository, target instance, binding identity/revision, expected head/base, merge method, and fact revision are complete and persisted for authoritative terminal facts.
-- [ ] External and merge URLs are canonical, credential-free, query/fragment-free, and bound to the configured instance and repository identities.
-- [ ] The provider allowlist and authoritative confidence/completion-intent rules fail closed for typed terminal admission.
-- [ ] An exact idempotency replay succeeds without duplicate facts, activities, or work; the same key with a changed payload returns conflict.
-- [ ] One external natural identity cannot be rebound to another Issue, including concurrent first-bind races.
-- [ ] A committed terminal fact always has durable reconcile work before the HTTP success response; process failure after admission cannot lose it.
-- [ ] Shared service-token authentication is documented as service identity, not as proof that an individual provider fact is correct.
+- [ ] Typed callbacks verify Workspace and Issue UUID ownership; redundant slug/key values are checked against those records or removed from the request contract.
+- [ ] The complete canonical envelope is validated and hashed without adding permanent columns that have no runtime consumer.
+- [ ] Exact replay creates no duplicate fact, activity, or work; the same key with changed payload returns conflict.
+- [ ] One external natural identity cannot be rebound to another Issue, including a concurrent first-bind race.
+- [ ] A terminal fact commits with durable reconcile work before HTTP success and survives a process crash.
+- [ ] `record_only`, eligible leaf completion, non-leaf rejection, terminal Issue protection, open authoritative PR blocking, parent wake, and stage continuation retain their current observable behavior.
+- [ ] Native completion without External work writes no External finalization row; External retry after completion does not duplicate status or lineage.
+- [ ] Issue and Workspace deletion remain atomic with External facts and pending continuation.
+- [ ] The existing Issue pull request API/UI renders External rows in one section without provenance or conflict-management product UI.
+- [ ] External contract tests prove PR prose is not consulted; no exhaustive upstream provider/text matrix is added.
 
 ## Blocked by
 
-- [02 Establish the fork migration stream](02-establish-fork-migration-stream.md)
+- [01 Rebuild from latest upstream with an additive release path](01-establish-clean-upstream-release-lane.md)

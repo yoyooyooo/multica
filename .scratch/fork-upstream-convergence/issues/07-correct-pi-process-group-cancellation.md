@@ -1,5 +1,6 @@
 Status: ready-for-agent
 Blocked by: None - can start immediately
+Track: optional sidecar; does not block the three-ticket clean rebuild DAG
 
 # Correct Pi process-group cancellation
 

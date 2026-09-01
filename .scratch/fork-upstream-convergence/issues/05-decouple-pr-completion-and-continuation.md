@@ -1,5 +1,6 @@
-Status: ready-for-agent
-Blocked by: [03 Harden explicit External PR binding authority](03-harden-external-pr-binding-authority.md), [04 Unify pull request projection](04-unify-pr-projection-and-conflicts.md)
+Status: wontfix
+Resolution: The narrow native-finalization ownership fix and External continuation tests are merged into [03 Minimal External PR authority](03-harden-external-pr-binding-authority.md); no generic completion rewrite is authorized.
+Blocked by: None - superseded
 
 # Decouple pull request completion and prove durable continuation
 

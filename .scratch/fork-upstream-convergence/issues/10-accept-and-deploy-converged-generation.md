@@ -1,7 +1,7 @@
 Status: ready-for-agent
-Blocked by: [01 Release lane](01-establish-clean-upstream-release-lane.md), [02 Migration stream](02-establish-fork-migration-stream.md), [03 External PR authority](03-harden-external-pr-binding-authority.md), [04 Unified PR projection](04-unify-pr-projection-and-conflicts.md), [05 Completion continuation](05-decouple-pr-completion-and-continuation.md), [06 AGS runtime ownership](06-shrink-ags-runtime-ownership.md), [07 Pi cancellation](07-correct-pi-process-group-cancellation.md), [08 Offline web build](08-build-web-offline-with-licensed-fonts.md), [09 Live External PR convergence](09-shadow-converge-live-external-prs.md)
+Blocked by: [01 Rebuild from latest upstream](01-establish-clean-upstream-release-lane.md), [03 Minimal External PR authority](03-harden-external-pr-binding-authority.md)
 
-# Accept and deploy the converged generation to Mini and imile-win
+# Upgrade and deploy the clean generation to both targets
 
 ## Parent
 
@@ -9,41 +9,34 @@ Blocked by: [01 Release lane](01-establish-clean-upstream-release-lane.md), [02 
 
 ## User stories covered
 
-6-10 and 35.
+4-10, 34-35, and 38.
 
 ## What to build
 
-Accept one exact converged source revision, promote its single arm64/amd64 OCI manifest, and deploy it to Mini and imile-win as two independent production transactions. Each target receives its own backup, migration preflight, schema and image digest readback, runtime revision proof, smoke checks, rollback boundary, and owner-only redacted receipt.
+Add the smallest sequential migration path needed to apply current upstream migrations and then Fork DDL without competing for upstream migration numbers. Prove fresh install, sanitized 2026-08-30 accepted-floor upgrade, and one interrupted retry. Account for all 240 live External PR rows: keep the 231 strict rows, normalize each of the nine non-strict rows when authority can be recovered, otherwise preserve its existing explicit fact read-only.
 
-This issue owns production authorization and rollout evidence. It must not begin from partial dependency completion or rebuild different source for either target.
+After exact-head acceptance, deploy artifacts from the same source SHA to Mini and imile-win as two explicit independent transactions with per-target backup, migration, digest/runtime readback, smoke checks, and rollback evidence.
 
 ## Simplification guardrails
 
-- Use the established release scripts and two explicit target transactions. Do not build a rollout controller, fleet scheduler, or generalized environment manager.
-- Run only acceptance checks tied to the four agreed seams and observed production classes. Stop after both targets pass readback; optional hardening and upstream follow-ups remain separate work.
+- Implement only a sequential runner and small Fork ledger; do not build a migration platform or recreate every historical fixture.
+- The live-row census and comparison are one-time operator/test tooling. Do not ship shadow traffic, dual-write, archive UI, repair service, migration dashboard, rollout controller, or fleet scheduler.
+- A single multi-architecture manifest is optional. Pi cancellation, AGS ownership cleanup, and upstream submissions are independent sidecars and do not block deployment.
 
 ## Acceptance criteria
 
-- [ ] Every blocking issue is resolved with evidence and no unresolved stop rule or External PR disposition remains.
-- [ ] The accepted source tree is clean, exact-head CI is green at that revision, and the promoted manifest digest was built only after acceptance.
-- [ ] The manifest contains verified arm64 and amd64 descriptors from the same source revision.
-- [ ] Mini and imile-win each receive an independent database backup and target-specific preflight before any switch.
-- [ ] Upstream migrations run before fork migrations and post-migration ledger/schema readback matches the accepted plan.
-- [ ] Each target reads back the expected immutable image digest and exact runtime source revision.
-- [ ] Authenticated smoke checks cover unified PR reads, an authoritative External PR flow, completion-policy non-regression, uploads/storage continuity, and daemon health where applicable.
-- [ ] Pi process-group cancellation is proven on a supported live or production-equivalent runtime before claiming the behavior deployed.
-- [ ] A failure on one target leaves the other target's transaction and rollback authority intact.
-- [ ] Receipts are owner-only, secret-safe, and include explicit database/image rollback boundaries without raw inspect output.
-- [ ] The previous accepted images, binaries, database backups, and deployment evidence remain available for rollback.
+- [ ] Upstream migrations run before Fork migrations without consuming upstream numeric authority or rewriting applied full basenames.
+- [ ] Fresh upstream and sanitized accepted-floor databases reach the same required schema.
+- [ ] One interrupted Fork migration retries without duplicate effects or ledger corruption.
+- [ ] All 240 live rows have a bounded disposition; the nine non-strict rows are normalized from authority or preserved read-only without invented facts or archive behavior.
+- [ ] Exact-head CI is green before artifacts are built, and every deployed architecture reads back the same accepted source SHA.
+- [ ] Mini and imile-win each receive an independent database backup and preflight before switching.
+- [ ] Each target reads back the expected schema/ledger, image digest, runtime revision, uploads/storage continuity, and authenticated External PR behavior.
+- [ ] A failure on one target does not alter the other target's deployment or rollback authority.
+- [ ] Receipts are owner-only and secret-safe and record explicit database/image rollback boundaries.
+- [ ] Work stops after the External PR contract, 240-row disposition, accepted-floor upgrade/rollback, two target readbacks, and exact-head CI pass.
 
 ## Blocked by
 
-- [01 Establish the clean-upstream exact-SHA release lane](01-establish-clean-upstream-release-lane.md)
-- [02 Establish the fork migration stream and accepted upgrade floor](02-establish-fork-migration-stream.md)
-- [03 Harden explicit External PR binding authority](03-harden-external-pr-binding-authority.md)
-- [04 Unify pull request projection and association conflict handling](04-unify-pr-projection-and-conflicts.md)
-- [05 Decouple pull request completion and prove durable continuation](05-decouple-pr-completion-and-continuation.md)
-- [06 Shrink Multica ownership of AGS runtime policy](06-shrink-ags-runtime-ownership.md)
-- [07 Correct Pi process-group cancellation](07-correct-pi-process-group-cancellation.md)
-- [08 Build the web application offline with licensed fonts](08-build-web-offline-with-licensed-fonts.md)
-- [09 Shadow-converge every live External PR association](09-shadow-converge-live-external-prs.md)
+- [01 Rebuild from latest upstream with an additive release path](01-establish-clean-upstream-release-lane.md)
+- [03 Reimplement the minimal External PR authority slice](03-harden-external-pr-binding-authority.md)

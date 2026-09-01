@@ -1,5 +1,6 @@
-Status: ready-for-agent
-Blocked by: None - can start immediately
+Status: wontfix
+Resolution: Merged into [10 Upgrade and deploy the clean generation](10-accept-and-deploy-converged-generation.md); an independent migration product is not part of the minimal DAG.
+Blocked by: None - superseded
 
 # Establish the fork migration stream and accepted upgrade floor
 

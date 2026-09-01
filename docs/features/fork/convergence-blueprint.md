@@ -77,29 +77,29 @@ or archive decision before cutover.
 8. The accepted runtime has no permanent dual-write, shadow reader, generic
    repair/archive service, or second lifecycle kernel. Migration comparison is
    finite operator/test tooling and is removed before acceptance.
-9. Prefer one owner and one write path per fact, one PR surface, and one generic
-   completion evaluator. New abstractions must remove more upstream conflict
-   surface than they add.
-10. Stop when the four accepted seams cover observed behavior and live-data
-    classes. Additional matrices or frameworks require a reproduced defect or
-    concrete production risk.
+9. Prefer one owner and one write path per fact, one PR surface, and the existing
+   completion path with the smallest ownership correction. New abstractions must
+   remove more upstream conflict surface than they add.
+10. Stop when the External PR contract, 240-row disposition, accepted-floor
+    upgrade/rollback, and exact-head CI pass. Pi and AGS sidecars use their own
+    narrow acceptance and do not block the rebuild.
 
 ## Capability decisions
 
 | Current fork surface | Current upstream observation | Target decision |
 | --- | --- | --- |
 | External PR authority, storage, Issue association, and AGS/Forgejo dual identity | Upstream has strong generic PR metadata and provider support, but associates PRs to Issues by parsing `PREFIX-NUMBER` from title, body, and branch. Title/branch matches become working links and closing-keyword matches can complete an Issue. | Keep External PR as the fork-owned authoritative fact and recovery model. Reuse upstream PR metadata, CI aggregation, DTO, and common UI without replacing explicit UUID association with text inference. |
-| AGS `/links` and `/complete-from-merge` callbacks | Upstream accepts provider webhooks, but not the AGS service envelope, explicit Issue UUID, immutable external identity, or AGS-to-Forgejo projection facts. | Retain the typed authenticated callback. Verify redundant Workspace/Issue labels against UUIDs, persist the complete canonical binding revision, bind URLs to the configured instance, and fail closed on changed idempotency payloads. |
-| Durable External PR work/finalization scheduler | Upstream webhook redelivery does not cover an AGS provider operation that succeeded before its Multica callback or Issue lifecycle finalization completed. | Keep durable terminal admission, reconcile, and finalization for External PR only. Isolate them behind a fork-owned service so native GitHub/VCS completion never depends on External PR storage. |
-| Completion policy, parent/stage wake, Issue locking | Upstream VCS/GitHub paths use text-derived association and a generic close aggregate; parity for `record_only`, leaf-only completion, parent/stage wake, and crash recovery is incomplete. | Extract a generic completion evaluator independent of External finalization. The External adapter supplies explicit authoritative facts and durable recovery; native providers use their own association source. Preserve all fork completion behaviors as contract tests. |
+| AGS `/links` and `/complete-from-merge` callbacks | Upstream accepts provider webhooks, but not the AGS service envelope, explicit Issue UUID, immutable external identity, or AGS-to-Forgejo projection facts. | Retain the typed authenticated callback. Verify redundant Workspace/Issue labels against UUIDs, validate the complete canonical envelope, include it in the immutable payload hash, and persist only fields used by runtime reads or recovery. |
+| Durable External PR work/finalization scheduler | Upstream webhook redelivery does not cover an AGS provider operation that succeeded before its Multica callback or Issue lifecycle finalization completed. | Keep durable terminal admission, reconcile, and finalization for External PR only. Native completion without External work must not create External finalization state. |
+| Completion policy, parent/stage wake, Issue locking | The fork already has a completion path with `record_only`, leaf checks, locks, and durable continuation. | Reuse that path with a narrow ownership correction. Do not extract a new generic evaluator or second lifecycle kernel. Preserve retained behavior with contract tests. |
 | Current execution context endpoint and task-bound link token | Upstream claim data already carries task, workspace, agent, Issue, runtime, and trigger facts; exact execution identity is a small missing claim field, while link token is already marked residual | Retire link token. Add exact execution identity to the claim only if AGS requires it, then materialize a claim-time context file or environment projection in the daemon. Avoid a new server query/lock/route; keep an endpoint only for a proven post-claim consumer. |
 | Access Grant routing, git/gh shims, platform Git identity | Repository authority belongs to AGS/Agent Kit rather than Multica product state | Move launcher/path/identity policy to AGS bootstrap or runtime configuration. Do not patch Multica task execution for repository-provider policy. |
 | `MULTICA_RUN_ID` | Upstream supplies `MULTICA_TASK_ID` but not the fork's exact execution identity field | Prefer task ID if AGS accepts it. Otherwise upstream a small claim plus environment addition; no execution-context subsystem is needed for one variable. |
 | Pi process-tree cancellation | Upstream has cross-platform process-group primitives and equivalent handling in several backends, but Pi still lacks complete TERM-to-KILL ownership | Reimplement as a narrow upstream fix using `waitProcessGroupGone`; the current fork's `procDone` race can skip SIGKILL after the leader exits while a descendant remains. Retain only the corrected small patch and Unix test until released upstream. |
-| Offline Google Fonts | Upstream web build still uses `next/font/google`; the current vendored bundle does not yet carry distributable font license/copyright material | Prefer an upstream local-font/offline-build fix. Interim fork support moves under `deploy/fork/web/**`, includes the required font licenses, and sets the build mock in an overlay Dockerfile; do not modify app layouts, package scripts, or the official Dockerfile. |
+| Offline Google Fonts | Upstream web build still uses `next/font/google`; the current vendored bundle does not yet carry distributable font license/copyright material | Put the smallest licensed offline font overlay under Fork deployment tooling. Upstream submission is optional and no font pipeline or product-layout change is added. |
 | Local fork CLI/version/deployment scripts | These are owner operations, not product behavior | Move under `deploy/fork/**` and invoke directly from the project skill. Stop adding Makefile targets or editing official self-host files. |
 | Uploads bind and old named-volume copy | Both live targets already crossed the boundary and retain receipts | Keep target-specific bind overrides and rollback evidence. Remove the fork change to official Compose after verifying the one-time copy receipt and retained old volume. |
-| Git locale and child environment fixes | `LC_ALL=C` for Git diagnostics and duplicate environment replacement are generally useful | Submit independent upstream fixes. Do not carry them as unnamed fork behavior. |
+| Git locale and child environment fixes | `LC_ALL=C` for Git diagnostics and duplicate environment replacement are generally useful | Carry only a minimal named patch when required by a retained contract. Upstream submission is optional side work and does not block the generation. |
 
 ## Target ownership boundary
 
@@ -117,18 +117,18 @@ docker-compose.selfhost.yml
 .github/workflows/ci.yml
 ```
 
-Shared PR API and UI changes are allowed only at a stable projection boundary:
-they consume association provenance and a unified PR response without owning
-External PR admission, idempotency, or reconciliation.
+Shared PR API and UI changes are limited to rendering External rows in the
+existing Issue PR section. They do not add provenance taxonomy, persistent
+conflict state, repair UI, shadow API, or a second provider model.
 
 Expected remaining source delta:
 
-- additive `deploy/fork/**` build, activation, compose override, and receipt tools;
-- additive fork migration runner/directory;
-- a fork-owned External PR authority and durable-recovery module;
-- a narrow unified PR projection adapter with explicit association provenance;
-- temporary small upstream-bound patches for Pi and any accepted daemon env
-  value.
+- additive `deploy/fork/**` build, activation, compose override, font overlay,
+  and receipt tools;
+- the smallest sequential Fork migration runner/ledger;
+- a fork-owned External PR authority and durable-recovery module using the
+  existing completion path;
+- temporary small named patches for Pi or a proven daemon environment value.
 
 ## Migration convergence
 
@@ -153,30 +153,26 @@ prefixes. A small additive runner is preferable to modifying
 
 ### External PR authority convergence
 
-1. Keep the 240 live External PR associations as fork-owned authoritative
-   facts. Do not replace their explicit Issue UUIDs with text-derived links.
-2. Normalize the nine live links missing strict merge fields by authoritative
-   provider lookup or mark them read-only archived facts.
-3. Persist the complete canonical projection for strict facts: target instance,
-   canonical and provider repository identities, binding identity/revision,
-   expected head/base, merge method, and projection fact revision.
-4. Verify callback Workspace slug and Issue key against their UUID records;
-   require the typed provider allowlist, canonical instance-bound URLs, and
-   immutable idempotency payload.
-5. Build a unified PR read projection that combines upstream native metadata
-   with External authority and exposes association provenance. Compare it with
-   the current native and External views for every live Issue.
-6. Give explicit External binding precedence over title/body/branch inference.
-   Persist conflicts, suppress automatic completion, and require bounded repair
-   when the two sources identify different Issues.
-7. Keep terminal admission, reconciliation, and finalization for External PR.
-   Decouple the generic completion evaluator so native providers do not depend
-   on External PR tables.
-8. Retire only duplicate read/UI projections and obsolete compatibility input
-   after a drain window. External authority, receipts, and recovery remain until
-   a separately accepted replacement proves the same contract.
-9. Any later destructive cleanup requires backup and readback. Image-only
-   rollback is not valid past an accepted schema cleanup boundary.
+1. Keep all 240 live External PR associations as explicit fork-owned facts. Do
+   not replace their Issue UUIDs with text-derived links.
+2. For the nine non-strict rows, recover missing authority once from the provider
+   when possible; otherwise preserve the existing explicit row read-only. Do not
+   create archive behavior.
+3. Validate the complete canonical callback envelope and include it in the
+   immutable idempotency hash. Do not add columns for request-only fields with
+   no runtime read, completion, or recovery consumer.
+4. Verify callback Workspace slug and Issue key against their UUID records or
+   remove the redundant fields from the typed contract.
+5. Render External rows through the existing Issue PR API/UI section. Do not add
+   provenance taxonomy, conflict persistence, repair UI, or permanent shadow
+   reads.
+6. Keep terminal admission, reconciliation, and finalization for External PR.
+   Make only the narrow correction that native completion without External work
+   creates no External finalization row.
+7. Compare the accepted-floor fixture and live-row census once in test/operator
+   tooling, then remove the comparison path before runtime acceptance.
+8. Any destructive cleanup requires backup and readback. Image-only rollback is
+   not valid past an accepted schema cleanup boundary.
 
 ### Test contraction
 
@@ -193,71 +189,66 @@ immutable refs rather than from active-suite copies of every old SQL file.
 
 ## Delivery sequence
 
-### Wave 1: operational extraction
+### T1: clean upstream generation and additive release path
 
-- Add the project skill and move deployment-only behavior toward
-  `deploy/fork/**`.
-- Stop changing Makefile, official Compose, official Dockerfiles, and workflow
-  branch lists for target-specific operation.
-- Submit the corrected Pi cancellation, deterministic Git locale, child-environment,
-  CI path-filter/checkout, and offline-font licensing fixes upstream.
-- Add an exact-SHA artifact promotion job that builds arm64/amd64 once and
-  publishes one immutable OCI manifest after source acceptance.
+- Start a new worktree at implementation-time latest accepted upstream `main`.
+- Reimplement retained contracts without merging or cherry-picking the prior Fork
+  squash.
+- Move target operations and the smallest licensed offline-font overlay under
+  additive Fork deployment tooling.
+- Pass exact-head CI and build each required architecture from the same source
+  SHA. A single multi-architecture manifest is optional.
 
-This wave should not change product data or runtime behavior.
+T1 does not change product data or production runtime.
 
-### Wave 2: External authority hardening and unified shadow projection
+### T2: minimal External PR authority slice
 
-- Persist complete canonical External PR binding revisions and strengthen typed
-  callback validation.
-- Separate the generic completion evaluator from External finalization while
-  retaining durable External terminal recovery.
-- Build a unified PR read projection with association provenance and explicit
-  binding precedence.
-- Shadow-compare unified, native, and External projections for every live Issue.
-- Resolve the nine non-strict live links explicitly.
+- Reimplement typed UUID binding, immutable natural identity, payload-hash
+  idempotency, durable terminal admission, completion policy, and crash
+  continuation.
+- Validate but do not persist request-only canonical envelope fields.
+- Reuse the existing Issue PR section without provenance/conflict product state.
+- Make the narrow finalization ownership correction; do not create a generic
+  completion rewrite.
 
-### Wave 3: unified surface switch
+### T3: accepted-floor upgrade and two target transactions
 
-- Switch PR reads and the Issue UI to the unified projection without changing
-  External PR write authority.
-- Detect explicit-versus-inferred conflicts and suppress completion until repair.
-- Stop issuing the residual link token after its compatibility census reaches
-  zero; keep the typed callback and durable reconcile contract.
-- Prove idempotent callbacks, projection parity, completion policies,
-  Issue/workspace deletion, parent/stage continuation, and crash recovery.
+- Apply upstream then the small Fork migration stream to fresh and sanitized
+  accepted-floor schemas and retry one interrupted migration.
+- Give every live External PR row a bounded disposition; normalize or preserve
+  the nine non-strict rows without an archive subsystem.
+- Back up, migrate, deploy, and read back Mini and imile-win independently using
+  artifacts from the same accepted SHA.
 
-### Wave 4: historical and duplicate-surface retirement
+### Independent sidecars
 
-- Apply any compatibility cleanup migration with per-host backups.
-- Remove the duplicate External PR UI/read projection, obsolete compatibility
-  inputs, historical active migration chain, and giant continuity fixtures from
-  the new generation.
-- Retain External authority facts, receipts, and durable recovery as fork-owned
-  product state.
-- Record the 2026-08-30 generation as the minimum direct upgrade source.
+- Pi process-group cancellation is a narrow patch and test.
+- AGS repository/runtime policy moves out of Multica when its current caller
+  boundary is available.
+- Upstream submissions are optional follow-up.
+
+None of these sidecars blocks T2 or T3.
 
 ## Acceptance targets
 
-- current fork behavior is represented by a decision row, including retained
-  authority and retired implementation;
-- no fork migration is added to upstream's numeric sequence;
-- all 240 live External PR associations remain explicit authoritative facts or
-  receive an explicit archive disposition;
-- all nine non-strict live links are normalized or archived by bounded decision;
+- the implementation starts from implementation-time latest upstream `main` in
+  a clean worktree and does not replay the prior Fork squash;
 - typed callback replay, changed-payload conflict, immutable PR-to-Issue binding,
-  and crash recovery are proven;
-- unified PR reads preserve association provenance and explicit binding wins
-  over text inference;
-- explicit-versus-inferred conflicts cannot automatically complete an Issue;
-- `record_only`, leaf-only completion, parent/stage wake, Issue/workspace
-  deletion, and native-provider independence from External finalization are
-  proven;
-- one accepted-SHA arm64/amd64 OCI manifest is promoted before target rollout;
-- exact-head CI passes before any final arm64/amd64 image build;
-- Mini and imile-win receive independent backups, migration readback, runtime
-  receipts, and rollback instructions;
-- secret-safe evidence contains no raw container environment.
+  retained completion policy, and crash continuation are proven;
+- native completion without External work creates no External finalization row;
+- all 240 live External PR rows retain explicit facts and the nine non-strict
+  rows are normalized or preserved read-only without archive behavior;
+- fresh and accepted-floor upgrades plus one interrupted retry pass without
+  rewriting applied migration basenames;
+- exact-head CI passes before artifacts are built, and every architecture reads
+  back the same accepted source SHA;
+- Mini and imile-win receive independent backups, migration/runtime readback,
+  secret-safe receipts, and rollback instructions.
+
+Stop at these targets. Do not add provenance taxonomy, permanent shadow,
+canonical-envelope columns, a generic completion rewrite, a migration product,
+a mandatory single OCI manifest, or additional proof matrices without a
+reproduced defect.
 
 Success is not a smaller squash commit. Success is a fork whose remaining
 changes sit behind stable ownership boundaries and can be re-derived from

@@ -1,7 +1,7 @@
 Status: ready-for-agent
 Blocked by: None - can start immediately
 
-# Establish the clean-upstream exact-SHA release lane
+# Rebuild from latest upstream with an additive release path
 
 ## Parent
 
@@ -9,28 +9,30 @@ Blocked by: None - can start immediately
 
 ## User stories covered
 
-1-3, 6-11, and 33.
+1-3, 6-11, 29-30, 33, and 36-38.
 
 ## What to build
 
-Create a complete non-production release path that begins from a clean current-upstream generation, keeps target operations behind additive fork tooling, accepts one exact source revision, and produces one immutable arm64/amd64 OCI manifest. Source changes must invalidate prior CI, build, tag, manifest, and receipt authority. Official upstream deployment surfaces must remain replaceable.
+Create a new generation in a clean worktree from the exact latest accepted upstream `main`. Reimplement only retained Fork contracts; treat prior Fork source as read-only donor evidence. Move target-specific build, Compose, storage, CLI activation, backup, and receipt behavior behind thin additive Fork tooling. Make the web production build offline with the smallest legally distributable font overlay.
 
-The slice ends at artifact and dry-run deployment evidence. It must not switch Mini or imile-win.
+Build each required architecture from the same accepted source SHA. A single multi-architecture manifest is optional. This ticket ends with exact-head CI and artifact/dry-run evidence; it does not switch production.
 
 ## Simplification guardrails
 
-- Build the smallest repository-owned release path needed for this fork; do not create a general release platform, deployment daemon, or environment abstraction.
-- Reuse existing registry, Compose, and host primitives behind thin scripts. Do not modify production or wait for optional upstream contributions in this slice.
+- Do not create a release platform, deployment daemon, environment abstraction, font pipeline, theme system, or visual redesign.
+- Reuse existing registry, Compose, host, and build primitives behind thin scripts. Do not edit official upstream deployment files for target policy.
+- Upstream contributions are optional follow-up and never block this ticket.
 
 ## Acceptance criteria
 
-- [ ] A clean-upstream generation can be recreated from documented behavior contracts without replaying the prior fork squash.
-- [ ] Target-specific build, Compose, storage, activation, backup, and receipt behavior is invoked from additive fork tooling.
-- [ ] Exact-head CI is a hard prerequisite for final image construction.
-- [ ] One accepted source revision produces an immutable manifest containing verified arm64 and amd64 descriptors.
-- [ ] Any source revision change invalidates all prior acceptance and artifact receipts.
-- [ ] Receipt generation uses allowlisted redacted fields and owner-only permissions; raw container environments are never retained.
-- [ ] Dry-run or disposable-host proof covers artifact selection, digest readback, and rollback inputs without modifying production runtimes.
+- [ ] The generation starts from a recorded latest-upstream SHA in a new clean worktree; no prior Fork squash is merged or cherry-picked.
+- [ ] Every retained source change points to a current behavior contract; unrelated prior Fork changes are omitted.
+- [ ] Target-specific release behavior is invoked from additive Fork tooling and official upstream deployment files remain replaceable.
+- [ ] Exact-head CI passes before architecture artifacts are built.
+- [ ] Every target artifact reads back the same accepted source SHA; registry packaging may be separate tags or one manifest.
+- [ ] The production web build succeeds offline and every redistributed font has required license and copyright material.
+- [ ] Receipts contain only allowlisted redacted data with owner-only permissions; raw container environments are not retained.
+- [ ] A disposable or dry-run proof covers artifact selection, digest readback, and rollback inputs without modifying production.
 
 ## Blocked by
 

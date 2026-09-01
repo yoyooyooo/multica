@@ -1,5 +1,6 @@
-Status: ready-for-agent
-Blocked by: None - can start immediately
+Status: wontfix
+Resolution: The minimal offline font overlay and license check are merged into [01 Rebuild from latest upstream](01-establish-clean-upstream-release-lane.md); no separate font pipeline is authorized.
+Blocked by: None - superseded
 
 # Build the web application offline with licensed fonts
 

@@ -1,5 +1,6 @@
 Status: ready-for-agent
 Blocked by: None - can start immediately
+Track: optional sidecar; does not block the three-ticket clean rebuild DAG
 
 # Shrink Multica ownership of AGS runtime policy
 
@@ -29,7 +30,7 @@ The completed slice must preserve ordinary agent startup and the supported AGS w
 - [ ] Ordinary Pi, Codex, and Claude task startup remains provider-neutral and does not require manual grant/session commands.
 - [ ] Task ID is used as the execution correlation identity unless a failing contract test proves it insufficient.
 - [ ] Any retained distinct execution identity is limited to claim and environment projection and has no parallel query/locking subsystem.
-- [ ] Residual link-token and execution-context compatibility routes receive explicit keep-or-retire dispositions and contract tests.
+- [ ] Residual link-token and execution-context routes are removed in this generation when no current caller is found; any retained field names its current caller and removal gate. No compatibility shim or census subsystem is added.
 
 ## Blocked by
 

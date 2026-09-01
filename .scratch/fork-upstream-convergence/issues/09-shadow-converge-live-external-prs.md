@@ -1,5 +1,6 @@
-Status: ready-for-agent
-Blocked by: [02 Migration stream](02-establish-fork-migration-stream.md), [03 External PR authority](03-harden-external-pr-binding-authority.md), [04 Unified PR projection](04-unify-pr-projection-and-conflicts.md), [05 Completion continuation](05-decouple-pr-completion-and-continuation.md)
+Status: wontfix
+Resolution: The bounded 240-row disposition is merged into [10 Upgrade and deploy the clean generation](10-accept-and-deploy-converged-generation.md); permanent shadow, archive, repair, and migration-dashboard behavior is deleted.
+Blocked by: None - superseded
 
 # Shadow-converge every live External PR association
 

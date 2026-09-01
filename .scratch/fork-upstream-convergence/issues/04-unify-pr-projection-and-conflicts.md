@@ -1,5 +1,6 @@
-Status: ready-for-agent
-Blocked by: [03 Harden explicit External PR binding authority](03-harden-external-pr-binding-authority.md)
+Status: wontfix
+Resolution: The single PR section is merged into [03 Minimal External PR authority](03-harden-external-pr-binding-authority.md); provenance taxonomy, persistent conflict state, repair UI, and shadow API are deleted.
+Blocked by: None - superseded
 
 # Unify pull request projection and association conflict handling
 
