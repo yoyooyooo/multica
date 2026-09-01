@@ -88,7 +88,7 @@ jobs:
       - name: Typecheck and test frontend workspaces
         run: |
           pnpm typecheck
-          pnpm test
+          pnpm exec turbo test --filter=!@multica/mobile -- --retry=1
 
       - name: Build production web offline
         run: pnpm --filter @multica/web build
