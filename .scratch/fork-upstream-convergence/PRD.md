@@ -23,6 +23,17 @@ External PR remains an authoritative control-plane capability while native and E
 
 Generic fixes that benefit every deployment are submitted upstream or carried only as small, named, temporary patches. Target-specific CLI installation, Compose overrides, offline build support, receipts, backup logic, and host deployment behavior no longer modify upstream-owned product or official deployment files.
 
+## Clean Rebuild Constraints
+
+- Implementation starts in a new worktree at the exact latest accepted upstream `main`; the current fork branch and prior squash are read-only donor evidence.
+- The target has one owner and one write path per fact, one user-facing PR surface, and one generic completion evaluator. A new abstraction is admitted only when it removes more fork/upstream coupling than it adds.
+- Compatibility code requires a named present obligation: live data, a still-used wire contract, or an installed client that cannot be upgraded atomically. Every admitted shim has an owner, removal condition, and bounded lifetime.
+- No speculative fallback, permanent dual-write, permanent shadow reader, generic provider framework, or second lifecycle kernel is allowed. Shadow comparison is a finite migration check and is deleted before acceptance.
+- The nine non-strict live links receive one-time normalize-or-preserve decisions. The plan must not create an archive service, archive UI, or general repair workflow for nine rows.
+- Preparing an upstream contribution is never on the critical path for the fork generation. The fork carries a minimal named patch until upstream release actually supersedes it.
+- Proof stops when the four accepted seams cover the real behavior contracts, all live-data classes are accounted for, and exact-head CI passes. Additional hypothetical matrices require a concrete escaped defect or production risk.
+- When a requirement cannot justify its source delta, migration burden, test seam, and future sync cost, the default disposition is deletion or omission.
+
 ## User Stories
 
 1. As a fork maintainer, I want every refresh to begin from current upstream, so that obsolete fork implementation is not mechanically replayed.
@@ -61,6 +72,9 @@ Generic fixes that benefit every deployment are submitted upstream or carried on
 33. As an upstream maintainer, I want generic Git locale, child environment, process cancellation, and CI fixes isolated as upstream candidates, so that broadly useful behavior is not hidden in a private fork.
 34. As a database operator, I want fresh install, accepted-floor upgrade, and interrupted-retry migration proofs, so that schema convergence is verified against realistic states.
 35. As a fork maintainer, I want every retained capability represented by contract tests and every retired capability represented by an explicit disposition, so that future refreshes can be reconstructed from intent.
+36. As a fork maintainer, I want compatibility admitted only for a current named obligation, so that speculative transition code does not become permanent architecture.
+37. As a fork maintainer, I want finite migration checks removed after cutover, so that shadow and dual-path machinery does not survive its purpose.
+38. As a fork maintainer, I want work to stop once real contracts, live-data classes, and release seams pass, so that diminishing-return proof does not delay the clean rebuild.
 
 ## Implementation Decisions
 
@@ -93,6 +107,10 @@ Generic fixes that benefit every deployment are submitted upstream or carried on
 - Migration proof covers a fresh upstream database, a sanitized accepted-floor schema with live External PR facts, and interrupted convergence retry. Historical active fixtures are retired only after those paths and backup restoration are proven.
 - The 240 observed live External PR associations are preserved as authoritative fork facts. The 231 strict mappings are eligible for unified projection immediately; the remaining nine require provider normalization or explicit archive disposition. They are not silently coerced into text-derived native links.
 - The convergence program uses exact-head CI and contract evidence before deployment. Runtime deployments remain unchanged until an implementation generation is accepted and explicitly authorized.
+- Transitional reads exist only in tests or a bounded operator-run comparison. The accepted runtime has no permanent old/new dual-write, shadow processor, or fallback association path.
+- The nine non-strict links are normalized when authority can be recovered; otherwise their existing explicit facts are preserved read-only. No new archive subsystem is created.
+- Upstream pull requests are optional follow-up work. Fork acceptance depends on the local minimal patch and its tests, not on upstream review timing.
+- Scope is complete when the four agreed seams pass and all current live-data classes have a disposition. Extra abstraction or fault matrices need evidence of a real uncovered risk.
 
 ## Testing Decisions
 
@@ -103,6 +121,7 @@ Generic fixes that benefit every deployment are submitted upstream or carried on
 - **Release seam:** after exact-head CI, build one arm64/amd64 OCI manifest and verify architecture descriptors, immutable digest, source revision, secret-safe receipts, independent target backup/deploy/readback, and rollback evidence.
 - Narrow tests remain for deployment overlays, CLI version admission, local installer behavior, deterministic Git locale, child environment replacement, CI path gating, offline font builds, and font license presence.
 - Existing upstream GitHub/VCS webhook, pull request list, CI status, Issue deletion, Workspace deletion, daemon, and frontend tests remain regression prior art. New tests extend those public seams instead of duplicating implementation-level suites.
+- Do not build exhaustive historical, provider, or concurrency matrices after the accepted seams cover the observed classes. Add a case only for a distinct authority boundary, live-data shape, or reproduced failure.
 
 ## Out of Scope
 
@@ -116,6 +135,9 @@ Generic fixes that benefit every deployment are submitted upstream or carried on
 - Restoring retired Workload Assertion, delegated Session/merge, legacy gateway, or repository-authority surfaces.
 - Adding a broad execution-context query and locking subsystem for one environment variable.
 - Claiming an upstream contribution is complete before it is accepted and released upstream.
+- Permanent dual-write, shadow traffic, fallback reads, compatibility routers, generic archive/repair services, or provider-neutral frameworks created only for this convergence.
+- Preserving an old route, field, table, worker, fixture, or UI branch without a named current consumer or live-data obligation.
+- Expanding the proof matrix after the agreed seams and observed production classes pass without a concrete escaped defect.
 - Deploying, migrating production data, merging the planning pull request, or rotating credentials as part of this specification publication.
 
 ## Further Notes

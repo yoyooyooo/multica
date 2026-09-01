@@ -17,6 +17,11 @@ Create one user-facing pull request projection for native GitHub/VCS metadata an
 
 When explicit and inferred sources point the same provider PR at different Issues, persist an observable conflict, exclude the ambiguous association from automatic completion, and give operators enough identity to repair it. Replace duplicate Issue PR sections with one shared surface without moving External write authority into the UI or native webhook parser.
 
+## Simplification guardrails
+
+- Keep provenance primarily as internal authority metadata. The default UI shows one PR row; it exposes source details only when needed to explain an External projection or actionable conflict.
+- Do not create a permanent shadow reader, dual API, conflict-management console, or generic association rules engine. The old/new comparison is finite test and operator tooling.
+
 ## Acceptance criteria
 
 - [ ] One Issue pull request API response can represent native, External, and AGS-to-Forgejo projected PRs without losing source identity.

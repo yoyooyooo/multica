@@ -17,6 +17,11 @@ Run a read-only-first shadow convergence campaign over the accepted production-d
 
 This slice may prepare migration and repair artifacts against sanitized data. It must not mutate production or classify a missing fact by textual inference.
 
+## Simplification guardrails
+
+- This is a one-time bounded census, comparison, and repair operation. Do not ship permanent shadow traffic, dual-write, archive UI, repair service, or migration dashboard.
+- Preserve a non-strict row read-only when authority cannot be recovered; do not invent missing facts or block the whole generation on cosmetic completeness.
+
 ## Acceptance criteria
 
 - [ ] A sanitized accepted-floor fixture represents all observed live association classes and realistic migration ledger state.

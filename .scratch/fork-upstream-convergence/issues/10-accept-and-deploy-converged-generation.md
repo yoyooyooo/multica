@@ -17,6 +17,11 @@ Accept one exact converged source revision, promote its single arm64/amd64 OCI m
 
 This issue owns production authorization and rollout evidence. It must not begin from partial dependency completion or rebuild different source for either target.
 
+## Simplification guardrails
+
+- Use the established release scripts and two explicit target transactions. Do not build a rollout controller, fleet scheduler, or generalized environment manager.
+- Run only acceptance checks tied to the four agreed seams and observed production classes. Stop after both targets pass readback; optional hardening and upstream follow-ups remain separate work.
+
 ## Acceptance criteria
 
 - [ ] Every blocking issue is resolved with evidence and no unresolved stop rule or External PR disposition remains.

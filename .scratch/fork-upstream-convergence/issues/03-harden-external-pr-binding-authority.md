@@ -17,6 +17,11 @@ Strengthen External PR as the fork-owned authority for AGS-to-Issue association.
 
 The slice must accept an authoritative typed terminal fact durably and leave completion to reconciliation. It must not replace explicit association with title, body, or branch parsing.
 
+## Simplification guardrails
+
+- Harden the typed AGS contract that is actually used. Do not expand the generic provider-neutral callback surface or invent a plug-in framework.
+- Persist only facts needed to verify identity, replay, merge authority, and recovery. Do not add an event-sourcing layer, policy language, or speculative cryptographic attestation protocol.
+
 ## Acceptance criteria
 
 - [ ] Typed callbacks require valid Workspace and Issue UUIDs that belong together, and supplied slug/key labels match those records exactly.

@@ -17,6 +17,11 @@ Introduce a fork-owned migration stream and ledger that runs after upstream migr
 
 Existing full migration basenames and live ledger rows remain immutable. This slice proves the migration mechanism without performing a production migration.
 
+## Simplification guardrails
+
+- Implement only a sequential upstream-then-fork runner and ledger; do not build a migration orchestration framework or second schema-management product.
+- Keep exactly the three accepted test states. Do not recreate every historical migration directory or compatibility topology in the active tree.
+
 ## Acceptance criteria
 
 - [ ] Fork migrations no longer consume upstream numeric migration authority.

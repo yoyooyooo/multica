@@ -66,11 +66,23 @@ or archive decision before cutover.
 3. Put target operations in additive deployment overlays, not official upstream
    Compose, Makefile, installer, or CI files.
 4. Put future fork migrations in a fork-owned directory and ledger.
-5. Upstream generally useful fixes. Keep only a small temporary patch while the
-   upstream change is unavailable.
+5. Upstream generally useful fixes, but never block the fork generation on an
+   upstream review. Keep only a small named patch until an upstream release
+   actually supersedes it.
 6. Set an explicit upgrade floor at the accepted 2026-08-30 generation. Older
    forks upgrade through that generation rather than keeping every historical
    topology executable forever.
+7. Admit compatibility only for a named current client, wire contract, or live
+   data obligation. Every shim has an owner and a removal gate.
+8. The accepted runtime has no permanent dual-write, shadow reader, generic
+   repair/archive service, or second lifecycle kernel. Migration comparison is
+   finite operator/test tooling and is removed before acceptance.
+9. Prefer one owner and one write path per fact, one PR surface, and one generic
+   completion evaluator. New abstractions must remove more upstream conflict
+   surface than they add.
+10. Stop when the four accepted seams cover observed behavior and live-data
+    classes. Additional matrices or frameworks require a reproduced defect or
+    concrete production risk.
 
 ## Capability decisions
 

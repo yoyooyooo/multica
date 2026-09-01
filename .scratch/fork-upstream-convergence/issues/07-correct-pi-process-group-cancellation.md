@@ -17,6 +17,11 @@ Implement a narrow, upstream-oriented Pi cancellation path that owns the full pr
 
 The patch should reuse existing cross-platform process primitives and remain removable after equivalent upstream behavior is released.
 
+## Simplification guardrails
+
+- Change only Pi process-group cancellation and the minimal shared primitive it already uses. Do not redesign process supervision across every agent backend.
+- Cover the known leader/descendant race and ordinary graceful/escalated paths; do not build an unbounded signal-order matrix without a reproduced failure.
+
 ## Acceptance criteria
 
 - [ ] A cooperative process group exits after TERM without receiving unnecessary KILL.

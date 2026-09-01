@@ -15,6 +15,11 @@ Blocked by: None - can start immediately
 
 Provide a deterministic production web build that does not fetch Google Fonts or other required font assets from the network. Prefer a generally useful upstream local-font solution; when an interim fork overlay is required, keep it additive and include the exact distributable license and copyright material for every shipped font asset.
 
+## Simplification guardrails
+
+- Choose the smallest legal offline font solution that preserves acceptable rendering. Do not build a font asset pipeline, theme system, or visual redesign.
+- Upstream submission is optional follow-up and does not block the fork build once the local solution and licenses pass.
+
 ## Acceptance criteria
 
 - [ ] A production web build succeeds with outbound network access disabled after declared dependencies are available.

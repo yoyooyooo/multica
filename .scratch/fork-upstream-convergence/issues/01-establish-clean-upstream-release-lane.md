@@ -17,6 +17,11 @@ Create a complete non-production release path that begins from a clean current-u
 
 The slice ends at artifact and dry-run deployment evidence. It must not switch Mini or imile-win.
 
+## Simplification guardrails
+
+- Build the smallest repository-owned release path needed for this fork; do not create a general release platform, deployment daemon, or environment abstraction.
+- Reuse existing registry, Compose, and host primitives behind thin scripts. Do not modify production or wait for optional upstream contributions in this slice.
+
 ## Acceptance criteria
 
 - [ ] A clean-upstream generation can be recreated from documented behavior contracts without replaying the prior fork squash.

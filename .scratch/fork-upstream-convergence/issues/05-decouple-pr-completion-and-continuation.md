@@ -17,6 +17,11 @@ Separate the generic Issue completion evaluator from External PR reconciliation 
 
 Completion must fail closed on association conflicts and preserve every accepted fork policy across crashes, retries, concurrent Issue edits, and provider redelivery.
 
+## Simplification guardrails
+
+- Introduce only the smallest evaluator boundary needed to remove External storage from native completion. Do not rewrite upstream provider ingestion or create a workflow engine.
+- Require transactionally idempotent observable behavior, not a generalized distributed exactly-once protocol. Add race cases only for reproduced or authority-relevant failures.
+
 ## Acceptance criteria
 
 - [ ] The generic completion evaluator has no mandatory dependency on External PR work or finalization records.

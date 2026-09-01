@@ -17,6 +17,11 @@ Move repository-operation authority, Access Grant routing, Git/GitHub shims, and
 
 The completed slice must preserve ordinary agent startup and the supported AGS workflow while removing Multica-owned provider policy and obsolete compatibility surfaces.
 
+## Simplification guardrails
+
+- Delete Multica-owned policy by default. Retain a compatibility route or field only when a current caller is identified and its removal condition is recorded.
+- Do not replace the existing execution-context subsystem with a new subsystem. At most, retain one proven claim/environment value.
+
 ## Acceptance criteria
 
 - [ ] AGS bootstrap or runtime configuration owns repository-provider policy and shim selection.
