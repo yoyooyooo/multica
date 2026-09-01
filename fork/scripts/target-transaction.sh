@@ -35,6 +35,8 @@ done
 
 backend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE")"
 web_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$WEB_IMAGE")"
+candidate_backend_id="$(docker image inspect --format '{{.Id}}' "$BACKEND_IMAGE")"
+candidate_web_id="$(docker image inspect --format '{{.Id}}' "$WEB_IMAGE")"
 if [[ "$backend_revision" != "$SOURCE_SHA" || "$web_revision" != "$SOURCE_SHA" ]]; then
   echo "candidate image revision does not match $SOURCE_SHA" >&2
   exit 1
@@ -213,8 +215,8 @@ if [[ "$frontend_status" != "200" ]]; then
   echo "candidate frontend login returned $frontend_status" >&2
   exit 1
 fi
-external_pr_unauthorized_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '/HTTP\// {code=$2} END {print code}')"
-external_pr_authenticated_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --header="Authorization: Bearer $MULTICA_EXTERNAL_PR_SERVICE_TOKEN" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '/HTTP\// {code=$2} END {print code}')"
+external_pr_unauthorized_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '$1 ~ /^HTTP\// {code=$2} END {print code}')"
+external_pr_authenticated_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --header="Authorization: Bearer $MULTICA_EXTERNAL_PR_SERVICE_TOKEN" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '$1 ~ /^HTTP\// {code=$2} END {print code}')"
 if [[ "$external_pr_unauthorized_status" != "401" || "$external_pr_authenticated_status" != "400" ]]; then
   echo "External PR authenticated route smoke failed: unauthorized=$external_pr_unauthorized_status authenticated=$external_pr_authenticated_status" >&2
   exit 1
@@ -222,12 +224,13 @@ fi
 
 new_backend_id="$(docker inspect -f '{{.Image}}' multica-backend-1)"
 new_web_id="$(docker inspect -f '{{.Image}}' multica-frontend-1)"
-new_backend_revision="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' multica-backend-1)"
-new_web_revision="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' multica-frontend-1)"
+new_backend_revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$new_backend_id")"
+new_web_revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$new_web_id")"
 new_uploads_source="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data/uploads"}}{{.Source}}{{end}}{{end}}' multica-backend-1)"
 new_external_pr_instance="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' multica-backend-1 | sed -n 's/^MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID=//p')"
 new_external_pr_token="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' multica-backend-1 | sed -n 's/^MULTICA_EXTERNAL_PR_SERVICE_TOKEN=//p')"
-if [[ "$new_backend_revision" != "$SOURCE_SHA" || "$new_web_revision" != "$SOURCE_SHA" || "$new_uploads_source" != "$old_uploads_source" ||
+if [[ "$new_backend_id" != "$candidate_backend_id" || "$new_web_id" != "$candidate_web_id" ||
+      "$new_backend_revision" != "$SOURCE_SHA" || "$new_web_revision" != "$SOURCE_SHA" || "$new_uploads_source" != "$old_uploads_source" ||
       "$new_external_pr_instance" != "$external_pr_instance" || -z "$new_external_pr_token" ]]; then
   echo "runtime revision, uploads, or External PR configuration readback failed" >&2
   exit 1
