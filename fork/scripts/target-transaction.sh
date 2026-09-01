@@ -153,7 +153,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 docker exec "$verify_container" createdb -U postgres multica_restore_verify
-docker exec -i "$verify_container" pg_restore --exit-on-error -U postgres -d multica_restore_verify < "$backup"
+docker exec -i "$verify_container" pg_restore --exit-on-error --no-owner --no-privileges -U postgres -d multica_restore_verify < "$backup"
 read -r restored_links restored_upstream_ledger < <(
   docker exec "$verify_container" psql -v ON_ERROR_STOP=1 -U postgres -d multica_restore_verify -At -F ' ' \
     -c "SELECT (SELECT count(*) FROM external_pull_request_link), (SELECT count(*) FROM schema_migrations);"
