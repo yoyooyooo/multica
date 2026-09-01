@@ -72,6 +72,16 @@ if [[ -z "$external_pr_token" ]]; then
   echo "current External PR service token is empty" >&2
   exit 1
 fi
+compose_env=()
+for env_container in multica-backend-1 multica-postgres-1; do
+  while IFS= read -r -d '' env_entry; do
+    compose_env+=("$env_entry")
+  done < <(docker inspect "$env_container" --format '{{json .Config.Env}}' | python3 -c '
+import json, sys
+for value in json.load(sys.stdin):
+    sys.stdout.buffer.write(value.encode("utf-8") + b"\0")
+')
+done
 
 read -r queued_tasks active_tasks active_autopilots < <(
   docker exec multica-postgres-1 sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F " " -c "SELECT (SELECT count(*) FROM agent_task_queue WHERE status='\''queued'\''), (SELECT count(*) FROM agent_task_queue WHERE status IN ('\''dispatched'\'','\''running'\'','\''waiting_local_directory'\'')), (SELECT count(*) FROM autopilot_run WHERE status IN ('\''queued'\'','\''running'\''));"'
@@ -175,6 +185,7 @@ docker stop "$verify_container" >/dev/null
 
 cd "$working_dir"
 compose_fork() {
+  env "${compose_env[@]}" \
   FORK_BACKEND_IMAGE="$BACKEND_IMAGE" FORK_WEB_IMAGE="$WEB_IMAGE" \
   MULTICA_EXTERNAL_PR_SERVICE_TOKEN="$external_pr_token" \
   MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID="$external_pr_instance" \
