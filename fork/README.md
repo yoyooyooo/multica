@@ -10,7 +10,7 @@ export FORK_WEB_IMAGE=multica-fork-web:<immutable-tag>
 docker compose -f docker-compose.selfhost.yml -f fork/compose.yml config
 ```
 
-For a local source build, also add `fork/compose.build.yml`. `fork/scripts/verify-source.sh` rejects dirty trees, merge commits after the frozen upstream base, and versions that cannot be traced to a Git SHA. `fork/scripts/build-images.sh` builds one architecture at a time and verifies both images carry the exact source revision label.
+For a local source build, also add `fork/compose.build.yml`. `fork/scripts/verify-source.sh` rejects dirty trees, merge commits after the frozen upstream base, and versions that cannot be traced to a Git SHA. `fork/scripts/build-images.sh` builds one architecture at a time and verifies both images carry the exact source revision label. The optional `FORK_GOPROXY` environment variable is forwarded only to the backend builder; its default remains `https://proxy.golang.org,direct`.
 
 The web build uses Fontsource package assets instead of `next/font/google`. The runtime image ships the corresponding SIL OFL 1.1 license files under `/usr/share/licenses/multica-fonts`.
 

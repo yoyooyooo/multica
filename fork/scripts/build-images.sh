@@ -43,6 +43,7 @@ common_args=(
   --build-arg "VERSION=$VERSION"
   --build-arg "COMMIT=$SHA"
   --build-arg "DATE=$DATE"
+  --build-arg "GOPROXY=${FORK_GOPROXY:-https://proxy.golang.org,direct}"
 )
 docker buildx build "${common_args[@]}" -f fork/backend.Dockerfile -t "$BACKEND_TAG" .
 docker buildx build "${common_args[@]}" --build-arg "NEXT_PUBLIC_APP_VERSION=$VERSION" -f fork/web.Dockerfile -t "$WEB_TAG" .
