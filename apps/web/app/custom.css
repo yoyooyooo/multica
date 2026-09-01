@@ -84,6 +84,7 @@
  * before Korean so zh users never get Korean Hanja glyph shapes (Hangul is a
  * separate Unicode block, so ko users still get Korean fonts for Hangul). */
 .landing-light {
+    --font-instrument-serif: "Instrument Serif", ui-serif, serif;
     --font-serif: var(--font-instrument-serif), "Songti SC", "SimSun",
         "Noto Serif CJK SC", "Nanum Myeongjo", "AppleMyungjo", "Batang",
         "Noto Serif CJK KR", ui-serif, serif;

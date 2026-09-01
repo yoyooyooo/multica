@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: fork/backend.Dockerfile
+      args:
+        VERSION: ${VERSION:?set VERSION from git describe}
+        COMMIT: ${COMMIT:?set COMMIT to the exact source SHA}
+        DATE: ${DATE:?set DATE to an RFC3339 build timestamp}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: fork/web.Dockerfile
+      args:
+        VERSION: ${VERSION:?set VERSION from git describe}
+        COMMIT: ${COMMIT:?set COMMIT to the exact source SHA}
+        DATE: ${DATE:?set DATE to an RFC3339 build timestamp}
+        NEXT_PUBLIC_APP_VERSION: ${VERSION:?set VERSION from git describe}

@@ -1,0 +1,12 @@
+services:
+  backend:
+    image: ${FORK_BACKEND_IMAGE:?set FORK_BACKEND_IMAGE to an immutable fork image}
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    environment:
+      MULTICA_EXTERNAL_PR_SERVICE_TOKEN: ${MULTICA_EXTERNAL_PR_SERVICE_TOKEN:-}
+      MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID: ${MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID:-}
+      MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS: ${MULTICA_EXTERNAL_PR_ALLOWED_PROVIDERS:-ags}
+
+  frontend:
+    image: ${FORK_WEB_IMAGE:?set FORK_WEB_IMAGE to an immutable fork image}
