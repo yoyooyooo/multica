@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/attributionbackfill"
 	"github.com/multica-ai/multica/server/internal/chatoriginbackfill"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
+	"github.com/multica-ai/multica/server/internal/forkmigrations"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/migrations"
 	"github.com/multica-ai/multica/server/internal/taskusagebackfill"
@@ -648,17 +649,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	files, err := migrations.Files(direction)
+	options, err := productionMigrationOptions(direction)
 	if err != nil {
 		slog.Error("failed to find migration files", "error", err)
 		os.Exit(1)
-	}
-
-	options := runOptions{
-		Direction:  direction,
-		Files:      files,
-		Hooks:      hooksForDirection(direction),
-		Conditions: conditionsForDirection(direction),
 	}
 	startupCtx, stopStartup := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopStartup()
@@ -676,7 +670,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	migrationErr := runMigrations(startupCtx, pool, options)
+	migrationErr := runProductionMigrations(startupCtx, pool, options)
 	if migrationErr != nil && startupSettings.StartupTimeout > 0 && dbstartup.IsTransientDatabaseError(migrationErr) {
 		slog.Warn("migration interrupted by database unavailability; retrying", "error", migrationErr)
 		migrationRetryOptions := startupSettings.RetryOptions()
@@ -693,7 +687,7 @@ func main() {
 			if err := pool.Ping(attemptCtx); err != nil {
 				return fmt.Errorf("ping database: %w", err)
 			}
-			return runMigrations(attemptCtx, pool, options)
+			return runProductionMigrations(attemptCtx, pool, options)
 		})
 	}
 	if migrationErr != nil {
@@ -702,6 +696,47 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+const (
+	forkSchemaMigrationsTable = "fork_schema_migrations"
+	forkMigrationAdvisoryLock = migrationAdvisoryLockKey + 1
+)
+
+func productionMigrationOptions(direction string) ([]runOptions, error) {
+	upstreamFiles, err := migrations.Files(direction)
+	if err != nil {
+		return nil, fmt.Errorf("resolve upstream migrations: %w", err)
+	}
+	forkFiles, err := forkmigrations.Files(direction)
+	if err != nil {
+		return nil, fmt.Errorf("resolve fork migrations: %w", err)
+	}
+	upstream := runOptions{
+		Direction:  direction,
+		Files:      upstreamFiles,
+		Hooks:      hooksForDirection(direction),
+		Conditions: conditionsForDirection(direction),
+	}
+	fork := runOptions{
+		Direction:             direction,
+		Files:                 forkFiles,
+		SchemaMigrationsTable: forkSchemaMigrationsTable,
+		AdvisoryLockKey:       forkMigrationAdvisoryLock,
+	}
+	if direction == "down" {
+		return []runOptions{fork, upstream}, nil
+	}
+	return []runOptions{upstream, fork}, nil
+}
+
+func runProductionMigrations(ctx context.Context, pool *pgxpool.Pool, options []runOptions) error {
+	for _, option := range options {
+		if err := runMigrations(ctx, pool, option); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")

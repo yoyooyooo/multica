@@ -1414,6 +1414,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HandleCloudBillingStripeWebhook for the rationale).
 	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
+	// AGS service callbacks authenticate with their dedicated bearer token in
+	// the handler. Explicit UUID association never passes through native PR
+	// title/body/branch inference.
+	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
+	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
 	// flow, and the cookie session is frequently absent (expired session,

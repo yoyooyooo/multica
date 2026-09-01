@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -270,15 +272,23 @@ func (h *Handler) notifyParentsOfBatchChildDone(ctx context.Context, completed [
 // its historical byte-identical copy, while a batch that finished several
 // children at once must not claim "the last sub-issue just finished".
 func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool) {
+	if _, err := h.postChildDoneCommentWithID(ctx, parent, completed, children, staged, closedStage, batch, dbid.NewV7()); err != nil {
+		slog.Warn("child done: create system comment failed",
+			"error", err,
+			"child_id", uuidToString(completed.ID),
+			"parent_id", uuidToString(parent.ID))
+	}
+}
+
+// postChildDoneCommentWithID lets a durable caller retry the existing child-done
+// behavior with one stable comment identity. Native callers continue through
+// postChildDoneComment and receive a fresh UUIDv7.
+func (h *Handler) postChildDoneCommentWithID(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, commentID pgtype.UUID) (db.Comment, error) {
 	prefix := h.getIssuePrefix(ctx, completed.WorkspaceID)
 	identifier := prefix + "-" + strconv.Itoa(int(completed.Number))
 	childID := uuidToString(completed.ID)
 	title := sanitizeChildTitleForSystemComment(completed.Title)
 	parentID := uuidToString(parent.ID)
-
-	// Build the parent-assignee mention prefix. Empty when the parent has no
-	// assignee or the assignee row is missing (deleted member, archived
-	// agent the workspace lost track of, etc.).
 	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
 
 	var content string
@@ -296,58 +306,50 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 				mentionPrefix, closedStage, identifier, childID, title, summary, advance,
 			)
 		}
+	} else if batch {
+		content = fmt.Sprintf(
+			"%sAll sub-issues are complete — they just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+			mentionPrefix, identifier, childID, title, parentID,
+		)
 	} else {
-		if batch {
-			content = fmt.Sprintf(
-				"%sAll sub-issues are complete — they just finished together in a batch update, most recently [%s](mention://issue/%s) — \"%s\". Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
-				mentionPrefix, identifier, childID, title, parentID,
-			)
-		} else {
-			content = fmt.Sprintf(
-				"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — \"%s\", just finished. Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
-				mentionPrefix, identifier, childID, title, parentID,
-			)
-		}
+		content = fmt.Sprintf(
+			"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — \"%s\", just finished. Continue the parent: synthesize the children's results and move it forward, or — if nothing remains — run `multica issue status %s in_review` to mark the parent ready for review.",
+			mentionPrefix, identifier, childID, title, parentID,
+		)
 	}
 
-	// author_type='system', author_id=zero UUID. The zero UUID is a valid 16
-	// byte value and the column is NOT NULL; frontend code should branch on
-	// author_type === 'system' rather than on the UUID value.
 	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:          dbid.NewV7(),
-		IssueID:     parent.ID,
-		WorkspaceID: parent.WorkspaceID,
-		AuthorType:  "system",
-		AuthorID:    pgtype.UUID{Valid: true},
-		Content:     content,
-		Type:        "system",
-		ParentID:    pgtype.UUID{Valid: false},
+		ID: commentID, IssueID: parent.ID, WorkspaceID: parent.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content,
+		Type: "system", ParentID: pgtype.UUID{Valid: false},
 	})
-	if err != nil {
-		slog.Warn("child done: create system comment failed",
-			"error", err,
-			"child_id", childID,
-			"parent_id", uuidToString(parent.ID))
-		return
+	var comment db.Comment
+	var issueRevision int64
+	if err == nil {
+		comment = created.Comment()
+		issueRevision = created.IssueRevision
+	} else {
+		var postgresError *pgconn.PgError
+		if !errors.As(err, &postgresError) || postgresError.Code != "23505" {
+			return db.Comment{}, err
+		}
+		comment, err = h.Queries.GetComment(ctx, commentID)
+		if err != nil {
+			return db.Comment{}, fmt.Errorf("load durable child-done comment: %w", err)
+		}
+		if comment.IssueID != parent.ID || comment.WorkspaceID != parent.WorkspaceID {
+			return db.Comment{}, errors.New("durable child-done comment identity mismatch")
+		}
+		issueRevision = parent.Revision
 	}
-	comment := created.Comment()
 
 	h.publish(protocol.EventCommentCreated, uuidToString(parent.WorkspaceID), "system", "", map[string]any{
-		"comment":             commentToResponse(comment, nil, nil),
-		"issue_title":         parent.Title,
-		"issue_assignee_type": textToPtr(parent.AssigneeType),
-		"issue_assignee_id":   uuidToPtr(parent.AssigneeID),
-		"issue_status":        parent.Status,
-		"issue_revision":      created.IssueRevision,
+		"comment": commentToResponse(comment, nil, nil), "issue_title": parent.Title,
+		"issue_assignee_type": textToPtr(parent.AssigneeType), "issue_assignee_id": uuidToPtr(parent.AssigneeID),
+		"issue_status": parent.Status, "issue_revision": issueRevision,
 	})
-
-	// Dispatch the explicit trigger / inbox row for the parent assignee.
-	// Listener-level mention parsing is intentionally NOT involved (the
-	// notification + subscriber listeners both short-circuit on
-	// author_type='system'); this keeps smuggled mentions from the child
-	// title inert and gives the platform a single place to apply the loop
-	// and idempotency guards.
 	h.dispatchParentAssigneeTrigger(ctx, parent, comment)
+	return comment, nil
 }
 
 // isTerminalChildStatus reports whether a child issue status counts as
