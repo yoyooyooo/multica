@@ -47,11 +47,13 @@ mkdir -p "$build_dir"
     -o "$binary" ./cmd/multica
 )
 chmod 0755 "$binary"
-version_output="$($binary --version)"
-if [[ "$version_output" != *"(commit: $SOURCE_SHA,"* ]]; then
-  echo "candidate CLI commit readback failed" >&2
-  exit 1
-fi
+build_metadata="$(go version -m "$binary")"
+for expected in "main.commit=$SOURCE_SHA" "GOOS=$GOOS_TARGET" "GOARCH=$GOARCH_TARGET"; do
+  if [[ "$build_metadata" != *"$expected"* ]]; then
+    echo "candidate CLI metadata is missing $expected" >&2
+    exit 1
+  fi
+done
 binary_sha256="$(shasum -a 256 "$binary" | awk '{print $1}')"
 receipt="$build_dir/build-receipt.json"
 RECEIPT_SHA="$SOURCE_SHA" RECEIPT_VERSION="$version" RECEIPT_TIMESTAMP="$timestamp" \
