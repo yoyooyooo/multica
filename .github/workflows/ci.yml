@@ -87,6 +87,7 @@ jobs:
               - 'docker-compose.selfhost.build.yml'
               - 'Makefile'
               - 'Dockerfile'
+              - 'Dockerfile.web'
               - 'deploy/helm/**'
               - 'apps/docs/content/docs/self-host-quickstart.mdx'
               - 'apps/docs/content/docs/self-host-quickstart.zh.mdx'
@@ -549,9 +550,11 @@ jobs:
         run: bash scripts/makefile-build.test.sh
 
       - name: Test CLI build version admission
+        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/validate-cli-build-version.test.sh
 
       - name: Test local fork CLI installer
+        if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/install-local-fork-cli.test.sh
 
       - name: Build

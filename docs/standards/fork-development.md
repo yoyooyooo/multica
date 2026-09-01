@@ -57,6 +57,11 @@ Current capability narratives live at `docs/features/fork/<capability>/README.md
 
 ## Creating or repairing a generation
 
+Use the repository-level
+[`multica-upstream-generation`](../../.agents/skills/multica-upstream-generation/SKILL.md)
+skill as the execution checklist. This Standard remains authoritative when the
+skill and policy differ.
+
 1. Freeze the latest **already-synced** upstream version: prefer official tag `vX.Y.Z`; if the generation intentionally includes a small post-tag upstream tip, freeze that exact commit and record the nearest tag.
 2. Create a new clean `fork/*` generation branch **from that frozen base** (not by rewriting the previous generation).
 3. Inventory **every prior generation and donor delta at commit/file granularity**. A prior squash or accepted generation is not sufficient evidence that an older donor capability was absorbed.
