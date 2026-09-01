@@ -146,12 +146,21 @@ docker run -d --name "$verify_container" \
   -e POSTGRES_PASSWORD=restore-verification-only \
   -v "$verify_volume:/var/lib/postgresql/data" \
   "$postgres_image" >/dev/null
+verify_ready=false
 for _ in $(seq 1 60); do
   if docker exec "$verify_container" pg_isready -U postgres >/dev/null 2>&1; then
-    break
+    sleep 2
+    if docker exec "$verify_container" pg_isready -U postgres >/dev/null 2>&1; then
+      verify_ready=true
+      break
+    fi
   fi
   sleep 1
 done
+if ! "$verify_ready"; then
+  echo "restore verification database did not become stable" >&2
+  exit 1
+fi
 docker exec "$verify_container" createdb -U postgres multica_restore_verify
 docker exec -i "$verify_container" pg_restore --exit-on-error --no-owner --no-privileges -U postgres -d multica_restore_verify < "$backup"
 read -r restored_links restored_upstream_ledger < <(
