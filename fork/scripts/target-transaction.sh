@@ -66,8 +66,16 @@ old_uploads_source="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "
 network="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' multica-backend-1)"
 external_pr_token="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' multica-backend-1 | sed -n 's/^MULTICA_EXTERNAL_PR_SERVICE_TOKEN=//p')"
 case "$TARGET" in
-  mini) external_pr_instance="mini" ;;
-  imile-win) external_pr_instance="imile-win" ;;
+  mini)
+    external_pr_instance="mini"
+    backend_host_port="37133"
+    frontend_host_port="37134"
+    ;;
+  imile-win)
+    external_pr_instance="imile-win"
+    backend_host_port="37134"
+    frontend_host_port="37133"
+    ;;
   *) echo "unsupported deployment target: $TARGET" >&2; exit 2 ;;
 esac
 if [[ -z "$external_pr_token" ]]; then
@@ -97,8 +105,8 @@ printf 'target=%s\nsource_sha=%s\nworking_dir=%s\nqueued_tasks=%s\nactive_tasks=
   "$TARGET" "$SOURCE_SHA" "$working_dir" "$queued_tasks" "$active_tasks" "$active_autopilots"
 printf 'old_backend_image=%s\nold_web_image=%s\nuploads_source=%s\nnetwork=%s\n' \
   "$old_backend_image" "$old_web_image" "$old_uploads_source" "$network"
-printf 'candidate_backend_image=%s\ncandidate_web_image=%s\nexternal_pr_instance=%s\nexternal_pr_token=set\n' \
-  "$BACKEND_IMAGE" "$WEB_IMAGE" "$external_pr_instance"
+printf 'candidate_backend_image=%s\ncandidate_web_image=%s\nexternal_pr_instance=%s\nexternal_pr_token=set\nbackend_host_port=%s\nfrontend_host_port=%s\n' \
+  "$BACKEND_IMAGE" "$WEB_IMAGE" "$external_pr_instance" "$backend_host_port" "$frontend_host_port"
 if "$PLAN"; then
   printf 'plan_only=true\n'
   exit 0
@@ -188,6 +196,7 @@ docker stop "$verify_container" >/dev/null
 cd "$working_dir"
 compose_fork() {
   env "${compose_env[@]}" \
+  BACKEND_PORT="$backend_host_port" FRONTEND_PORT="$frontend_host_port" \
   FORK_BACKEND_IMAGE="$BACKEND_IMAGE" FORK_WEB_IMAGE="$WEB_IMAGE" \
   MULTICA_EXTERNAL_PR_SERVICE_TOKEN="$external_pr_token" \
   MULTICA_EXTERNAL_PR_SERVICE_INSTANCE_ID="$external_pr_instance" \
@@ -213,6 +222,11 @@ fi
 frontend_status="$(docker exec multica-frontend-1 wget -qSO- http://127.0.0.1:3000/login -O /dev/null 2>&1 | awk '/HTTP\// {code=$2} END {print code}')"
 if [[ "$frontend_status" != "200" ]]; then
   echo "candidate frontend login returned $frontend_status" >&2
+  exit 1
+fi
+host_frontend_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${frontend_host_port}/login" 2>/dev/null || true)"
+if [[ "$host_frontend_status" != "200" ]]; then
+  echo "candidate host frontend port $frontend_host_port returned $host_frontend_status" >&2
   exit 1
 fi
 external_pr_unauthorized_status="$(docker exec multica-backend-1 sh -lc 'wget -S -O /dev/null --header="Content-Type: application/json" --post-data="{}" http://127.0.0.1:8080/api/integrations/external-pr/links 2>&1 || true' | awk '$1 ~ /^HTTP\// {code=$2} END {print code}')"
@@ -263,6 +277,9 @@ RECEIPT_UPSTREAM_LEDGER="$upstream_ledger" \
 RECEIPT_FORK_LEDGER="$fork_ledger" \
 RECEIPT_QUEUED_TASKS="$queued_tasks" \
 RECEIPT_FRONTEND_STATUS="$frontend_status" \
+RECEIPT_HOST_FRONTEND_STATUS="$host_frontend_status" \
+RECEIPT_BACKEND_HOST_PORT="$backend_host_port" \
+RECEIPT_FRONTEND_HOST_PORT="$frontend_host_port" \
 RECEIPT_EXTERNAL_PR_INSTANCE="$new_external_pr_instance" \
 RECEIPT_EXTERNAL_PR_UNAUTHORIZED_STATUS="$external_pr_unauthorized_status" \
 RECEIPT_EXTERNAL_PR_AUTHENTICATED_STATUS="$external_pr_authenticated_status" \
@@ -297,6 +314,9 @@ value = {
   },
   "runtime": {
     "readyz": "ok", "frontend_login_http_status": int(env["RECEIPT_FRONTEND_STATUS"]),
+    "host_frontend_login_http_status": int(env["RECEIPT_HOST_FRONTEND_STATUS"]),
+    "backend_host_port": int(env["RECEIPT_BACKEND_HOST_PORT"]),
+    "frontend_host_port": int(env["RECEIPT_FRONTEND_HOST_PORT"]),
     "preserved_queued_tasks": int(env["RECEIPT_QUEUED_TASKS"]),
     "live_external_pr_rows": int(env["RECEIPT_LIVE_LINKS"]),
     "uploads_source": env["RECEIPT_UPLOADS_SOURCE"], "network": env["RECEIPT_NETWORK"],
