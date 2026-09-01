@@ -61,7 +61,6 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
-	"external_pr_reconcile_finalization": workspaceDelete,
 	"external_pr_reconcile_work":         workspaceDelete,
 	"external_pull_request_link":         workspaceDelete,
 	"external_pull_request_receipt":      workspaceDelete,
@@ -138,6 +137,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workspace_share_link":               workspaceDelete,
 }
 
+// The accepted 2026-08-30 floor may retain this evidence table. Fresh clean
+// generations intentionally do not recreate it.
+var optionalWorkspaceDeletionManifest = map[string]workspaceDeleteAction{
+	"external_pr_reconcile_finalization": workspaceDelete,
+}
+
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
 	if testPool == nil {
 		t.Skip("database not available")
@@ -168,7 +173,10 @@ ORDER BY tablename
 
 	var unclassified, missing []string
 	for table := range actual {
-		if _, ok := workspaceDeletionManifest[table]; !ok {
+		if _, ok := workspaceDeletionManifest[table]; ok {
+			continue
+		}
+		if _, ok := optionalWorkspaceDeletionManifest[table]; !ok {
 			unclassified = append(unclassified, table)
 		}
 	}

@@ -76,8 +76,11 @@ jobs:
           git diff --exit-code -- server/pkg/db/generated
           test -z "$(git ls-files --others --exclude-standard -- server/pkg/db/generated)"
 
+      - name: Verify upstream Go test wrapper
+        run: bash scripts/test-go.test.sh
+
       - name: Run Go tests
-        run: cd server && go test ./...
+        run: bash scripts/test-go.sh
 
       - name: Race External PR authority
         run: cd server && go test -race ./internal/handler -run TestExternalPR -count=1
