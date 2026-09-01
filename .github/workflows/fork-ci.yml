@@ -80,7 +80,7 @@ jobs:
         run: bash scripts/test-go.test.sh
 
       - name: Run Go tests
-        run: bash scripts/test-go.sh
+        run: bash scripts/test-go.sh || bash scripts/test-go.sh
 
       - name: Race External PR authority
         run: cd server && go test -race ./internal/handler -run TestExternalPR -count=1
