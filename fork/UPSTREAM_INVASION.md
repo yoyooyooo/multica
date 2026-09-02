@@ -2,7 +2,7 @@
 
 This file records product and build surfaces that remain outside the additive `fork/` deployment boundary. The boundary reduces conflict probability; it does not make fork behavior a plugin.
 
-The inventory is measured from frozen baseline `11bd18a50794eb013061f33783dd20dcc14f8c3c` to runtime source `a183240ae1645edaef6e765f9afaf5bb1e7cc589`. That delta changed 47 files: 28 additions and 19 modifications to paths that already existed in the baseline. Seventeen changed files live under `fork/`.
+The inventory is measured from frozen baseline `11bd18a50794eb013061f33783dd20dcc14f8c3c` to accepted runtime source `1ac10890c1bc27814776a877aea2ecbf3ee6baf7`. That delta changed 52 files: 33 additions and 19 modifications to paths that already existed in the baseline. Twenty-one changed files live under `fork/`; the other additive governance files live under `.agents/` and `.github/`.
 
 ## Existing upstream paths modified
 

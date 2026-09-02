@@ -16,4 +16,4 @@ The web build uses Fontsource package assets instead of `next/font/google`. The 
 
 Host CLI deployment is a separate transaction. `fork/scripts/build-cli.sh` cross-builds a candidate from a clean exact SHA and records its checksum. After the target containers pass readiness, `fork/scripts/install-cli-transaction.sh` checks that the selected profile is idle and authenticated, retains the previous command, atomically activates the immutable candidate, restarts the daemon, and verifies the running process image reports the same full commit. Mini uses profile `mini`; the `imile-win` host uses profile `local`.
 
-The current formal generation is documented in [`releases/v0.4.36-main.20260901.md`](releases/v0.4.36-main.20260901.md).
+The current formal generation is documented in [`releases/v0.4.37-main.20260901.md`](releases/v0.4.37-main.20260901.md). The earlier [`v0.4.36-main.20260901`](releases/v0.4.36-main.20260901.md) manifest is retained as historical deployment evidence with an explicit identity correction notice.
