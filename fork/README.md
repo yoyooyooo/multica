@@ -15,3 +15,5 @@ For a local source build, also add `fork/compose.build.yml`. `fork/scripts/verif
 The web build uses Fontsource package assets instead of `next/font/google`. The runtime image ships the corresponding SIL OFL 1.1 license files under `/usr/share/licenses/multica-fonts`.
 
 Host CLI deployment is a separate transaction. `fork/scripts/build-cli.sh` cross-builds a candidate from a clean exact SHA and records its checksum. After the target containers pass readiness, `fork/scripts/install-cli-transaction.sh` checks that the selected profile is idle and authenticated, retains the previous command, atomically activates the immutable candidate, restarts the daemon, and verifies the running process image reports the same full commit. Mini uses profile `mini`; the `imile-win` host uses profile `local`.
+
+The current formal generation is documented in [`releases/v0.4.36-main.20260901.md`](releases/v0.4.36-main.20260901.md).
