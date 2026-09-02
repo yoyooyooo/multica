@@ -7,6 +7,17 @@ RETURNING *;
 SELECT * FROM task_token
 WHERE token_hash = $1 AND expires_at > now();
 
+-- name: LockRunningTaskTokenForExecutionContext :one
+-- Linearization point for execution-context reads versus task terminalization.
+SELECT tt.* FROM task_token tt
+JOIN agent_task_queue atq ON atq.id = tt.task_id
+WHERE tt.token_hash = sqlc.arg('token_hash')
+  AND tt.task_id = sqlc.arg('task_id')
+  AND tt.workspace_id = sqlc.arg('workspace_id')
+  AND tt.expires_at > now()
+  AND atq.status = 'running'
+FOR UPDATE OF tt, atq;
+
 -- name: DeleteTaskTokensByTask :exec
 DELETE FROM task_token WHERE task_id = $1;
 

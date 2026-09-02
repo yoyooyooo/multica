@@ -1519,6 +1519,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
 
+		// AGS exchanges a live task token for this credential-free context
+		// before issuing a repository-scoped Access Grant.
+		r.Get("/api/integrations/current-execution-context", h.GetCurrentExecutionContext)
+
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
 		// session after a surface asks for something over the postMessage
 		// bridge — the iframe holds no credential and never reaches these
