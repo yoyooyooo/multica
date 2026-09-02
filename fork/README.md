@@ -1,6 +1,6 @@
 # Clean fork generation
 
-This directory is the additive boundary for fork builds and deployments. The source generation starts at the exact SHA in `UPSTREAM_BASELINE`; prior fork branches are evidence only and are never merged or cherry-picked.
+This directory is the additive boundary for fork builds and deployments. Product capabilities still require a bounded set of upstream-tree integration hooks; [`UPSTREAM_INVASION.md`](UPSTREAM_INVASION.md) inventories those paths and their overlap with later upstream changes. The source generation starts at the exact SHA in `UPSTREAM_BASELINE`, while `UPSTREAM_BASELINE_TAG` pins the complete-tag identity used for version derivation. Prior fork branches are evidence only and are never merged or cherry-picked.
 
 Official upstream Compose and Docker files remain untouched by target policy. Build and run the fork by layering these files after the upstream self-host Compose file:
 

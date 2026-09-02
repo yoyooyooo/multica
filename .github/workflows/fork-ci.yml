@@ -43,10 +43,34 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.EXPECTED_SHA }}
 
+      - name: Fetch complete upstream identity
+        run: |
+          git fetch --force --no-tags https://github.com/multica-ai/multica.git \
+            refs/heads/main:refs/remotes/upstream/main
+          git fetch --force https://github.com/multica-ai/multica.git \
+            'refs/tags/*:refs/tags/*'
+          git fetch --force origin \
+            refs/heads/fork/v0.4.22:refs/remotes/origin/fork/v0.4.22
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
       - name: Verify clean source lineage
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           bash fork/scripts/verify-source.sh
+
+      - name: Audit convergence surface
+        run: |
+          audit="$(bash fork/scripts/audit-convergence.sh \
+            --previous refs/remotes/origin/fork/v0.4.22 \
+            --upstream refs/remotes/upstream/main \
+            --source HEAD)"
+          printf '%s\n' "$audit"
+          current_conflicts="$(printf '%s\n' "$audit" | awk '
+            /^\[current\]$/ { current = 1; next }
+            /^\[/ { current = 0 }
+            current && /^text_conflict_files=/ { sub(/^[^=]*=/, ""); print; exit }
+          ')"
+          test "$current_conflicts" = 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
