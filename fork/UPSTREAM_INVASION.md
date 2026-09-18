@@ -76,6 +76,10 @@ bash fork/scripts/audit-convergence.sh \
   --source HEAD
 ```
 
-Refresh exact-head metrics in the release manifest after validation. A zero
-text-conflict count is only textual evidence; it does not replace the semantic
-review above or the DB-backed regression and upgrade-restore tests.
+Accepted runtime `a8dea4f0a471f3535b48e873ee75e1ca955bf881` has 56 changed files:
+37 additions and the 19 existing upstream paths listed above, with three linear
+commits, zero merge commits, zero overlap and zero textual conflicts against the
+frozen target. Exact-head CI and both deployments are recorded in the release
+manifest. A zero text-conflict count is only textual evidence; it does not
+replace the semantic review above or DB-backed regression and upgrade-restore
+tests. The later closeout commit changes documentation only.
