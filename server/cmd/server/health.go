@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/forkmigrations"
 	"github.com/multica-ai/multica/server/internal/migrations"
 )
 
@@ -22,6 +24,7 @@ import (
 // out-of-order migration (numbered below an already-applied later one) is
 // detected instead of being masked by the later version's presence.
 const readinessQuery = `SELECT COUNT(*) FROM schema_migrations WHERE version = ANY($1)`
+const forkReadinessQuery = `SELECT COUNT(*) FROM fork_schema_migrations WHERE version = ANY($1)`
 
 const readinessCacheTTL = 3 * time.Second
 
@@ -31,12 +34,13 @@ type readinessDB interface {
 }
 
 type serverHealth struct {
-	db                 readinessDB
-	requiredMigrations []string
-	initErr            error
-	cacheTTL           time.Duration
-	refreshMu          sync.Mutex
-	cache              atomic.Pointer[cachedReadiness]
+	db                     readinessDB
+	requiredMigrations     []string
+	requiredForkMigrations []string
+	initErr                error
+	cacheTTL               time.Duration
+	refreshMu              sync.Mutex
+	cache                  atomic.Pointer[cachedReadiness]
 	// startedAt and pid identify the process answering /health. A 200 alone
 	// only proves something is listening on the port: when a restart fails to
 	// bind, the previous instance keeps serving and every readiness check
@@ -72,13 +76,15 @@ type readinessChecks struct {
 
 func newServerHealth(pool *pgxpool.Pool) *serverHealth {
 	requiredMigrations, err := migrations.AllVersions()
+	requiredForkMigrations, forkErr := forkmigrations.AllVersions()
 	return &serverHealth{
-		db:                 pool,
-		requiredMigrations: requiredMigrations,
-		initErr:            err,
-		cacheTTL:           readinessCacheTTL,
-		startedAt:          time.Now().UTC(),
-		pid:                os.Getpid(),
+		db:                     pool,
+		requiredMigrations:     requiredMigrations,
+		requiredForkMigrations: requiredForkMigrations,
+		initErr:                errors.Join(err, forkErr),
+		cacheTTL:               readinessCacheTTL,
+		startedAt:              time.Now().UTC(),
+		pid:                    os.Getpid(),
 	}
 }
 
@@ -176,6 +182,20 @@ func (h *serverHealth) computeReadiness(parent context.Context) (readinessRespon
 		resp.Status = "not_ready"
 		resp.Checks.Migrations = "out_of_date"
 		return resp, http.StatusServiceUnavailable
+	}
+
+	if len(h.requiredForkMigrations) > 0 {
+		var appliedForkCount int
+		if err := h.db.QueryRow(ctx, forkReadinessQuery, h.requiredForkMigrations).Scan(&appliedForkCount); err != nil {
+			resp.Status = "not_ready"
+			resp.Checks.Migrations = "error"
+			return resp, http.StatusServiceUnavailable
+		}
+		if appliedForkCount < len(h.requiredForkMigrations) {
+			resp.Status = "not_ready"
+			resp.Checks.Migrations = "out_of_date"
+			return resp, http.StatusServiceUnavailable
+		}
 	}
 
 	return resp, http.StatusOK

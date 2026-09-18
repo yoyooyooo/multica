@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -327,6 +329,14 @@ func highestClosedBatchStage(children, completed []db.Issue, isTerminal func(db.
 // an unstaged set). `batch` selects batch-aware wording. `batchCompleted` is the
 // set that transitioned to terminal in this batch; it is nil for single updates.
 func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, statuses resolvedChildStatuses, batchCompleted []db.Issue) {
+	if _, err := h.postChildDoneCommentWithID(ctx, parent, completed, children, staged, closedStage, batch, statuses, batchCompleted, dbid.NewV7()); err != nil {
+		slog.Warn("child done: create system comment failed", "error", err,
+			"child_id", uuidToString(completed.ID), "parent_id", uuidToString(parent.ID))
+	}
+}
+
+// Durable callbacks reuse a stable ID while retaining upstream status and copy semantics.
+func (h *Handler) postChildDoneCommentWithID(ctx context.Context, parent, completed db.Issue, children []db.Issue, staged bool, closedStage int32, batch bool, statuses resolvedChildStatuses, batchCompleted []db.Issue, commentID pgtype.UUID) (db.Comment, error) {
 	prefix := h.getIssuePrefix(ctx, completed.WorkspaceID)
 	identifier := prefix + "-" + strconv.Itoa(int(completed.Number))
 	childID := uuidToString(completed.ID)
@@ -429,7 +439,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 	// byte value and the column is NOT NULL; frontend code should branch on
 	// author_type === 'system' rather than on the UUID value.
 	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:          dbid.NewV7(),
+		ID:          commentID,
 		IssueID:     parent.ID,
 		WorkspaceID: parent.WorkspaceID,
 		AuthorType:  "system",
@@ -438,14 +448,25 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 		Type:        "system",
 		ParentID:    pgtype.UUID{Valid: false},
 	})
-	if err != nil {
-		slog.Warn("child done: create system comment failed",
-			"error", err,
-			"child_id", childID,
-			"parent_id", uuidToString(parent.ID))
-		return
+	var comment db.Comment
+	var issueRevision int64
+	if err == nil {
+		comment = created.Comment()
+		issueRevision = created.IssueRevision
+	} else {
+		var postgresError *pgconn.PgError
+		if !errors.As(err, &postgresError) || postgresError.Code != "23505" {
+			return db.Comment{}, err
+		}
+		comment, err = h.Queries.GetComment(ctx, commentID)
+		if err != nil {
+			return db.Comment{}, fmt.Errorf("load durable child-done comment: %w", err)
+		}
+		if comment.IssueID != parent.ID || comment.WorkspaceID != parent.WorkspaceID {
+			return db.Comment{}, errors.New("durable child-done comment identity mismatch")
+		}
+		issueRevision = parent.Revision
 	}
-	comment := created.Comment()
 
 	h.publish(protocol.EventCommentCreated, uuidToString(parent.WorkspaceID), "system", "", map[string]any{
 		"comment":             commentToResponse(comment, nil, nil),
@@ -453,7 +474,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 		"issue_assignee_type": textToPtr(parent.AssigneeType),
 		"issue_assignee_id":   uuidToPtr(parent.AssigneeID),
 		"issue_status":        parent.Status,
-		"issue_revision":      created.IssueRevision,
+		"issue_revision":      issueRevision,
 	})
 
 	// Dispatch the explicit trigger / inbox row for the parent assignee.
@@ -463,6 +484,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 	// title inert and gives the platform a single place to apply the loop
 	// and idempotency guards.
 	h.dispatchParentAssigneeTrigger(ctx, parent, comment)
+	return comment, nil
 }
 
 // isTerminalChildStatus reports whether a child issue status counts as

@@ -781,17 +781,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	files, err := migrations.Files(direction)
+	options, err := productionMigrationOptions(direction)
 	if err != nil {
 		slog.Error("failed to find migration files", "error", err)
 		os.Exit(1)
-	}
-
-	options := runOptions{
-		Direction:  direction,
-		Files:      files,
-		Hooks:      hooksForDirection(direction),
-		Conditions: conditionsForDirection(direction),
 	}
 	startupCtx, stopStartup := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopStartup()
@@ -809,7 +802,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	migrationErr := runMigrations(startupCtx, pool, options)
+	migrationErr := runProductionMigrations(startupCtx, pool, options)
 	if migrationErr != nil && startupSettings.StartupTimeout > 0 && dbstartup.IsTransientDatabaseError(migrationErr) {
 		slog.Warn("migration interrupted by database unavailability; retrying", "error", migrationErr)
 		migrationRetryOptions := startupSettings.RetryOptions()
@@ -826,7 +819,7 @@ func main() {
 			if err := pool.Ping(attemptCtx); err != nil {
 				return fmt.Errorf("ping database: %w", err)
 			}
-			return runMigrations(attemptCtx, pool, options)
+			return runProductionMigrations(attemptCtx, pool, options)
 		})
 	}
 	if migrationErr != nil {

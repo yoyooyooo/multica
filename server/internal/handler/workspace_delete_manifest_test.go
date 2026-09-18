@@ -61,6 +61,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
+	"external_pr_reconcile_work":         workspaceDelete,
+	"external_pull_request_link":         workspaceDelete,
+	"external_pull_request_receipt":      workspaceDelete,
+	"fork_schema_migrations":             workspaceDeleteKeep,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
@@ -165,6 +169,9 @@ ORDER BY tablename
 
 	var unclassified, missing []string
 	for table := range actual {
+		if table == "external_pr_reconcile_finalization" {
+			continue // Optional retained evidence from deployments before the independent fork ledger.
+		}
 		if _, ok := workspaceDeletionManifest[table]; !ok {
 			unclassified = append(unclassified, table)
 		}

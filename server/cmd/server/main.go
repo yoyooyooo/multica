@@ -802,6 +802,9 @@ func main() {
 	}
 	// Manifest-declared Plugin schedules share the same durable lease and retry
 	// machinery. The job is inert while plugins_v1 is disabled.
+	if err := schedulerMgr.Register(handler.ExternalPRReconcileJob(pool, h)); err != nil {
+		slog.Warn("scheduler: failed to register external_pr_reconcile job", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}

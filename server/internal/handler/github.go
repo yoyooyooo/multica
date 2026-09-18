@@ -997,6 +997,12 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	for _, row := range vcsRows {
 		out = append(out, vcsPullRequestRowToResponse(row))
 	}
+	externalRows, err := h.listExternalPullRequestsForIssue(r.Context(), issue)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list pull requests")
+		return
+	}
+	out = append(out, externalRows...)
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].PRCreatedAt > out[j].PRCreatedAt
 	})

@@ -1435,6 +1435,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HandleCloudBillingStripeWebhook for the rationale).
 	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
+	// External authority callbacks verify their dedicated service token.
+	r.Post("/api/integrations/external-pr/links", h.RegisterExternalPullRequestLink)
+	r.Post("/api/integrations/external-pr/complete-from-merge", h.CompleteIssueFromExternalPR)
+
 	// Composio OAuth callback (MUL-3843). NOT under the Auth group on purpose:
 	// Composio 302-redirects the user's browser here at the end of the OAuth
 	// flow, and the cookie session is frequently absent (expired session,
@@ -1533,6 +1537,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
+
+		// AGS exchanges a live task token for credential-free grant context.
+		r.Get("/api/integrations/current-execution-context", h.GetCurrentExecutionContext)
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
 		// session after a surface asks for something over the postMessage
