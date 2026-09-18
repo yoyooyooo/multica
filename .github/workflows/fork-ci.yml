@@ -1,0 +1,125 @@
+name: Fork exact-head CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "fork/**"
+      - "feature/clean-rebuild-*"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-exact-head-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'feature/clean-rebuild-') ||
+      startsWith(github.base_ref, 'fork/')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+          POSTGRES_DB: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://multica:multica@localhost:5432/multica?sslmode=disable
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.EXPECTED_SHA }}
+
+      - name: Fetch complete upstream identity
+        run: |
+          git fetch --force --no-tags https://github.com/multica-ai/multica.git \
+            refs/heads/main:refs/remotes/upstream/main
+          git fetch --force https://github.com/multica-ai/multica.git \
+            'refs/tags/*:refs/tags/*'
+          git fetch --force origin \
+            refs/heads/fork/v0.4.37-main.20260901:refs/remotes/origin/fork/v0.4.37-main.20260901
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Verify clean source lineage
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          bash fork/scripts/verify-source.sh
+
+      - name: Audit convergence surface
+        run: |
+          audit="$(bash fork/scripts/audit-convergence.sh \
+            --previous refs/remotes/origin/fork/v0.4.37-main.20260901 \
+            --upstream refs/remotes/upstream/main \
+            --source HEAD)"
+          printf '%s\n' "$audit"
+          current_conflicts="$(printf '%s\n' "$audit" | awk '
+            /^\[current\]$/ { current = 1; next }
+            /^\[/ { current = 0 }
+            current && /^text_conflict_files=/ { sub(/^[^=]*=/, ""); print; exit }
+          ')"
+          test "$current_conflicts" = 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply upstream and fork migrations
+        run: cd server && go run ./cmd/migrate up
+
+      - name: Verify sqlc output
+        run: |
+          make sqlc
+          git diff --exit-code -- server/pkg/db/generated
+          test -z "$(git ls-files --others --exclude-standard -- server/pkg/db/generated)"
+
+      - name: Verify upstream Go test wrapper
+        run: bash scripts/test-go.test.sh
+
+      - name: Run Go tests
+        run: bash scripts/test-go.sh || bash scripts/test-go.sh
+
+      - name: Race External PR authority
+        run: cd server && go test -race ./internal/handler -run TestExternalPR -count=1
+
+      - name: Typecheck and test frontend workspaces
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm exec turbo test --concurrency=1 --filter=!@multica/mobile -- --maxWorkers=4 --retry=1
+
+      - name: Build production web offline
+        run: pnpm --filter @multica/web build
+
+      - name: Check additive deployment overlay
+        run: bash fork/scripts/check-compose.sh
+
+      - name: Confirm exact head remained selected
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
