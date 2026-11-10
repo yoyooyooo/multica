@@ -3,6 +3,8 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
+# Root pnpm patchedDependencies is read even without the mobile workspace.
+COPY apps/mobile/patches/ apps/mobile/patches/
 COPY apps/web/package.json apps/web/
 COPY apps/web/source.config.ts apps/web/source.config.ts
 COPY packages/core/package.json packages/core/
@@ -40,7 +42,7 @@ RUN pnpm --filter @multica/web build && \
     cp apps/web/node_modules/@fontsource-variable/inter/LICENSE /font-licenses/Inter-OFL-1.1.txt && \
     cp apps/web/node_modules/@fontsource-variable/geist-mono/LICENSE /font-licenses/Geist-Mono-OFL-1.1.txt && \
     cp apps/web/node_modules/@fontsource-variable/source-serif-4/LICENSE /font-licenses/Source-Serif-4-OFL-1.1.txt && \
-    cp apps/web/node_modules/@fontsource/instrument-serif/LICENSE /font-licenses/Instrument-Serif-OFL-1.1.txt
+    cp apps/web/node_modules/@fontsource-variable/jetbrains-mono/LICENSE /font-licenses/JetBrains-Mono-OFL-1.1.txt
 
 # --- Runtime ---
 FROM node:22-alpine AS runner

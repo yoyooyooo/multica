@@ -91,6 +91,12 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check v0.8.2 fork CI inputs
+        run: |
+          node fork/scripts/check-fork-ci-test-args.mjs
+          node fork/scripts/check-web-font-licenses.mjs
+          node fork/scripts/check-web-deps-inputs.mjs
+
       - name: Apply upstream and fork migrations
         run: cd server && go run ./cmd/migrate up
 
@@ -113,7 +119,12 @@ jobs:
         run: |
           pnpm typecheck
           pnpm lint
-          pnpm exec turbo test --concurrency=1 --filter=!@multica/mobile -- --maxWorkers=4 --retry=1
+          # `node --test` rejects Vitest flags. Keep them on Vitest workspaces only.
+          pnpm exec turbo test --concurrency=1 \
+            --filter='!@multica/mobile' \
+            --filter='!@multica/eslint-config' \
+            -- --maxWorkers=4 --retry=1
+          pnpm exec turbo test --concurrency=1 --filter='@multica/eslint-config'
 
       - name: Build production web offline
         run: pnpm --filter @multica/web build
