@@ -89,3 +89,37 @@ func (q *Queries) GetTaskTokenByHash(ctx context.Context, tokenHash string) (Tas
 	)
 	return i, err
 }
+
+const lockRunningTaskTokenForExecutionContext = `-- name: LockRunningTaskTokenForExecutionContext :one
+SELECT tt.id, tt.token_hash, tt.task_id, tt.agent_id, tt.workspace_id, tt.user_id, tt.expires_at, tt.created_at FROM task_token tt
+JOIN agent_task_queue atq ON atq.id = tt.task_id
+WHERE tt.token_hash = $1
+  AND tt.task_id = $2
+  AND tt.workspace_id = $3
+  AND tt.expires_at > now()
+  AND atq.status = 'running'
+FOR UPDATE OF tt, atq
+`
+
+type LockRunningTaskTokenForExecutionContextParams struct {
+	TokenHash   string      `json:"token_hash"`
+	TaskID      pgtype.UUID `json:"task_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Linearization point for execution-context reads versus task terminalization.
+func (q *Queries) LockRunningTaskTokenForExecutionContext(ctx context.Context, arg LockRunningTaskTokenForExecutionContextParams) (TaskToken, error) {
+	row := q.db.QueryRow(ctx, lockRunningTaskTokenForExecutionContext, arg.TokenHash, arg.TaskID, arg.WorkspaceID)
+	var i TaskToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.TaskID,
+		&i.AgentID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}

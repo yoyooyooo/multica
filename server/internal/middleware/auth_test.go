@@ -279,10 +279,11 @@ func TestAuth_InvalidPAT(t *testing.T) {
 // into treating the request differently — exactly the kind of trust
 // boundary MUL-2600 introduces.
 func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
-	var gotActorSource string
+	var gotActorSource, gotTaskTokenHash string
 	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotActorSource = r.Header.Get("X-Actor-Source")
+		gotTaskTokenHash = r.Header.Get("X-Task-Token-Hash")
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -293,11 +294,15 @@ func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	// discard it before the JWT branch runs (which doesn't set it again
 	// for human sessions).
 	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Task-Token-Hash", "forged-token-hash")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotTaskTokenHash != "" {
+		t.Fatalf("X-Task-Token-Hash must be cleared on non-task-token paths, got %q", gotTaskTokenHash)
 	}
 	if gotActorSource != "" {
 		t.Fatalf("X-Actor-Source must be cleared on non-task-token paths, got %q", gotActorSource)
