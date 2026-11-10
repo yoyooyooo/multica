@@ -9,11 +9,9 @@
 @custom-variant dark (&:is(.dark *));
 
 /* Font stack: Inter for Latin UI text + system CJK fonts for localized content.
-   Web app uses the same stack via next/font/google in apps/web/app/layout.tsx —
-   keep the CJK fallback tail in sync across both files. The Inter primary family
-   differs by design: next/font produces `__Inter_xxx` (with a synthetic size-adjusted
-   fallback face to prevent FOUT layout shift); desktop uses fontsource's "Inter Variable".
-   Both resolve to Inter glyphs, so rendering is identical in practice.
+   Web uses the same Fontsource files in apps/web/app/layout.tsx —
+   keep the CJK fallback tail in sync across both files. Both name
+   fontsource's "Inter Variable".
    Per-character fallback: Latin chars render with Inter, CJK chars render with
    the platform-native Chinese/Korean fallback when needed. Chinese fonts must stay
    before Korean fonts so zh users do not receive Korean Hanja glyph shapes.
@@ -35,7 +33,7 @@
   --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular,
                Menlo, Consolas, monospace;
   /* Latin-only faces the Appearance settings can pick. Web defines the same
-     names over its next/font families. */
+     Fontsource family names. */
   --font-ui-inter: "Inter Variable", "Inter";
   --font-ui-serif: "Source Serif 4 Variable", "Source Serif 4";
   --font-ui-mono: "Geist Mono Variable", "Geist Mono";
