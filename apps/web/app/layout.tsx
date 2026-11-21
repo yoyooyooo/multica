@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import "@fontsource-variable/inter/opsz.css";
 import "@fontsource-variable/inter/opsz-italic.css";
-import "@fontsource-variable/source-serif-4";
+import "@fontsource-variable/source-serif-4/index.css";
 import "@fontsource-variable/source-serif-4/wght-italic.css";
 import "@fontsource-variable/geist-mono";
 import "@fontsource-variable/jetbrains-mono";
