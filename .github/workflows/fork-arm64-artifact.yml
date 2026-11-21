@@ -1,0 +1,120 @@
+name: Fork ARM64 exact-source artifact
+
+on:
+  push:
+    branches:
+      - ops/build-v0111-arm64-20261121
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fork-arm64-f5943de02e0b
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: f5943de02e0b56bd9bbf23c50fbc7c2f75716a24
+  SOURCE_BRANCH: feature/clean-rebuild-v0.11.1-main.20261121
+  CI_RUN_ID: "44884754660"
+  FORK_IMAGE_PREFIX: multica-fork-v0111-20261121
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require successful exact-source CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" |
+            jq -e --arg sha "$SOURCE_SHA" --arg branch "$SOURCE_BRANCH" \
+              --argjson run "$CI_RUN_ID" '
+                .id == $run and
+                .event == "push" and
+                .name == "Fork exact-head CI" and
+                .path == ".github/workflows/fork-ci.yml" and
+                .head_sha == $sha and
+                .head_branch == $branch and
+                .status == "completed" and
+                .conclusion == "success"
+              '
+
+      - name: Checkout accepted runtime source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and verify complete source identity
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/multica-ai/multica.git \
+            refs/heads/main:refs/remotes/upstream/main
+          git fetch --no-tags https://github.com/multica-ai/multica.git \
+            'refs/tags/*:refs/tags/*'
+          git fetch --no-tags origin \
+            refs/heads/fork/v0.8.2-main.20261111:refs/remotes/origin/fork/v0.8.2-main.20261111
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          bash fork/scripts/verify-source.sh
+
+      - name: Setup Node.js for build receipts
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.23.4"
+
+      - name: Setup native Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build immutable ARM64 images
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          export MULTICA_FORK_STATE_ROOT="$RUNNER_TEMP/multica-fork-builds"
+          bash fork/scripts/build-images.sh --arch arm64 --prefix "$FORK_IMAGE_PREFIX"
+
+      - name: Export images, receipt and checksums
+        run: |
+          set -euo pipefail
+          umask 077
+          artifact_dir="$RUNNER_TEMP/multica-arm64-artifact"
+          mkdir -p "$artifact_dir"
+          shopt -s nullglob
+          receipts=("$RUNNER_TEMP"/multica-fork-builds/*/build-receipt.json)
+          test "${#receipts[@]}" -eq 1
+          cp "${receipts[0]}" "$artifact_dir/build-receipt.json"
+
+          short_sha="${SOURCE_SHA:0:12}"
+          backend_tag="$FORK_IMAGE_PREFIX-backend:$short_sha-arm64"
+          web_tag="$FORK_IMAGE_PREFIX-web:$short_sha-arm64"
+          jq -e --arg sha "$SOURCE_SHA" --arg backend "$backend_tag" \
+            --arg web "$web_tag" '
+              .source_sha == $sha and .architecture == "arm64" and
+              .images.backend.tag == $backend and .images.web.tag == $web
+            ' "$artifact_dir/build-receipt.json"
+          for tag in "$backend_tag" "$web_tag"; do
+            test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$tag")" = linux/arm64
+          done
+          docker save "$backend_tag" "$web_tag" | gzip -1 > "$artifact_dir/images-arm64.tar.gz"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          cd "$artifact_dir"
+          sha256sum images-arm64.tar.gz build-receipt.json > SHA256SUMS
+
+      - name: Upload exact-source ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multica-arm64-${{ env.SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/multica-arm64-artifact/images-arm64.tar.gz
+            ${{ runner.temp }}/multica-arm64-artifact/SHA256SUMS
+            ${{ runner.temp }}/multica-arm64-artifact/build-receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
