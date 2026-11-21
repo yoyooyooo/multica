@@ -43,12 +43,12 @@ mkdir -p "$build_dir"
 (
   cd server
   GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" CGO_ENABLED=0 go build \
-    -ldflags "-X main.version=$version -X main.commit=$SOURCE_SHA -X main.date=$timestamp" \
+    -ldflags "-X main.version=$version -X main.commit=$SOURCE_SHA -X main.buildCommit=$SOURCE_SHA -X main.date=$timestamp" \
     -o "$binary" ./cmd/multica
 )
 chmod 0755 "$binary"
 build_metadata="$(go version -m "$binary")"
-for expected in "main.commit=$SOURCE_SHA" "GOOS=$GOOS_TARGET" "GOARCH=$GOARCH_TARGET"; do
+for expected in "main.commit=$SOURCE_SHA" "main.buildCommit=$SOURCE_SHA" "GOOS=$GOOS_TARGET" "GOARCH=$GOARCH_TARGET"; do
   if [[ "$build_metadata" != *"$expected"* ]]; then
     echo "candidate CLI metadata is missing $expected" >&2
     exit 1
