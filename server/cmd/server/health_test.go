@@ -14,11 +14,12 @@ import (
 )
 
 type stubReadinessDB struct {
-	pingErr      error
-	queryErr     error
-	appliedCount int
-	pingCalls    atomic.Int32
-	queryCalls   atomic.Int32
+	pingErr       error
+	queryErr      error
+	appliedCount  int
+	appliedCounts []int
+	pingCalls     atomic.Int32
+	queryCalls    atomic.Int32
 }
 
 func (s *stubReadinessDB) Ping(context.Context) error {
@@ -27,8 +28,12 @@ func (s *stubReadinessDB) Ping(context.Context) error {
 }
 
 func (s *stubReadinessDB) QueryRow(context.Context, string, ...any) pgx.Row {
-	s.queryCalls.Add(1)
-	return stubRow{appliedCount: s.appliedCount, err: s.queryErr}
+	call := int(s.queryCalls.Add(1)) - 1
+	count := s.appliedCount
+	if call < len(s.appliedCounts) {
+		count = s.appliedCounts[call]
+	}
+	return stubRow{appliedCount: count, err: s.queryErr}
 }
 
 type stubRow struct {
@@ -133,6 +138,23 @@ func TestServerHealthReadyHandlerMigrationPartiallyApplied(t *testing.T) {
 	}
 	if resp.Checks.Migrations != "out_of_date" {
 		t.Fatalf("migrations check = %q, want %q", resp.Checks.Migrations, "out_of_date")
+	}
+}
+
+func TestServerHealthReadyHandlerForkMigrationOutOfDate(t *testing.T) {
+	db := &stubReadinessDB{appliedCounts: []int{1, 0}}
+	h := &serverHealth{
+		db:                     db,
+		requiredMigrations:     []string{"445_upstream"},
+		requiredForkMigrations: []string{"001_external_pr_authority"},
+	}
+
+	response, status := h.readiness(context.Background())
+	if status != http.StatusServiceUnavailable || response.Checks.Migrations != "out_of_date" {
+		t.Fatalf("fork migration readiness=%d/%q", status, response.Checks.Migrations)
+	}
+	if calls := db.queryCalls.Load(); calls != 2 {
+		t.Fatalf("migration queries=%d want 2", calls)
 	}
 }
 

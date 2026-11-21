@@ -73,6 +73,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"entitlement_feature_attempt":        workspaceDelete,
 	"entitlement_limit_overage":          workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
+	"external_pr_reconcile_work":         workspaceDelete,
+	"external_pull_request_link":         workspaceDelete,
+	"external_pull_request_receipt":      workspaceDelete,
+	"fork_schema_migrations":             workspaceDeleteKeep,
 	"github_installation":                workspaceDelete,
 	"github_pending_check_suite":         workspaceDelete,
 	"github_pending_installation":        workspaceDeleteKeep,
@@ -212,6 +216,9 @@ ORDER BY tablename
 
 	var unclassified, missing []string
 	for table := range actual {
+		if table == "external_pr_reconcile_finalization" {
+			continue // Retained evidence from deployments before the independent fork ledger.
+		}
 		if _, ok := workspaceDeletionManifest[table]; !ok {
 			unclassified = append(unclassified, table)
 		}

@@ -98,7 +98,7 @@ export interface IssuePullRequestsResponse {
 export interface GitHubPullRequest {
   id: string;
   /** Source provider. Older GitHub-only backends omit it. */
-  provider?: "github" | "forgejo" | "gitea" | "gitlab";
+  provider?: "github" | "forgejo" | "gitea" | "gitlab" | "ags";
   workspace_id: string;
   repo_owner: string;
   repo_name: string;
