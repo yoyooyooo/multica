@@ -120,8 +120,8 @@ rollback() {
 }
 profile_cli "$CANDIDATE" config set disable_auto_update true >/dev/null || rollback "auto-update configuration failed"
 profile_cli "$CANDIDATE" config set device_name "$DEVICE_NAME" >/dev/null || rollback "device name configuration failed"
-ln -s "$target_bin" "$activate_tmp"
-mv -f "$activate_tmp" "$GLOBAL_BIN"
+ln -s "$target_bin" "$activate_tmp" || rollback "candidate link creation failed"
+mv -f "$activate_tmp" "$GLOBAL_BIN" || rollback "candidate link activation failed"
 if [[ "$daemon_status" == "running" || "$daemon_status" == "starting" ]]; then
   profile_cli "$GLOBAL_BIN" daemon restart --device-name "$DEVICE_NAME" || rollback "daemon restart failed"
 else
@@ -132,11 +132,11 @@ read -r after_state after_tasks after_pid after_version < <(printf '%s' "$after_
 if [[ "$after_state" != "running" || "$after_version" != "$candidate_version" || "$after_pid" == 0 || "$after_tasks" != 0 ]]; then
   rollback "daemon status readback did not match candidate"
 fi
-after_identity="$(printf '%s' "$after_status" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(v.get("cli_commit", "")+"|"+v.get("daemon_id", "")+"|"+v.get("device_name", ""))')"
+after_identity="$(printf '%s' "$after_status" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(v.get("cli_commit", "")+"|"+v.get("daemon_id", "")+"|"+v.get("device_name", ""))')" || rollback "daemon identity readback failed"
 if [[ "$after_identity" != "$SOURCE_SHA|$previous_daemon_id|$DEVICE_NAME" ]]; then
   rollback "daemon commit, identity, or device name changed unexpectedly"
 fi
-running_exe="$(daemon_executable "$after_pid")"
+running_exe="$(daemon_executable "$after_pid")" || rollback "daemon executable readback failed"
 if [[ "$(realpath "$running_exe")" != "$(realpath "$target_bin")" ]]; then
   rollback "daemon process image does not match immutable candidate"
 fi

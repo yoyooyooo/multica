@@ -18,6 +18,8 @@ COPY packages/core/package.json packages/core/
 COPY packages/ui/package.json packages/ui/
 COPY packages/views/package.json packages/views/
 COPY packages/ee/package.json packages/ee/
+COPY packages/plugin-sdk/package.json packages/plugin-sdk/
+COPY packages/vitest-setup/package.json packages/vitest-setup/
 COPY packages/tsconfig/package.json packages/tsconfig/
 COPY packages/eslint-config/package.json packages/eslint-config/
 

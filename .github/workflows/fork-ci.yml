@@ -96,6 +96,7 @@ jobs:
           node fork/scripts/check-fork-ci-test-args.mjs
           node fork/scripts/check-web-font-licenses.mjs
           node fork/scripts/check-web-deps-inputs.mjs
+          pnpm test:scripts
 
       - name: Apply upstream and fork migrations
         run: cd server && go run ./cmd/migrate up
