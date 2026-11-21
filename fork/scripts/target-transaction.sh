@@ -343,7 +343,7 @@ value = {
   "rollback": {
     "database_restore_source": os.path.basename(env["RECEIPT_BACKUP"]),
     "backend_image": env["RECEIPT_OLD_BACKEND_IMAGE"], "web_image": env["RECEIPT_OLD_WEB_IMAGE"],
-    "rule": "stop app, restore verified database dump, then start previous images",
+    "rule": "stop app, restore the verified dump into a fresh database, verify it, retain the upgraded database under an archive name, then switch database names and start previous images; pg_restore --clean into the upgraded database is not a complete rollback",
   },
 }
 with open(path, "w", encoding="utf-8") as handle:

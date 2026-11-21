@@ -129,7 +129,7 @@ else
 fi
 after_status="$(profile_cli "$GLOBAL_BIN" daemon status --output json)" || rollback "daemon status failed"
 read -r after_state after_tasks after_pid after_version < <(printf '%s' "$after_status" | parse_status)
-if [[ "$after_state" != "running" || "$after_version" != "$candidate_version" || "$after_pid" == 0 || "$after_tasks" != 0 ]]; then
+if [[ "$after_state" != "running" || "$after_version" != "$candidate_version" || "$after_pid" == 0 ]]; then
   rollback "daemon status readback did not match candidate"
 fi
 after_identity="$(printf '%s' "$after_status" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(v.get("cli_commit", "")+"|"+v.get("daemon_id", "")+"|"+v.get("device_name", ""))')" || rollback "daemon identity readback failed"
@@ -149,6 +149,7 @@ RECEIPT_PROFILE="$PROFILE" RECEIPT_SHA="$SOURCE_SHA" RECEIPT_VERSION="$candidate
 RECEIPT_TIMESTAMP="$timestamp" RECEIPT_GLOBAL_BIN="$GLOBAL_BIN" RECEIPT_TARGET_BIN="$target_bin" \
 RECEIPT_PREVIOUS_BIN="$previous_bin" RECEIPT_PID="$after_pid" RECEIPT_RUNNING_EXE="$running_exe" \
 RECEIPT_PREVIOUS_CONFIG="$previous_config" RECEIPT_DEVICE_NAME="$DEVICE_NAME" RECEIPT_DAEMON_ID="$previous_daemon_id" \
+RECEIPT_ACTIVE_TASKS="$after_tasks" \
 python3 - "$receipt" <<'PY'
 import json, os, sys
 value = {
@@ -161,7 +162,7 @@ value = {
     "immutable_binary": os.environ["RECEIPT_TARGET_BIN"],
     "previous_command_backup": os.environ["RECEIPT_PREVIOUS_BIN"],
     "previous_profile_config_backup": os.environ["RECEIPT_PREVIOUS_CONFIG"],
-    "daemon": {"status": "running", "pid": int(os.environ["RECEIPT_PID"]), "executable": os.environ["RECEIPT_RUNNING_EXE"], "commit": os.environ["RECEIPT_SHA"], "device_name": os.environ["RECEIPT_DEVICE_NAME"], "daemon_id": os.environ["RECEIPT_DAEMON_ID"]},
+    "daemon": {"status": "running", "pid": int(os.environ["RECEIPT_PID"]), "executable": os.environ["RECEIPT_RUNNING_EXE"], "commit": os.environ["RECEIPT_SHA"], "device_name": os.environ["RECEIPT_DEVICE_NAME"], "daemon_id": os.environ["RECEIPT_DAEMON_ID"], "active_task_count_after_start": int(os.environ["RECEIPT_ACTIVE_TASKS"])},
     "rollback": "restore previous profile config, reactivate previous_command_backup and restart the same profile",
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
