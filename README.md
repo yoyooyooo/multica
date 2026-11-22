@@ -21,7 +21,7 @@ Turn coding agents into real teammates — assign tasks, track progress, compoun
 [![GitHub stars](https://img.shields.io/github/stars/multica-ai/multica?style=flat)](https://github.com/multica-ai/multica/stargazers)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/W8gYBn226t)
 
-[Website](https://multica.ai) · [Docs](https://multica.ai/docs/environment-variables#github-integration) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI) · [Self-Hosting](SELF_HOSTING.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://multica.ai) · [Docs](https://multica.ai/docs) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI) · [Self-Hosting](SELF_HOSTING.md) · [Contributing](CONTRIBUTING.md)
 
 **English | [简体中文](README.zh-CN.md)**
 
@@ -31,7 +31,7 @@ Turn coding agents into real teammates — assign tasks, track progress, compoun
 
 Multica turns coding agents into real teammates. Assign issues to an agent like you'd assign to a colleague — they'll pick up the work, write code, report blockers, and update statuses autonomously.
 
-No more copy-pasting prompts. No more babysitting runs. Your agents show up on the board, participate in conversations, and compound reusable skills over time. Think of it as open-source infrastructure for managed agents — vendor-neutral, self-hosted, and designed for human + AI teams. Works with **Claude Code**, **Codex**, **CodeBuddy**, **GitHub Copilot CLI**, **OpenCode**, **OpenClaw**, **Hermes**, **Pi**, **Cursor Agent**, **Kimi**, **Kiro CLI**, **Antigravity**, **Qoder CLI**, and **Trae CLI**.
+No more copy-pasting prompts. No more babysitting runs. Your agents show up on the board, participate in conversations, and compound reusable skills over time. Think of it as open-source infrastructure for managed agents — vendor-neutral, self-hosted, and designed for human + AI teams. See the [AI coding tools matrix](apps/docs/content/docs/providers.mdx) for provider capabilities.
 
 For larger teams, Squads add a stable routing layer: assign work to a group led by an agent, and the leader delegates to the right member.
 
@@ -66,6 +66,8 @@ Multica manages the full agent lifecycle: from task assignment to execution moni
 ---
 
 ## Quick Install
+
+The installers below use official Multica releases. They do not install this fork. To work with fork source, start at the [fork documentation index](docs/README.md#working-with-this-fork).
 
 <details open>
 <summary><b>macOS / Linux</b></summary>
@@ -141,10 +143,12 @@ multica setup          # Connect to Multica Cloud, log in, start daemon
 ### 1. Set up and start the daemon
 
 ```bash
-multica setup           # Configure, authenticate, and start the daemon
+multica setup           # Configure, authenticate, and start the daemon for Multica Cloud
 ```
 
-The daemon runs in the background and auto-detects agent CLIs (`claude`, `codex`, `codebuddy`, `copilot`, `opencode`, `openclaw`, `hermes`, `pi`, `cursor-agent`, `kimi`, `kiro-cli`, `agy`, `qodercli`, `traecli`) on your PATH.
+If you run your own server, use `multica setup self-host` instead. See the [Self-Hosting Guide](SELF_HOSTING.md) for server setup.
+
+Install and authenticate at least one [supported AI coding tool](apps/docs/content/docs/providers.mdx). The daemon runs in the background and detects supported tools on your `PATH`.
 
 ### 2. Verify your runtime
 
@@ -154,7 +158,7 @@ Open your workspace in the Multica web app. Navigate to **Settings → Runtimes*
 
 ### 3. Create an agent
 
-Go to **Settings → Agents** and click **New Agent**. Pick the runtime you just connected and choose a provider (Claude Code, Codex, CodeBuddy, GitHub Copilot CLI, OpenCode, OpenClaw, Hermes, Pi, Cursor Agent, Kimi, Kiro CLI, Antigravity, Qoder CLI, or Trae CLI). Give your agent a name — this is how it will appear on the board, in comments, and in assignments.
+Go to **Settings → Agents** and click **New Agent**. Pick the runtime you just connected and choose a provider available on it. Give your agent a name — this is how it will appear on the board, in comments, and in assignments.
 
 ### 4. Assign your first task
 
@@ -193,9 +197,7 @@ See the [CLI and Daemon Guide](CLI_AND_DAEMON.md) for the full command reference
                             │
                      ┌──────┴───────┐
                      │ Agent Daemon │  runs on your machine
-                     └──────────────┘  (Claude Code, Codex, CodeBuddy, GitHub Copilot CLI,
-                                        OpenCode, OpenClaw, Hermes, Pi, Cursor Agent,
-                                        Kimi, Kiro CLI, Antigravity, Qoder CLI, Trae CLI)
+                     └──────────────┘
 ```
 
 | Layer | Stack |
@@ -203,11 +205,11 @@ See the [CLI and Daemon Guide](CLI_AND_DAEMON.md) for the full command reference
 | Frontend | Next.js 16 (App Router) |
 | Backend | Go (Chi router, sqlc, gorilla/websocket) |
 | Database | PostgreSQL 17 with pgvector |
-| Agent Runtime | Local daemon executing Claude Code, Codex, CodeBuddy, GitHub Copilot CLI, OpenCode, OpenClaw, Hermes, Pi, Cursor Agent, Kimi, Kiro CLI, Antigravity, Qoder CLI, or Trae CLI |
+| Agent Runtime | Local daemon that runs the selected AI coding tool |
 
 ## Development
 
-For contributors working on the Multica codebase, see the [Contributing Guide](CONTRIBUTING.md).
+See the [Contributing Guide](CONTRIBUTING.md) for local setup and checks. For fork changes, check the [fork rules and verification entry points](docs/README.md#working-with-this-fork) first.
 
 **Prerequisites:** [Node.js](https://nodejs.org/) v20+, [pnpm](https://pnpm.io/) v10.28+, [Go](https://go.dev/) v1.26+, [Docker](https://www.docker.com/)
 

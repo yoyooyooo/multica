@@ -51,7 +51,11 @@ returns schema `multica.current-execution-context.v1`: bounded Workspace, Agent,
 Task/Run, optional Issue/Squad/Runtime/Trigger, and attribution facts from the
 authenticated running task. It never emits assertions, Policy Classes,
 operations, capabilities, Sessions, Grants, or credentials. Terminal, revoked,
-or cross-task authority is rejected by the locked running-token check. Claim always projects a canonical `execution_id` (falling back to Task ID only when no separate execution exists), and the daemon fails closed unless it can inject that value as `MULTICA_RUN_ID` beside `MULTICA_TASK_ID`.
+or cross-task authority is rejected by the locked running-token check. The claim
+response uses the Task ID when no separate `execution_id` exists. The daemon
+sets `MULTICA_RUN_ID` from `execution_id` when present, or from the Task ID
+otherwise. A missing execution ID does not block task start or bypass the
+task-token check.
 
 Multica no longer issues AGS workload assertions or `pr.merge` delegations. The
 former assertion, human delegation, AGS introspection/consume/effect, and CLI
