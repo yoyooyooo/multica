@@ -8,6 +8,8 @@ This file provides guidance to AI agents when working with code in this reposito
 > Use `Makefile`, `package.json`, and `pnpm-workspace.yaml` as the
 > source of truth for the full command list.
 
+Use the [documentation index](docs/README.md#working-with-this-fork) to find fork procedures, current capabilities, and generation evidence.
+
 ## Quick Reference
 
 ### Architecture

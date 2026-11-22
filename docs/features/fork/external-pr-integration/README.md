@@ -19,8 +19,10 @@ Multica **不再**为 AGS 签发 workload assertion，也不创建、批准、�
 | `POST /api/integrations/external-pr/link-token` | still-running Task token | 为 external-PR link 回调签发 task-bound correlation token；不授予仓库操作权限 |
 | `POST /api/integrations/external-pr/links` | exact Bearer service token | 幂等登记或更新外部 PR 投影 |
 | `POST /api/integrations/external-pr/complete-from-merge` | exact Bearer service token | 依据已登记投影与 completion intent 请求完成 Issue |
-| `GET /api/workspaces/{workspace_id}/issues/{issue_id}/external-prs` | Workspace member | 读取外部 PR 链接 |
-| `GET /api/workspaces/{workspace_id}/issues/{issue_id}/pull-requests` | Workspace member | 读取统一 PR 投影 |
+| `GET /api/issues/{id}/external-prs` | Workspace member | 读取外部 PR 链接 |
+| `GET /api/issues/{id}/pull-requests` | Workspace member | 读取统一 PR 投影 |
+
+两个 issue 读取接口检查所选工作区的成员权限。CLI 可用 `X-Workspace-ID` 指定工作区。
 
 请求头中的伪造 Workspace、Agent 或 actor 字段不能覆盖 Task token 的服务端绑定。
 Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context 与 link-token
@@ -34,7 +36,7 @@ Task 终态、token 失效或跨 Task/Workspace 不匹配时，current-context �
 - operation、capability 或 merge method；
 - AGS Session、Access Grant、provider token 或其他凭据。
 
-Claim response把canonical `execution_id`（无独立 execution 时回落Task ID）作为required Run坐标交给daemon；daemon必须以`MULTICA_RUN_ID`注入Agent进程，并与`MULTICA_TASK_ID`同时存在。该响应可作为 AGS 绑定 Task/Run 的输入，但不是授权证明。AGS 必须独立签发并在使用时复核 Access Grant、executor、operation、repository 与原生仓库授权；同一Task的新Run不得复用旧Run cache。
+领取响应提供 `execution_id`。没有独立执行 ID 时，服务端回退到 task ID。守护进程也优先用 `execution_id` 设置 `MULTICA_RUN_ID`，缺失时回退到 `MULTICA_TASK_ID` 的值。缺少独立执行 ID 不阻止启动，也不会放宽 task token 检查。当前执行上下文可供 AGS 绑定 Task/Run，但不是授权证明。AGS 独立签发 Access Grant，并在使用时复核 executor、operation、repository 与原生仓库授权。同一 task 的新 run 不得复用旧 run 的缓存。
 
 External-PR link token 与授权链独立：audience 必须精确匹配配置，`source=task_token`，
 有效期最长五分钟，并且不携带 assertion `kid` 或 `purpose`。签名 secret 必须是至少
@@ -98,6 +100,7 @@ MULTICA_DELEGATED_PR_MERGE_ENABLED
 
 ## Source and test anchors
 
+- `server/internal/daemon/daemon.go` (`taskCanonicalRunID`) and `server/internal/daemon/daemon_test.go`
 - `server/internal/handler/current_execution_context.go`
 - `server/internal/handler/current_execution_context_test.go`
 - `server/internal/handler/external_pr_link_token.go`
